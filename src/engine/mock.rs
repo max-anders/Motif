@@ -3,6 +3,7 @@ use super::DawEngine;
 pub struct MockEngine {
     playing: bool,
     current_beats: f32,
+    playback_anchor_beats: f32,
     beats_per_second: f32,
 }
 
@@ -11,6 +12,7 @@ impl MockEngine {
         Self {
             playing: false,
             current_beats: 0.0,
+            playback_anchor_beats: 0.0,
             beats_per_second,
         }
     }
@@ -22,7 +24,15 @@ impl MockEngine {
 
 impl DawEngine for MockEngine {
     fn play(&mut self) {
+        self.playback_anchor_beats = self.current_beats;
         self.playing = true;
+    }
+
+    fn pause(&mut self) {
+        if self.playing {
+            self.current_beats = self.playback_anchor_beats;
+        }
+        self.playing = false;
     }
 
     fn stop(&mut self) {
@@ -30,7 +40,11 @@ impl DawEngine for MockEngine {
     }
 
     fn toggle_playback(&mut self) {
-        self.playing = !self.playing;
+        if self.playing {
+            self.pause();
+        } else {
+            self.play();
+        }
     }
 
     fn is_playing(&self) -> bool {

@@ -91,12 +91,12 @@ impl eframe::App for DawApp {
             });
         });
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("Piano roll");
-            ui.add_space(6.0);
-            self.piano_roll
-                .show(ui, &mut self.project, &mut self.engine);
-        });
+        egui::CentralPanel::default()
+            .frame(egui::Frame::NONE)
+            .show(ctx, |ui| {
+                self.piano_roll
+                    .show(ui, &mut self.project, &mut self.engine);
+            });
 
         ctx.request_repaint();
     }

@@ -4,6 +4,7 @@ pub use mock::MockEngine;
 
 pub trait DawEngine {
     fn play(&mut self);
+    fn pause(&mut self);
     fn stop(&mut self);
     fn toggle_playback(&mut self);
     fn is_playing(&self) -> bool;
