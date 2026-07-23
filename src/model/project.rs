@@ -1,12 +1,15 @@
 use serde::{Deserialize, Serialize};
 
+use super::clip::MidiClip;
+use super::track::{migrate_notes_to_clip, Track};
 use super::Note;
 
 pub const DEFAULT_BPM: f32 = 120.0;
 pub const DEFAULT_BEATS_PER_BAR: f32 = 4.0;
 pub const SNAP_BEATS: f32 = 0.25;
-pub const MIN_PITCH: u8 = 48;
-pub const MAX_PITCH: u8 = 84;
+/// Full MIDI note range (C-1 .. G9), like a normal DAW piano roll.
+pub const MIN_PITCH: u8 = 0;
+pub const MAX_PITCH: u8 = 127;
 pub const DEFAULT_NOTE_DURATION_BEATS: f32 = 1.0;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -14,19 +17,36 @@ pub struct Project {
     pub bpm: f32,
     pub beats_per_bar: f32,
     pub loop_end_beats: f32,
-    pub notes: Vec<Note>,
+    pub tracks: Vec<Track>,
+    next_note_id: u64,
+    next_clip_id: u64,
+    next_track_id: u64,
+}
+
+/// Legacy on-disk format before tracks/clips.
+#[derive(Debug, Deserialize)]
+struct LegacyProject {
+    bpm: f32,
+    beats_per_bar: f32,
+    loop_end_beats: f32,
+    notes: Vec<super::Note>,
     next_note_id: u64,
 }
 
 impl Default for Project {
     fn default() -> Self {
-        Self {
+        let mut project = Self {
             bpm: DEFAULT_BPM,
             beats_per_bar: DEFAULT_BEATS_PER_BAR,
             loop_end_beats: 16.0,
-            notes: Vec::new(),
+            tracks: Vec::new(),
             next_note_id: 1,
-        }
+            next_clip_id: 2,
+            next_track_id: 2,
+        };
+        let track_id = project.add_track("Track 1");
+        project.add_clip_to_track(track_id, 0.0, 4.0);
+        project
     }
 }
 
@@ -39,32 +59,146 @@ impl Project {
         pitch.clamp(MIN_PITCH as i32, MAX_PITCH as i32) as u8
     }
 
-    pub fn add_note(&mut self, pitch: u8, start_beats: f32, duration_beats: f32) -> Note {
-        let note = Note {
-            id: self.next_note_id,
-            pitch,
-            start_beats: Self::snap_beats(start_beats.max(0.0)),
-            duration_beats: Self::snap_beats(duration_beats.max(SNAP_BEATS)),
-            velocity: 100,
-        };
+    pub fn next_note_id(&self) -> u64 {
+        self.next_note_id
+    }
+
+    pub fn bump_note_id(&mut self) {
         self.next_note_id += 1;
-        self.notes.push(note);
-        note
     }
 
-    pub fn remove_note(&mut self, id: u64) {
-        self.notes.retain(|note| note.id != id);
+    pub fn next_clip_id(&self) -> u64 {
+        self.next_clip_id
     }
 
-    pub fn note_mut(&mut self, id: u64) -> Option<&mut Note> {
-        self.notes.iter_mut().find(|note| note.id == id)
+    pub fn bump_clip_id(&mut self) {
+        self.next_clip_id += 1;
     }
 
-    pub fn note(&self, id: u64) -> Option<&Note> {
-        self.notes.iter().find(|note| note.id == id)
+    pub fn next_track_id(&self) -> u64 {
+        self.next_track_id
+    }
+
+    pub fn bump_track_id(&mut self) {
+        self.next_track_id += 1;
+    }
+
+    pub fn add_track(&mut self, name: &str) -> u64 {
+        let id = self.next_track_id();
+        self.bump_track_id();
+        self.tracks.push(Track {
+            id,
+            name: name.to_string(),
+            clips: Vec::new(),
+        });
+        id
+    }
+
+    pub fn add_clip_to_track(
+        &mut self,
+        track_id: u64,
+        start_beats: f32,
+        length_beats: f32,
+    ) -> Option<u64> {
+        let clip_number = self.track(track_id)?.clips.len() + 1;
+        let clip_id = self.next_clip_id();
+        self.bump_clip_id();
+        let clip = MidiClip {
+            id: clip_id,
+            name: format!("Clip {clip_number}"),
+            start_beats: Self::snap_beats(start_beats.max(0.0)),
+            length_beats: Self::snap_beats(length_beats.max(SNAP_BEATS)),
+            notes: Vec::new(),
+        };
+        self.track_mut(track_id)?.clips.push(clip);
+        Some(clip_id)
+    }
+
+    pub fn add_note_to_clip(
+        &mut self,
+        clip_id: u64,
+        pitch: u8,
+        start_beats: f32,
+        duration_beats: f32,
+    ) -> Option<Note> {
+        let id = self.next_note_id();
+        self.bump_note_id();
+        let note = self
+            .clip_mut(clip_id)?
+            .add_note_with_id(id, pitch, start_beats, duration_beats);
+        Some(note)
+    }
+
+    pub fn remove_track(&mut self, track_id: u64) {
+        self.tracks.retain(|track| track.id != track_id);
+    }
+
+    pub fn track_mut(&mut self, track_id: u64) -> Option<&mut Track> {
+        self.tracks.iter_mut().find(|track| track.id == track_id)
+    }
+
+    pub fn track(&self, track_id: u64) -> Option<&Track> {
+        self.tracks.iter().find(|track| track.id == track_id)
+    }
+
+    pub fn clip_mut(&mut self, clip_id: u64) -> Option<&mut MidiClip> {
+        for track in &mut self.tracks {
+            if let Some(clip) = track.clip_mut(clip_id) {
+                return Some(clip);
+            }
+        }
+        None
+    }
+
+    pub fn clip(&self, clip_id: u64) -> Option<&MidiClip> {
+        for track in &self.tracks {
+            if let Some(clip) = track.clip(clip_id) {
+                return Some(clip);
+            }
+        }
+        None
+    }
+
+    pub fn remove_clip(&mut self, clip_id: u64) {
+        for track in &mut self.tracks {
+            track.remove_clip(clip_id);
+        }
+    }
+
+    pub fn track_id_for_clip(&self, clip_id: u64) -> Option<u64> {
+        for track in &self.tracks {
+            if track.clip(clip_id).is_some() {
+                return Some(track.id);
+            }
+        }
+        None
     }
 
     pub fn beats_per_second(&self) -> f32 {
         self.bpm / 60.0
+    }
+
+    pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
+        if let Ok(project) = serde_json::from_str::<Self>(json) {
+            return Ok(project);
+        }
+
+        let legacy: LegacyProject = serde_json::from_str(json)?;
+        let clip = migrate_notes_to_clip(legacy.notes, legacy.loop_end_beats);
+        let track = Track {
+            id: 1,
+            name: String::from("Track 1"),
+            clips: vec![clip],
+        };
+
+        Ok(Self {
+            bpm: legacy.bpm,
+            beats_per_bar: legacy.beats_per_bar,
+            loop_end_beats: legacy.loop_end_beats,
+            tracks: vec![track],
+            next_note_id: legacy.next_note_id,
+            next_clip_id: 2,
+            next_track_id: 2,
+        })
     }
 }

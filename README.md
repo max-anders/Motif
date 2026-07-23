@@ -73,16 +73,35 @@ cargo run --release
 
 ## Controls
 
+### Playlist (default view)
+
+- **Left-click empty lane** - create a MIDI clip (4 beats)
+- **Left-click clip** - open piano roll for that clip
+- **Drag clip body** - move clip on timeline
+- **Drag clip edges** - resize clip length
+- **Delete / Backspace** - remove selected clip
+- **Add track** - new track lane
+- **Left-click / drag ruler** - move playhead (snapped to 1/16)
+- **Shift + left-click** or **right-click empty timeline** - move playhead
+- **Wheel** - scroll; **Shift+Wheel** - horizontal scroll; **Ctrl/Cmd+Wheel** - zoom time
+
+### Piano roll (clip editor)
+
+- **Back to playlist** - return to arrangement
 - **Left-click empty grid** - add a note (1 beat, snapped to 1/16)
 - **Left-click note** - select note
 - **Drag note body** - move pitch/start
-- **Drag left/right edge** - resize
-- **Left-click / drag ruler** - move playhead (snapped to 1/16)
+- **Drag left/right edge** - resize note
+- **Left-click / drag ruler** - move playhead (mapped to arrangement time)
 - **Shift + left-click** or **right-click empty grid** - move playhead
+- **Delete / Backspace** - remove selected note(s)
+- **Right-click note** - delete note
+- **Wheel** - scroll vertical; **Shift+Wheel** - horizontal; **Ctrl/Cmd+Wheel** - zoom time; **Alt+Wheel** - zoom keys
+
+### Transport
+
 - **Play / Pause** - mock transport (playhead loops)
 - **Stop** - stop and return to start
-- **Delete / Backspace** - remove selected note
-- **Right-click note** - delete note
 - **Space** - play/pause
 - **Save / Load** - writes `project.json` in the project directory
 
@@ -90,13 +109,14 @@ cargo run --release
 
 ```text
 UI (egui)
-  -> Project model (notes, tempo, loop)
+  -> Project model (tracks, clips, notes, tempo, loop)
+  -> PlaylistUi / PianoRollUi (shared timeline navigation)
   -> DawEngine trait
        -> MockEngine (advances playhead by wall clock)
 ```
 
-Swap `MockEngine` for a real audio engine later without rewriting the piano roll.
+Swap `MockEngine` for a real audio engine later without rewriting the editors.
 
 ## Pitch range
 
-C3 (48) through C6 (84). Snap grid: quarter-beat (1/16 in 4/4).
+Full MIDI range (0-127). Snap grid: quarter-beat (1/16 in 4/4).

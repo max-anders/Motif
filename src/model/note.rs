@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 pub struct Note {
     pub id: u64,
     pub pitch: u8,
-    /// Start time in beats from the beginning of the project.
+    /// Start time in beats relative to the clip start.
     pub start_beats: f32,
     /// Length in beats.
     pub duration_beats: f32,
