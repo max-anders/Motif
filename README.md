@@ -77,6 +77,7 @@ cargo run --release
 - **Left-click note** - select note
 - **Drag note body** - move pitch/start
 - **Drag left/right edge** - resize
+- **Left-click / drag ruler** - move playhead (snapped to 1/16)
 - **Shift + left-click** or **right-click empty grid** - move playhead
 - **Play / Pause** - mock transport (playhead loops)
 - **Stop** - stop and return to start

@@ -26,7 +26,7 @@ impl DawApp {
             engine,
             piano_roll: PianoRollUi::default(),
             status_message: String::from(
-                "Ready. Click = add/select. Drag empty = marquee select. Shift/right empty = seek.",
+                "Ready. Wheel=scroll V, Shift+Wheel=scroll H, Ctrl+Wheel=zoom H, Alt+Wheel=zoom V. Click=add/select.",
             ),
         }
     }
