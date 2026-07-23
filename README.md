@@ -73,10 +73,11 @@ cargo run --release
 
 ## Controls
 
-- **Click empty grid** - add a note (1 beat, snapped to 1/16)
+- **Left-click empty grid** - add a note (1 beat, snapped to 1/16)
+- **Left-click note** - select note
 - **Drag note body** - move pitch/start
 - **Drag left/right edge** - resize
-- **Click grid** - move playhead
+- **Shift + left-click** or **right-click empty grid** - move playhead
 - **Play / Pause** - mock transport (playhead loops)
 - **Stop** - stop and return to start
 - **Delete / Backspace** - remove selected note

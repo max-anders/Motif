@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use egui::{Color32, Pos2, Rect, Response, Sense, Ui, Vec2};
 
 use crate::engine::DawEngine;
@@ -19,33 +21,49 @@ enum DragMode {
 
 #[derive(Debug, Clone)]
 struct ActiveDrag {
+    /// Note under the pointer (used for snap / resize).
     note_id: u64,
     mode: DragMode,
     pointer_start_beats: f32,
     pointer_start_pitch: i32,
-    original: Note,
+    /// Snapshot of every note being transformed (selection for Move, one note for resize).
+    originals: Vec<Note>,
+}
+
+#[derive(Debug, Clone)]
+struct MarqueeDrag {
+    start: Pos2,
+    current: Pos2,
+}
+
+impl MarqueeDrag {
+    fn rect(&self) -> Rect {
+        Rect::from_two_pos(self.start, self.current)
+    }
 }
 
 pub struct PianoRollUi {
-    selected_note_id: Option<u64>,
+    selected_note_ids: HashSet<u64>,
     active_drag: Option<ActiveDrag>,
+    marquee: Option<MarqueeDrag>,
 }
 
 impl PianoRollUi {
-    pub fn selected_note_id(&self) -> Option<u64> {
-        self.selected_note_id
+    pub fn selected_note_ids(&self) -> &HashSet<u64> {
+        &self.selected_note_ids
     }
 
     pub fn clear_selection(&mut self) {
-        self.selected_note_id = None;
+        self.selected_note_ids.clear();
     }
 }
 
 impl Default for PianoRollUi {
     fn default() -> Self {
         Self {
-            selected_note_id: None,
+            selected_note_ids: HashSet::new(),
             active_drag: None,
+            marquee: None,
         }
     }
 }
@@ -79,7 +97,17 @@ impl PianoRollUi {
                 let rect = response.rect;
                 let ruler_rect = ruler_rect(rect);
                 let grid_rect = grid_rect(rect);
-                let _scroll_offset = ui.min_rect().min.to_vec2() - rect.min.to_vec2();
+
+                handle_pointer(
+                    &response,
+                    ruler_rect,
+                    grid_rect,
+                    project,
+                    engine,
+                    &mut self.selected_note_ids,
+                    &mut self.active_drag,
+                    &mut self.marquee,
+                );
 
                 draw_ruler(&painter, ruler_rect, grid_rect, total_beats, project.beats_per_bar);
                 draw_grid(&painter, grid_rect, total_beats, project.beats_per_bar);
@@ -88,20 +116,13 @@ impl PianoRollUi {
                     &painter,
                     grid_rect,
                     &project.notes,
-                    self.selected_note_id,
+                    &self.selected_note_ids,
                     engine.current_beats(),
                 );
+                if let Some(marquee) = &self.marquee {
+                    draw_marquee(&painter, marquee.rect());
+                }
                 draw_playhead(&painter, ruler_rect, grid_rect, engine.current_beats());
-
-                handle_pointer(
-                    &response,
-                    ruler_rect,
-                    grid_rect,
-                    project,
-                    engine,
-                    &mut self.selected_note_id,
-                    &mut self.active_drag,
-                );
             });
     }
 }
@@ -160,6 +181,14 @@ fn hit_test_note<'a>(grid: Rect, notes: &'a [Note], pos: Pos2) -> Option<&'a Not
         .iter()
         .rev()
         .find(|note| note_rect(grid, note).contains(pos))
+}
+
+fn select_notes_in_rect(grid: Rect, notes: &[Note], selection: Rect) -> HashSet<u64> {
+    notes
+        .iter()
+        .filter(|note| note_rect(grid, note).intersects(selection))
+        .map(|note| note.id)
+        .collect()
 }
 
 fn draw_ruler(
@@ -400,12 +429,12 @@ fn draw_notes(
     painter: &egui::Painter,
     rect: Rect,
     notes: &[Note],
-    selected_id: Option<u64>,
+    selected_ids: &HashSet<u64>,
     playhead_beats: f32,
 ) {
     for note in notes {
         let note_rect = note_rect(rect, note);
-        let is_selected = selected_id == Some(note.id);
+        let is_selected = selected_ids.contains(&note.id);
         let is_active = note.contains_beat(playhead_beats);
 
         let fill = if is_active {
@@ -443,6 +472,16 @@ fn draw_notes(
     }
 }
 
+fn draw_marquee(painter: &egui::Painter, selection: Rect) {
+    painter.rect(
+        selection,
+        0.0,
+        Color32::from_rgba_unmultiplied(120, 180, 255, 40),
+        egui::Stroke::new(1.0_f32, Color32::from_rgb(160, 210, 255)),
+        egui::StrokeKind::Inside,
+    );
+}
+
 fn draw_playhead(painter: &egui::Painter, ruler: Rect, grid: Rect, beat: f32) {
     let x = timeline_x(grid, beat);
     painter.line_segment(
@@ -459,19 +498,79 @@ fn draw_playhead(painter: &egui::Painter, ruler: Rect, grid: Rect, beat: f32) {
     );
 }
 
+fn is_timeline_pointer(grid: Rect, pointer: Pos2) -> bool {
+    grid.contains(pointer) && pointer.x > grid.left() + KEY_COLUMN_WIDTH
+}
+
+fn set_single_selection(selected_note_ids: &mut HashSet<u64>, note_id: u64) {
+    selected_note_ids.clear();
+    selected_note_ids.insert(note_id);
+}
+
+fn apply_move_drag(drag: &ActiveDrag, project: &mut Project, current_beats: f32, current_pitch: i32) {
+    let Some(primary) = drag
+        .originals
+        .iter()
+        .find(|note| note.id == drag.note_id)
+    else {
+        return;
+    };
+
+    let raw_delta_beats = current_beats - drag.pointer_start_beats;
+    let mut snapped_delta_beats = Project::snap_beats(primary.start_beats + raw_delta_beats)
+        .max(0.0)
+        - primary.start_beats;
+
+    let min_start = drag
+        .originals
+        .iter()
+        .map(|note| note.start_beats)
+        .fold(f32::INFINITY, f32::min);
+    if min_start + snapped_delta_beats < 0.0 {
+        snapped_delta_beats = -min_start;
+    }
+
+    let raw_delta_pitch = current_pitch - drag.pointer_start_pitch;
+    let min_pitch = drag
+        .originals
+        .iter()
+        .map(|note| note.pitch as i32)
+        .min()
+        .unwrap_or(MIN_PITCH as i32);
+    let max_pitch = drag
+        .originals
+        .iter()
+        .map(|note| note.pitch as i32)
+        .max()
+        .unwrap_or(MAX_PITCH as i32);
+    let delta_pitch = raw_delta_pitch
+        .max(MIN_PITCH as i32 - min_pitch)
+        .min(MAX_PITCH as i32 - max_pitch);
+
+    for original in &drag.originals {
+        if let Some(note) = project.note_mut(original.id) {
+            note.start_beats = (original.start_beats + snapped_delta_beats).max(0.0);
+            note.pitch = Project::clamp_pitch(original.pitch as i32 + delta_pitch);
+            note.duration_beats = original.duration_beats;
+        }
+    }
+}
+
 fn handle_pointer(
     response: &Response,
     ruler: Rect,
     grid: Rect,
     project: &mut Project,
     engine: &mut dyn DawEngine,
-    selected_note_id: &mut Option<u64>,
+    selected_note_ids: &mut HashSet<u64>,
     active_drag: &mut Option<ActiveDrag>,
+    marquee: &mut Option<MarqueeDrag>,
 ) {
     let full = ruler.union(grid);
     let Some(pointer) = response.interact_pointer_pos() else {
         if response.drag_stopped() {
             *active_drag = None;
+            *marquee = None;
         }
         return;
     };
@@ -480,105 +579,140 @@ fn handle_pointer(
         return;
     }
 
-    if response.drag_started() && response.clicked_by(egui::PointerButton::Primary) {
-        if grid.contains(pointer) {
-            if let Some(note) = hit_test_note(grid, &project.notes, pointer).cloned() {
-                *selected_note_id = Some(note.id);
+    let shift_held = response.ctx.input(|input| input.modifiers.shift);
 
-                let note_bounds = note_rect(grid, &note);
-                let local_x = pointer.x - note_bounds.left();
-                let mode = if local_x <= RESIZE_HANDLE_PX {
-                    DragMode::ResizeStart
-                } else if local_x >= note_bounds.width() - RESIZE_HANDLE_PX {
-                    DragMode::ResizeEnd
-                } else {
-                    DragMode::Move
-                };
-
-                *active_drag = Some(ActiveDrag {
-                    note_id: note.id,
-                    mode,
-                    pointer_start_beats: x_to_beat(grid, pointer.x),
-                    pointer_start_pitch: y_to_pitch(grid, pointer.y) as i32,
-                    original: note,
-                });
-            } else if pointer.x > grid.left() + KEY_COLUMN_WIDTH {
-                let pitch = y_to_pitch(grid, pointer.y);
-                let start = Project::snap_beats(x_to_beat(grid, pointer.x).max(0.0));
-                let note = project.add_note(pitch, start, 1.0);
-                *selected_note_id = Some(note.id);
-                *active_drag = Some(ActiveDrag {
-                    note_id: note.id,
-                    mode: DragMode::ResizeEnd,
-                    pointer_start_beats: start,
-                    pointer_start_pitch: pitch as i32,
-                    original: note,
-                });
-            }
-        }
-    }
-
-    if response.clicked_by(egui::PointerButton::Primary) && !response.dragged() {
-        if ruler.contains(pointer) || grid.contains(pointer) {
-            seek_from_pointer(grid, pointer, engine);
-        }
+    if response.clicked_by(egui::PointerButton::Primary)
+        && !response.dragged()
+        && shift_held
+        && (ruler.contains(pointer) || is_timeline_pointer(grid, pointer))
+    {
+        seek_from_pointer(grid, pointer, engine);
     }
 
     if response.clicked_by(egui::PointerButton::Secondary) && !response.dragged() {
-        if ruler.contains(pointer) {
-            seek_from_pointer(grid, pointer, engine);
-        } else if grid.contains(pointer) {
+        if grid.contains(pointer) {
             if let Some(note) = hit_test_note(grid, &project.notes, pointer) {
                 let note_id = note.id;
                 project.remove_note(note_id);
-                if *selected_note_id == Some(note_id) {
-                    *selected_note_id = None;
-                }
-            } else {
+                selected_note_ids.remove(&note_id);
+            } else if is_timeline_pointer(grid, pointer) {
                 seek_from_pointer(grid, pointer, engine);
             }
+        } else if ruler.contains(pointer) {
+            seek_from_pointer(grid, pointer, engine);
+        }
+    }
+
+    if response.clicked_by(egui::PointerButton::Primary)
+        && !response.dragged()
+        && !shift_held
+        && is_timeline_pointer(grid, pointer)
+    {
+        if let Some(note) = hit_test_note(grid, &project.notes, pointer) {
+            set_single_selection(selected_note_ids, note.id);
+        } else {
+            let pitch = y_to_pitch(grid, pointer.y);
+            let start = Project::snap_beats(x_to_beat(grid, pointer.x).max(0.0));
+            let note = project.add_note(pitch, start, 1.0);
+            set_single_selection(selected_note_ids, note.id);
+        }
+    }
+
+    if response.drag_started_by(egui::PointerButton::Primary) && is_timeline_pointer(grid, pointer)
+    {
+        if let Some(note) = hit_test_note(grid, &project.notes, pointer).cloned() {
+            *marquee = None;
+
+            let note_bounds = note_rect(grid, &note);
+            let local_x = pointer.x - note_bounds.left();
+            let mode = if local_x <= RESIZE_HANDLE_PX {
+                DragMode::ResizeStart
+            } else if local_x >= note_bounds.width() - RESIZE_HANDLE_PX {
+                DragMode::ResizeEnd
+            } else {
+                DragMode::Move
+            };
+
+            let already_selected = selected_note_ids.contains(&note.id);
+            if !already_selected {
+                set_single_selection(selected_note_ids, note.id);
+            }
+
+            let originals = match mode {
+                DragMode::Move => project
+                    .notes
+                    .iter()
+                    .filter(|n| selected_note_ids.contains(&n.id))
+                    .cloned()
+                    .collect(),
+                DragMode::ResizeStart | DragMode::ResizeEnd => vec![note.clone()],
+            };
+
+            *active_drag = Some(ActiveDrag {
+                note_id: note.id,
+                mode,
+                pointer_start_beats: x_to_beat(grid, pointer.x),
+                pointer_start_pitch: y_to_pitch(grid, pointer.y) as i32,
+                originals,
+            });
+        } else {
+            *active_drag = None;
+            selected_note_ids.clear();
+            *marquee = Some(MarqueeDrag {
+                start: pointer,
+                current: pointer,
+            });
         }
     }
 
     if let Some(drag) = active_drag.clone() {
-        if !response.dragged() {
-            return;
-        }
+        if response.dragged() {
+            let current_beats = x_to_beat(grid, pointer.x);
+            let current_pitch = y_to_pitch(grid, pointer.y) as i32;
 
-        let current_beats = x_to_beat(grid, pointer.x);
-        let current_pitch = y_to_pitch(grid, pointer.y) as i32;
-
-        if let Some(note) = project.note_mut(drag.note_id) {
             match drag.mode {
                 DragMode::Move => {
-                    let delta_beats = current_beats - drag.pointer_start_beats;
-                    let delta_pitch = current_pitch - drag.pointer_start_pitch;
-                    note.start_beats =
-                        Project::snap_beats((drag.original.start_beats + delta_beats).max(0.0));
-                    note.pitch =
-                        Project::clamp_pitch(drag.original.pitch as i32 + delta_pitch);
-                    note.duration_beats = drag.original.duration_beats;
+                    apply_move_drag(&drag, project, current_beats, current_pitch);
                 }
-                DragMode::ResizeStart => {
-                    let new_start = Project::snap_beats(current_beats.max(0.0));
-                    let end = drag.original.end_beats();
-                    note.start_beats = new_start.min(end - SNAP_BEATS);
-                    note.duration_beats = (end - note.start_beats).max(SNAP_BEATS);
-                    note.pitch = drag.original.pitch;
-                }
-                DragMode::ResizeEnd => {
-                    let new_end = Project::snap_beats(current_beats.max(0.0));
-                    note.start_beats = drag.original.start_beats;
-                    note.duration_beats =
-                        (new_end - drag.original.start_beats).max(SNAP_BEATS);
-                    note.pitch = drag.original.pitch;
+                DragMode::ResizeStart | DragMode::ResizeEnd => {
+                    if let Some(original) = drag.originals.first() {
+                        if let Some(note) = project.note_mut(drag.note_id) {
+                            match drag.mode {
+                                DragMode::ResizeStart => {
+                                    let new_start = Project::snap_beats(current_beats.max(0.0));
+                                    let end = original.end_beats();
+                                    note.start_beats = new_start.min(end - SNAP_BEATS);
+                                    note.duration_beats =
+                                        (end - note.start_beats).max(SNAP_BEATS);
+                                    note.pitch = original.pitch;
+                                }
+                                DragMode::ResizeEnd => {
+                                    let new_end = Project::snap_beats(current_beats.max(0.0));
+                                    note.start_beats = original.start_beats;
+                                    note.duration_beats =
+                                        (new_end - original.start_beats).max(SNAP_BEATS);
+                                    note.pitch = original.pitch;
+                                }
+                                DragMode::Move => unreachable!(),
+                            }
+                        }
+                    }
                 }
             }
+        }
+    }
+
+    if let Some(active_marquee) = marquee.as_mut() {
+        if response.dragged() {
+            active_marquee.current = pointer;
+            *selected_note_ids =
+                select_notes_in_rect(grid, &project.notes, active_marquee.rect());
         }
     }
 
     if response.drag_stopped() {
         *active_drag = None;
+        *marquee = None;
     }
 }
 

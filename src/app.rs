@@ -25,7 +25,9 @@ impl DawApp {
             project,
             engine,
             piano_roll: PianoRollUi::default(),
-            status_message: String::from("Ready. Space = play/pause. Delete = remove note."),
+            status_message: String::from(
+                "Ready. Click = add/select. Drag empty = marquee select. Shift/right empty = seek.",
+            ),
         }
     }
 
@@ -67,8 +69,11 @@ impl eframe::App for DawApp {
                 self.engine.toggle_playback();
             }
             if input.key_pressed(egui::Key::Delete) || input.key_pressed(egui::Key::Backspace) {
-                if let Some(id) = self.piano_roll.selected_note_id() {
-                    self.project.remove_note(id);
+                let ids: Vec<u64> = self.piano_roll.selected_note_ids().iter().copied().collect();
+                if !ids.is_empty() {
+                    for id in ids {
+                        self.project.remove_note(id);
+                    }
                     self.piano_roll.clear_selection();
                 }
             }
