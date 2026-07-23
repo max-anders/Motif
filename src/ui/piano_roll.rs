@@ -3,9 +3,10 @@ use egui::{Color32, Pos2, Rect, Response, Sense, Ui, Vec2};
 use crate::engine::DawEngine;
 use crate::model::{Note, Project, MAX_PITCH, MIN_PITCH, SNAP_BEATS};
 
-const KEY_COLUMN_WIDTH: f32 = 44.0;
+const KEY_COLUMN_WIDTH: f32 = 56.0;
 const RULER_HEIGHT: f32 = 26.0;
 const KEY_HEIGHT: f32 = 18.0;
+const BLACK_KEY_WIDTH_RATIO: f32 = 0.62;
 const BEAT_WIDTH: f32 = 88.0;
 const RESIZE_HANDLE_PX: f32 = 8.0;
 
@@ -82,6 +83,7 @@ impl PianoRollUi {
 
                 draw_ruler(&painter, ruler_rect, grid_rect, total_beats, project.beats_per_bar);
                 draw_grid(&painter, grid_rect, total_beats, project.beats_per_bar);
+                draw_keyboard(&painter, grid_rect, &project.notes, engine.current_beats());
                 draw_notes(
                     &painter,
                     grid_rect,
@@ -100,20 +102,6 @@ impl PianoRollUi {
                     &mut self.selected_note_id,
                     &mut self.active_drag,
                 );
-
-                if ui.ui_contains_pointer() && ui.input(|i| i.pointer.secondary_clicked()) {
-                    if let Some(pointer) = response.interact_pointer_pos() {
-                        if grid_rect.contains(pointer) {
-                            if let Some(note) = hit_test_note(grid_rect, &project.notes, pointer) {
-                                let note_id = note.id;
-                                project.remove_note(note_id);
-                                if self.selected_note_id == Some(note_id) {
-                                    self.selected_note_id = None;
-                                }
-                            }
-                        }
-                    }
-                }
             });
     }
 }
@@ -247,45 +235,34 @@ fn draw_ruler(
     );
 }
 
+fn is_black_key(pitch: u8) -> bool {
+    matches!(pitch % 12, 1 | 3 | 6 | 8 | 10)
+}
+
 fn draw_grid(painter: &egui::Painter, grid: Rect, total_beats: f32, beats_per_bar: f32) {
-    painter.rect_filled(grid, 0.0, Color32::from_rgb(18, 18, 22));
+    let timeline_left = grid.left() + KEY_COLUMN_WIDTH;
+    painter.rect_filled(
+        Rect::from_min_max(Pos2::new(timeline_left, grid.top()), grid.max),
+        0.0,
+        Color32::from_rgb(18, 18, 22),
+    );
 
     for pitch in MIN_PITCH..=MAX_PITCH {
         let y = pitch_to_y(grid, pitch);
-        let is_black_key = matches!(pitch % 12, 1 | 3 | 6 | 8 | 10);
-        let row_color = if is_black_key {
+        let row_color = if is_black_key(pitch) {
             Color32::from_rgb(26, 26, 32)
         } else {
             Color32::from_rgb(32, 32, 40)
         };
         painter.rect_filled(
             Rect::from_min_max(
-                Pos2::new(grid.left(), y),
+                Pos2::new(timeline_left, y),
                 Pos2::new(grid.right(), y + KEY_HEIGHT),
             ),
             0.0,
             row_color,
         );
-
-        if pitch % 12 == 0 {
-            painter.text(
-                Pos2::new(grid.left() + 4.0, y + 3.0),
-                egui::Align2::LEFT_TOP,
-                pitch_name(pitch),
-                egui::FontId::monospace(10.0),
-                Color32::from_rgb(150, 150, 165),
-            );
-        }
     }
-
-    painter.rect_filled(
-        Rect::from_min_max(
-            grid.min,
-            Pos2::new(grid.left() + KEY_COLUMN_WIDTH, grid.bottom()),
-        ),
-        0.0,
-        Color32::from_rgb(24, 24, 30),
-    );
 
     let beat_count = total_beats.ceil() as i32;
     for beat in 0..=beat_count {
@@ -313,6 +290,110 @@ fn draw_grid(painter: &egui::Painter, grid: Rect, total_beats: f32, beats_per_ba
             egui::Stroke::new(1.0_f32, Color32::from_rgb(34, 34, 44)),
         );
     }
+}
+
+fn draw_keyboard(
+    painter: &egui::Painter,
+    grid: Rect,
+    notes: &[Note],
+    playhead_beats: f32,
+) {
+    let keys = Rect::from_min_max(
+        grid.min,
+        Pos2::new(grid.left() + KEY_COLUMN_WIDTH, grid.bottom()),
+    );
+    painter.rect_filled(keys, 0.0, Color32::from_rgb(48, 48, 56));
+
+    let is_pitch_active = |pitch: u8| {
+        notes
+            .iter()
+            .any(|note| note.pitch == pitch && note.contains_beat(playhead_beats))
+    };
+
+    for pitch in MIN_PITCH..=MAX_PITCH {
+        if is_black_key(pitch) {
+            continue;
+        }
+
+        let y = pitch_to_y(grid, pitch);
+        let key_rect = Rect::from_min_max(
+            Pos2::new(keys.left(), y),
+            Pos2::new(keys.right(), y + KEY_HEIGHT),
+        );
+        let is_active = is_pitch_active(pitch);
+        let fill = if is_active {
+            Color32::from_rgb(255, 200, 120)
+        } else {
+            Color32::from_rgb(232, 232, 238)
+        };
+        painter.rect_filled(key_rect, 0.0, fill);
+        painter.line_segment(
+            [
+                Pos2::new(keys.left(), key_rect.bottom()),
+                Pos2::new(keys.right(), key_rect.bottom()),
+            ],
+            egui::Stroke::new(1.0_f32, Color32::from_rgb(150, 150, 160)),
+        );
+
+        let is_c = pitch % 12 == 0;
+        painter.text(
+            Pos2::new(keys.right() - 4.0, y + KEY_HEIGHT * 0.5),
+            egui::Align2::RIGHT_CENTER,
+            pitch_name(pitch),
+            egui::FontId::monospace(if is_c { 11.0 } else { 9.0 }),
+            if is_c {
+                Color32::from_rgb(40, 40, 55)
+            } else {
+                Color32::from_rgb(90, 90, 105)
+            },
+        );
+    }
+
+    for pitch in MIN_PITCH..=MAX_PITCH {
+        if !is_black_key(pitch) {
+            continue;
+        }
+
+        let y = pitch_to_y(grid, pitch);
+        let black_width = KEY_COLUMN_WIDTH * BLACK_KEY_WIDTH_RATIO;
+        let key_rect = Rect::from_min_max(
+            Pos2::new(keys.left(), y + 1.0),
+            Pos2::new(keys.left() + black_width, y + KEY_HEIGHT - 1.0),
+        );
+        let is_active = is_pitch_active(pitch);
+        let fill = if is_active {
+            Color32::from_rgb(255, 160, 70)
+        } else {
+            Color32::from_rgb(28, 28, 34)
+        };
+        painter.rect(
+            key_rect,
+            1.5,
+            fill,
+            egui::Stroke::new(1.0_f32, Color32::from_rgb(12, 12, 16)),
+            egui::StrokeKind::Inside,
+        );
+
+        painter.text(
+            Pos2::new(key_rect.right() - 3.0, y + KEY_HEIGHT * 0.5),
+            egui::Align2::RIGHT_CENTER,
+            pitch_name(pitch),
+            egui::FontId::monospace(8.0),
+            if is_active {
+                Color32::from_rgb(40, 30, 20)
+            } else {
+                Color32::from_rgb(170, 170, 185)
+            },
+        );
+    }
+
+    painter.line_segment(
+        [
+            Pos2::new(keys.right(), keys.top()),
+            Pos2::new(keys.right(), keys.bottom()),
+        ],
+        egui::Stroke::new(1.5_f32, Color32::from_rgb(70, 70, 85)),
+    );
 }
 
 fn draw_notes(
@@ -440,6 +521,22 @@ fn handle_pointer(
     if response.clicked_by(egui::PointerButton::Primary) && !response.dragged() {
         if ruler.contains(pointer) || grid.contains(pointer) {
             seek_from_pointer(grid, pointer, engine);
+        }
+    }
+
+    if response.clicked_by(egui::PointerButton::Secondary) && !response.dragged() {
+        if ruler.contains(pointer) {
+            seek_from_pointer(grid, pointer, engine);
+        } else if grid.contains(pointer) {
+            if let Some(note) = hit_test_note(grid, &project.notes, pointer) {
+                let note_id = note.id;
+                project.remove_note(note_id);
+                if *selected_note_id == Some(note_id) {
+                    *selected_note_id = None;
+                }
+            } else {
+                seek_from_pointer(grid, pointer, engine);
+            }
         }
     }
 
