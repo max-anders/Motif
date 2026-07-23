@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use eframe::egui;
 
-use crate::engine::{DawEngine, MockEngine};
+use crate::engine::{AudioEngine, DawEngine};
 use crate::model::Project;
 use crate::ui::{PianoRollUi, PlaylistUi, TransportUi};
 
@@ -17,7 +17,7 @@ enum CenterView {
 
 pub struct DawApp {
     project: Project,
-    engine: MockEngine,
+    engine: AudioEngine,
     playlist: PlaylistUi,
     piano_roll: PianoRollUi,
     center_view: CenterView,
@@ -27,7 +27,15 @@ pub struct DawApp {
 impl DawApp {
     pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
         let project = load_project().unwrap_or_default();
-        let engine = MockEngine::new(project.beats_per_second());
+        let engine = AudioEngine::new(project.beats_per_second());
+        let status_message = if engine.audio_available() {
+            String::from(
+                "Playlist: click empty lane to add clip, click clip to open piano roll. Wheel=scroll, Ctrl+Wheel=zoom H.",
+            )
+        } else {
+            let detail = engine.init_error().unwrap_or("unknown error");
+            format!("Audio unavailable ({detail}). Transport still works silently.")
+        };
 
         Self {
             project,
@@ -35,9 +43,7 @@ impl DawApp {
             playlist: PlaylistUi::default(),
             piano_roll: PianoRollUi::default(),
             center_view: CenterView::Playlist,
-            status_message: String::from(
-                "Playlist: click empty lane to add clip, click clip to open piano roll. Wheel=scroll, Ctrl+Wheel=zoom H.",
-            ),
+            status_message,
         }
     }
 
@@ -58,11 +64,14 @@ impl DawApp {
     fn load_project_from_disk(&mut self) {
         match load_project() {
             Ok(project) => {
+                self.engine.stop();
+                self.engine.all_notes_off();
                 self.engine
                     .set_beats_per_second(project.beats_per_second());
                 self.project = project;
                 self.center_view = CenterView::Playlist;
                 self.playlist.clear_selection();
+                self.piano_roll.release_audition(&mut self.engine);
                 self.piano_roll.clear_selection();
                 self.status_message = format!("Loaded {PROJECT_FILE}");
             }
@@ -109,6 +118,7 @@ impl DawApp {
     }
 
     fn back_to_playlist(&mut self) {
+        self.piano_roll.release_audition(&mut self.engine);
         self.piano_roll.clear_selection();
         self.center_view = CenterView::Playlist;
     }
@@ -119,23 +129,25 @@ impl eframe::App for DawApp {
         let delta_seconds = ctx.input(|input| input.unstable_dt);
         let loop_end = self.project.loop_end_beats;
         self.engine.advance(delta_seconds, loop_end);
+        self.engine.schedule_project(&self.project);
 
-        ctx.input(|input| {
-            if input.key_pressed(egui::Key::Space) {
-                self.engine.toggle_playback();
-            }
-            let cut_pressed = input.key_pressed(egui::Key::X)
-                && (input.modifiers.ctrl || input.modifiers.command || input.modifiers.mac_cmd);
-            if cut_pressed
+        // egui-winit maps Ctrl/Cmd+X to Event::Cut (no Key::X event).
+        let (toggle_playback, delete_selection) = ctx.input(|input| {
+            let cut = input.events.iter().any(|event| matches!(event, egui::Event::Cut));
+            let delete = cut
                 || input.key_pressed(egui::Key::Delete)
-                || input.key_pressed(egui::Key::Backspace)
-            {
-                match self.center_view {
-                    CenterView::Playlist => self.delete_selected_clips(),
-                    CenterView::PianoRoll { .. } => self.delete_selected_notes(),
-                }
-            }
+                || input.key_pressed(egui::Key::Backspace);
+            (input.key_pressed(egui::Key::Space), delete)
         });
+        if toggle_playback {
+            self.engine.toggle_playback();
+        }
+        if delete_selection {
+            match self.center_view {
+                CenterView::Playlist => self.delete_selected_clips(),
+                CenterView::PianoRoll { .. } => self.delete_selected_notes(),
+            }
+        }
 
         egui::TopBottomPanel::top("transport_panel").show(ctx, |ui| {
             ui.heading("Motif");

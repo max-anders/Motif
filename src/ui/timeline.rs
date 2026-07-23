@@ -142,26 +142,15 @@ pub fn apply_piano_roll_wheel_controls(
         return;
     }
 
-    let local = pointer - viewport.min;
-    let content_pos = Vec2::new(
-        if local.x > TIMELINE_GUTTER_WIDTH {
-            local.x - TIMELINE_GUTTER_WIDTH + scroll_offset.x
-        } else {
-            scroll_offset.x
-        },
-        if local.y > RULER_HEIGHT {
-            local.y - RULER_HEIGHT + scroll_offset.y
-        } else {
-            scroll_offset.y
-        },
-    );
+    let content_pos = pointer - viewport.min + *scroll_offset;
 
     if h_factor != 1.0 {
         let old = *beat_width;
         let new = (old * h_factor).clamp(MIN_BEAT_WIDTH, MAX_BEAT_WIDTH);
         let actual = new / old;
-        if (actual - 1.0).abs() > f32::EPSILON && local.x > TIMELINE_GUTTER_WIDTH {
-            scroll_offset.x += content_pos.x * (actual - 1.0);
+        if (actual - 1.0).abs() > f32::EPSILON && content_pos.x > TIMELINE_GUTTER_WIDTH {
+            let timeline_x_pos = content_pos.x - TIMELINE_GUTTER_WIDTH;
+            scroll_offset.x += timeline_x_pos * (actual - 1.0);
         }
         *beat_width = new;
     }
@@ -170,8 +159,9 @@ pub fn apply_piano_roll_wheel_controls(
         let old = *key_height;
         let new = (old * v_factor).clamp(min_key_height, max_key_height);
         let actual = new / old;
-        if (actual - 1.0).abs() > f32::EPSILON && local.y > RULER_HEIGHT {
-            scroll_offset.y += content_pos.y * (actual - 1.0);
+        if (actual - 1.0).abs() > f32::EPSILON && content_pos.y > RULER_HEIGHT {
+            let keys_y = content_pos.y - RULER_HEIGHT;
+            scroll_offset.y += keys_y * (actual - 1.0);
         }
         *key_height = new;
     }
@@ -329,53 +319,25 @@ pub fn handle_timeline_playhead_pointer(
     beat_offset: f32,
     seek_on_body_secondary: bool,
 ) -> bool {
-    handle_timeline_playhead_pointer_with_positions(
-        response,
-        ruler,
-        body,
-        metrics,
-        engine,
-        dragging_playhead,
-        beat_offset,
-        seek_on_body_secondary,
-        None,
-        None,
-    )
-}
-
-pub fn handle_timeline_playhead_pointer_with_positions(
-    response: &Response,
-    ruler: Rect,
-    body: Rect,
-    metrics: TimelineMetrics,
-    engine: &mut dyn DawEngine,
-    dragging_playhead: &mut bool,
-    beat_offset: f32,
-    seek_on_body_secondary: bool,
-    pointer_override: Option<Pos2>,
-    press_override: Option<Pos2>,
-) -> bool {
     let full = ruler.union(body);
 
-    if let Some(hover) = pointer_override.or_else(|| response.hover_pos()) {
+    if let Some(hover) = response.hover_pos() {
         if is_ruler_timeline_pointer(ruler, hover) {
             response.ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
         }
     }
 
-    let Some(pointer) = pointer_override.or_else(|| response.interact_pointer_pos()) else {
+    let Some(pointer) = response.interact_pointer_pos() else {
         if response.drag_stopped() {
             *dragging_playhead = false;
         }
         return false;
     };
 
-    let press_pos = press_override.unwrap_or_else(|| {
-        response
-            .ctx
-            .input(|input| input.pointer.press_origin())
-            .unwrap_or(pointer)
-    });
+    let press_pos = response
+        .ctx
+        .input(|input| input.pointer.press_origin())
+        .unwrap_or(pointer);
 
     if *dragging_playhead {
         if response.dragged() {

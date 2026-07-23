@@ -1,2 +1,22 @@
-/target
-/Cargo.lock
+# Build
+/target/
+
+# Local Cursor agent cockpit (private workflow — not the public contract)
+.cursor/
+
+# Personal sketch saved by the app (cwd project file)
+/project.json
+
+# Secrets / local env (future-proof)
+.env
+.env.*
+!.env.example
+*.pem
+
+# Editor / OS noise
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
+Thumbs.db

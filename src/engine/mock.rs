@@ -1,3 +1,5 @@
+use crate::model::Project;
+
 use super::DawEngine;
 
 pub struct MockEngine {
@@ -72,4 +74,12 @@ impl DawEngine for MockEngine {
             self.current_beats %= loop_end_beats;
         }
     }
+
+    fn note_on(&mut self, _pitch: u8, _velocity: u8) {}
+
+    fn note_off(&mut self, _pitch: u8) {}
+
+    fn all_notes_off(&mut self) {}
+
+    fn schedule_project(&mut self, _project: &Project) {}
 }

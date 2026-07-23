@@ -2,9 +2,10 @@
 name = "motif"
 version = "0.1.0"
 edition = "2021"
-description = "Motif: open-source music sketchpad (piano roll + mock transport)"
+description = "Motif: open-source music sketchpad (piano roll + soft piano audio)"
 
 [dependencies]
+cpal = "0.15"
 eframe = "0.31"
 egui = "0.31"
 serde = { version = "1", features = ["derive"] }

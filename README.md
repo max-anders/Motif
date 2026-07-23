@@ -1,8 +1,21 @@
 # Motif
 
-Open-source music sketchpad: piano roll + mock transport. No real audio yet.
+Open-source music sketchpad: piano roll, playlist, and a soft-synth piano over a real audio engine.
 
-**Status:** This project literally just started. There is almost nothing here yet — and that is the point. It is **free and open source from minute zero**: public from the first commit, not opened up later after something polished existed behind closed doors.
+## Status
+
+**Early but usable sketchpad** (2026-07-24): playlist + piano roll editing, transport, cpal soft-piano playback, and `project.json` save/load. Not a full DAW.
+
+| Area | State |
+|---|---|
+| Playlist (tracks / MIDI clips) | Working |
+| Piano roll (notes + key audition) | Working |
+| Transport + loop + BPM | Working |
+| Soft piano audio (`cpal`) | Working (UI continues if device open fails) |
+| Project save/load | Working (`project.json` in CWD) |
+| Tests / undo / samples / mixer / export | Not started |
+
+It is **free and open source from minute zero**: public from the first commit, not opened up later after something polished existed behind closed doors.
 
 ## Open-source philosophy
 
@@ -52,10 +65,10 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source "$HOME/.cargo/env"
 ```
 
-Linux may also need egui native deps (Wayland/X11 + OpenGL or wgpu stack). On Arch:
+Linux may also need egui native deps (Wayland/X11 + OpenGL or wgpu stack) and audio (ALSA/PipeWire). On Arch:
 
 ```bash
-sudo pacman -S --needed base-devel pkgconf openssl libxkbcommon wayland
+sudo pacman -S --needed base-devel pkgconf openssl libxkbcommon wayland alsa-lib
 ```
 
 ## Run
@@ -79,7 +92,7 @@ cargo run --release
 - **Left-click clip** - open piano roll for that clip
 - **Drag clip body** - move clip on timeline
 - **Drag clip edges** - resize clip length
-- **Delete / Backspace** - remove selected clip
+- **Delete / Backspace / Ctrl+X** - remove selected clip
 - **Add track** - new track lane
 - **Left-click / drag ruler** - move playhead (snapped to 1/16)
 - **Shift + left-click** or **right-click empty timeline** - move playhead
@@ -92,16 +105,17 @@ cargo run --release
 - **Left-click note** - select note
 - **Drag note body** - move pitch/start
 - **Drag left/right edge** - resize note
+- **Press / drag piano keys** - audition pitches (soft piano)
 - **Left-click / drag ruler** - move playhead (mapped to arrangement time)
 - **Shift + left-click** or **right-click empty grid** - move playhead
-- **Delete / Backspace** - remove selected note(s)
+- **Delete / Backspace / Ctrl+X** - remove selected note(s)
 - **Right-click note** - delete note
 - **Wheel** - scroll vertical; **Shift+Wheel** - horizontal; **Ctrl/Cmd+Wheel** - zoom time; **Alt+Wheel** - zoom keys
 
 ### Transport
 
-- **Play / Pause** - mock transport (playhead loops)
-- **Stop** - stop and return to start
+- **Play / Pause** - play arrangement notes through the soft piano (playhead loops)
+- **Stop** - stop, silence, and return to start
 - **Space** - play/pause
 - **Save / Load** - writes `project.json` in the project directory
 
@@ -112,10 +126,11 @@ UI (egui)
   -> Project model (tracks, clips, notes, tempo, loop)
   -> PlaylistUi / PianoRollUi (shared timeline navigation)
   -> DawEngine trait
-       -> MockEngine (advances playhead by wall clock)
+       -> AudioEngine (UI clock + cpal output + soft piano)
+       -> MockEngine (silent fallback / tests)
 ```
 
-Swap `MockEngine` for a real audio engine later without rewriting the editors.
+If the audio device fails to open, Motif keeps the transport UI and reports it in the status line.
 
 ## Pitch range
 
