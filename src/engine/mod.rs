@@ -18,6 +18,17 @@ use crate::model::Project;
 
 use self::plugins::PluginCatalog as Catalog;
 
+/// Per-frame transport bounds passed to the engine: the loop region (when the
+/// user enabled cycling) plus the end of arranged content (used to stop
+/// playback at the end of the song when not looping).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LoopPlayback {
+    pub enabled: bool,
+    pub start_beats: f32,
+    pub end_beats: f32,
+    pub content_end_beats: f32,
+}
+
 pub trait DawEngine {
     fn play(&mut self);
     fn pause(&mut self);
@@ -27,7 +38,7 @@ pub trait DawEngine {
     fn seek_beats(&mut self, beats: f32);
     fn current_beats(&self) -> f32;
     fn set_beats_per_second(&mut self, beats_per_second: f32);
-    fn advance(&mut self, delta_seconds: f32, loop_end_beats: f32);
+    fn advance(&mut self, delta_seconds: f32, playback: LoopPlayback);
 
     /// Audition / sequence note on for a specific track's instrument.
     fn note_on(&mut self, track_id: u64, pitch: u8, velocity: u8);

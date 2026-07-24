@@ -14,8 +14,9 @@ use crate::ui::playlist::{
 };
 use crate::ui::theme::ThemeColors;
 use crate::ui::timeline::{
-    apply_horizontal_wheel_controls, draw_playhead, draw_ruler, handle_timeline_playhead_pointer,
-    timeline_body_rect, with_solid_scrollbars, TimelineMetrics, DEFAULT_BEAT_WIDTH, RULER_HEIGHT,
+    apply_horizontal_wheel_controls, draw_loop_region, draw_playhead, draw_ruler,
+    handle_timeline_playhead_pointer, timeline_body_rect, with_solid_scrollbars, TimelineMetrics,
+    DEFAULT_BEAT_WIDTH, RULER_HEIGHT,
 };
 
 const TILE_WIDTH: f32 = 146.0;
@@ -242,7 +243,8 @@ impl DevicesUi {
         let metrics = TimelineMetrics {
             beat_width: self.mini_beat_width,
         };
-        let total_beats = project.loop_end_beats.max(4.0);
+        let total_beats = project.arrangement_length_beats();
+        let loop_span = project.loop_span();
         let content_width = total_beats * metrics.beat_width;
         // Exactly ruler + one lane tall: single-track lane never scrolls vertically,
         // so this keeps the lane flush against the horizontal scrollbar (no dead gap).
@@ -299,6 +301,17 @@ impl DevicesUi {
                         project.beats_per_bar,
                         theme,
                     );
+                    if let Some((loop_start, loop_end)) = loop_span {
+                        draw_loop_region(
+                            &timeline_painter,
+                            ruler,
+                            lane,
+                            metrics,
+                            loop_start,
+                            loop_end,
+                            theme,
+                        );
+                    }
                     let playhead = engine.current_beats();
                     draw_playhead(
                         &timeline_painter,

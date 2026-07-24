@@ -66,6 +66,12 @@ pub struct ThemeColors {
     pub grid_beat: Color32,
     #[serde(with = "color32_serde")]
     pub grid_subbeat: Color32,
+    /// Translucent fill of the active loop region across the timeline body.
+    #[serde(with = "color32_serde")]
+    pub loop_region_fill: Color32,
+    /// Bracket / edges marking the loop region in the ruler.
+    #[serde(with = "color32_serde")]
+    pub loop_region_edge: Color32,
 
     // Playlist
     #[serde(with = "color32_serde")]
@@ -172,6 +178,8 @@ impl ThemeColors {
             grid_bar: Color32::from_rgb(90, 90, 110),
             grid_beat: Color32::from_rgb(45, 45, 58),
             grid_subbeat: Color32::from_rgb(34, 34, 44),
+            loop_region_fill: Color32::from_rgba_unmultiplied(240, 190, 90, 26),
+            loop_region_edge: Color32::from_rgb(240, 190, 90),
 
             track_header_bg: Color32::from_rgb(40, 40, 50),
             track_header_text: Color32::from_rgb(210, 210, 220),
@@ -272,6 +280,8 @@ impl ThemeColors {
             ("Timeline", "Grid bar", &mut self.grid_bar),
             ("Timeline", "Grid beat", &mut self.grid_beat),
             ("Timeline", "Grid sub-beat", &mut self.grid_subbeat),
+            ("Timeline", "Loop region fill", &mut self.loop_region_fill),
+            ("Timeline", "Loop region edge", &mut self.loop_region_edge),
             (
                 "Playlist",
                 "Track header background",

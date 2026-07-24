@@ -18,7 +18,7 @@ use super::piano::PianoSynth;
 use super::plugins::{
     load_and_activate, CatalogEntry, HostedPlugin, PluginCatalog, PluginEditorHost, PluginRef,
 };
-use super::DawEngine;
+use super::{DawEngine, LoopPlayback};
 
 const LOADING_STATUS: &str = "Loading plugin...";
 
@@ -118,6 +118,7 @@ enum AudioCommand {
     SetMetronome {
         enabled: bool,
         beats_per_bar: f32,
+        loop_start_beats: f32,
         loop_end_beats: f32,
     },
 }
@@ -221,10 +222,12 @@ impl AudioCallbackState {
                 Ok(AudioCommand::SetMetronome {
                     enabled,
                     beats_per_bar,
+                    loop_start_beats,
                     loop_end_beats,
                 }) => {
                     self.metronome.set_enabled(enabled);
                     self.metronome.set_beats_per_bar(beats_per_bar);
+                    self.metronome.set_loop_start_beats(loop_start_beats);
                     self.metronome.set_loop_end_beats(loop_end_beats);
                 }
                 Err(TryRecvError::Empty) => break,
@@ -447,7 +450,11 @@ pub struct AudioEngine {
     previous_beats: f32,
     beats_per_second: f32,
     beats_per_bar: f32,
+    loop_enabled: bool,
+    loop_start_beats: f32,
     loop_end_beats: f32,
+    /// End of arranged content; playback stops here when not looping.
+    content_end_beats: f32,
     /// Note ids currently sounding from the sequencer (not keyboard audition).
     active_seq_notes: HashSet<u64>,
     /// Last instrument identity synced per track (UI-side).
@@ -476,8 +483,9 @@ pub struct AudioEngine {
     pending_cmds: VecDeque<AudioCommand>,
     /// Latest transport when the channel is full (coalesced; only one pending).
     pending_transport: Option<TransportInfo>,
-    /// Latest metronome config when the channel is full (coalesced).
-    pending_metronome: Option<(bool, f32, f32)>,
+    /// Latest metronome config when the channel is full (coalesced):
+    /// `(enabled, beats_per_bar, loop_start_beats, loop_end_beats)`.
+    pending_metronome: Option<(bool, f32, f32, f32)>,
     command_tx: Option<SyncSender<AudioCommand>>,
     sample_rate: f32,
     /// UI-side handles to the same plugin instances the audio thread mixes.
@@ -512,7 +520,10 @@ impl AudioEngine {
                     previous_beats: 0.0,
                     beats_per_second,
                     beats_per_bar: 4.0,
+                    loop_enabled: false,
+                    loop_start_beats: 0.0,
                     loop_end_beats: 16.0,
+                    content_end_beats: 0.0,
                     active_seq_notes: HashSet::new(),
                     synced_instruments: HashMap::new(),
                     synced_channels: HashMap::new(),
@@ -547,7 +558,10 @@ impl AudioEngine {
                 previous_beats: 0.0,
                 beats_per_second,
                 beats_per_bar: 4.0,
+                loop_enabled: false,
+                loop_start_beats: 0.0,
                 loop_end_beats: 16.0,
+                content_end_beats: 0.0,
                 active_seq_notes: HashSet::new(),
                 synced_instruments: HashMap::new(),
                 synced_channels: HashMap::new(),
@@ -599,10 +613,12 @@ impl AudioEngine {
         if let AudioCommand::SetMetronome {
             enabled,
             beats_per_bar,
+            loop_start_beats,
             loop_end_beats,
         } = command
         {
-            self.pending_metronome = Some((enabled, beats_per_bar, loop_end_beats));
+            self.pending_metronome =
+                Some((enabled, beats_per_bar, loop_start_beats, loop_end_beats));
             self.flush_pending_cmds();
             return;
         }
@@ -611,10 +627,19 @@ impl AudioEngine {
     }
 
     fn push_metronome_config(&mut self) {
+        // Only wrap the click grid when a valid loop is active; otherwise the
+        // metronome counts straight through (0,0 disables the wrap).
+        let (loop_start, loop_end) =
+            if self.loop_enabled && self.loop_end_beats > self.loop_start_beats {
+                (self.loop_start_beats, self.loop_end_beats)
+            } else {
+                (0.0, 0.0)
+            };
         self.send(AudioCommand::SetMetronome {
             enabled: self.metronome_enabled,
             beats_per_bar: self.beats_per_bar,
-            loop_end_beats: self.loop_end_beats,
+            loop_start_beats: loop_start,
+            loop_end_beats: loop_end,
         });
     }
 
@@ -654,19 +679,24 @@ impl AudioEngine {
                 }
             }
         }
-        if let Some((enabled, beats_per_bar, loop_end_beats)) = self.pending_metronome.take() {
+        if let Some((enabled, beats_per_bar, loop_start_beats, loop_end_beats)) =
+            self.pending_metronome.take()
+        {
             match tx.try_send(AudioCommand::SetMetronome {
                 enabled,
                 beats_per_bar,
+                loop_start_beats,
                 loop_end_beats,
             }) {
                 Ok(()) => {}
                 Err(TrySendError::Full(AudioCommand::SetMetronome {
                     enabled,
                     beats_per_bar,
+                    loop_start_beats,
                     loop_end_beats,
                 })) => {
-                    self.pending_metronome = Some((enabled, beats_per_bar, loop_end_beats));
+                    self.pending_metronome =
+                        Some((enabled, beats_per_bar, loop_start_beats, loop_end_beats));
                 }
                 Err(TrySendError::Full(_)) => {}
                 Err(TrySendError::Disconnected(_)) => {
@@ -701,7 +731,7 @@ impl AudioEngine {
             ),
             playing: self.playing,
             recording: false,
-            loop_active: self.loop_end_beats > 0.0,
+            loop_active: self.loop_enabled && self.loop_end_beats > self.loop_start_beats,
         };
         self.send(AudioCommand::SetTransport { transport });
         self.push_metronome_config();
@@ -918,22 +948,38 @@ impl DawEngine for AudioEngine {
         self.push_transport();
     }
 
-    fn advance(&mut self, delta_seconds: f32, loop_end_beats: f32) {
-        self.loop_end_beats = loop_end_beats;
+    fn advance(&mut self, delta_seconds: f32, playback: LoopPlayback) {
+        self.loop_enabled = playback.enabled;
+        self.loop_start_beats = playback.start_beats;
+        self.loop_end_beats = playback.end_beats;
+        self.content_end_beats = playback.content_end_beats;
         self.flush_pending_cmds();
-        if !self.playing || loop_end_beats <= 0.0 {
+        if !self.playing {
             return;
         }
 
         self.previous_beats = self.current_beats;
         self.current_beats += delta_seconds * self.beats_per_second;
 
-        if self.current_beats >= loop_end_beats {
-            self.current_beats %= loop_end_beats;
-            self.previous_beats = self.current_beats - delta_seconds * self.beats_per_second;
+        let loop_active = playback.enabled && playback.end_beats > playback.start_beats;
+        if loop_active {
+            if self.current_beats >= playback.end_beats {
+                let span = playback.end_beats - playback.start_beats;
+                let overshoot = (self.current_beats - playback.end_beats).rem_euclid(span);
+                self.current_beats = playback.start_beats + overshoot;
+                self.active_seq_notes.clear();
+                self.send(AudioCommand::AllNotesOff);
+                // Re-trigger notes sitting on the loop start next schedule pass.
+                self.previous_beats = playback.start_beats - 0.0001;
+            }
+        } else if playback.content_end_beats > 0.0
+            && self.current_beats >= playback.content_end_beats
+        {
+            // Not looping: play through, then stop at the end of the arrangement.
+            self.current_beats = playback.content_end_beats;
+            self.playing = false;
             self.active_seq_notes.clear();
             self.send(AudioCommand::AllNotesOff);
-            self.previous_beats = -0.0001;
         }
         self.push_transport();
     }
@@ -960,7 +1006,10 @@ impl DawEngine for AudioEngine {
         catalog: &PluginCatalog,
     ) -> Vec<(u64, String)> {
         self.beats_per_bar = project.beats_per_bar;
+        self.loop_enabled = project.loop_enabled;
+        self.loop_start_beats = project.loop_start_beats;
         self.loop_end_beats = project.loop_end_beats;
+        self.content_end_beats = project.content_end_beats();
         self.flush_pending_cmds();
 
         let mut errors = self.poll_plugin_loads(project);

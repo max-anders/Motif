@@ -12,8 +12,8 @@ use crate::ui::instrument_menu::{
 };
 use crate::ui::theme::ThemeColors;
 use crate::ui::timeline::{
-    apply_horizontal_wheel_controls, daw_editor_scroll_area, draw_playhead, draw_ruler,
-    draw_timeline_grid_lines, handle_timeline_playhead_pointer, is_timeline_pointer,
+    apply_horizontal_wheel_controls, daw_editor_scroll_area, draw_loop_region, draw_playhead,
+    draw_ruler, draw_timeline_grid_lines, handle_timeline_playhead_pointer, is_timeline_pointer,
     timeline_body_rect, timeline_x, with_solid_scrollbars, x_to_beat, TimelineMetrics,
     DEFAULT_BEAT_WIDTH, RULER_HEIGHT, TIMELINE_GUTTER_WIDTH,
 };
@@ -181,7 +181,8 @@ impl PlaylistUi {
         let metrics = TimelineMetrics {
             beat_width: self.beat_width,
         };
-        let total_beats = project.loop_end_beats.max(4.0);
+        let total_beats = project.arrangement_length_beats();
+        let loop_span = project.loop_span();
         let lane_count = project.tracks.len().max(1);
         let content_height = RULER_HEIGHT + lane_count as f32 * LANE_HEIGHT;
         let content_width = TRACK_HEADER_WIDTH + total_beats * metrics.beat_width;
@@ -316,11 +317,22 @@ impl PlaylistUi {
                         theme,
                     );
 
-                    // Playhead last, clipped to the right of track headers.
+                    // Loop region + playhead, clipped to the right of track headers.
                     let playhead_clip = Rect::from_min_max(
                         Pos2::new(sticky_headers.right(), sticky_ruler.top()),
                         content.max,
                     );
+                    if let Some((loop_start, loop_end)) = loop_span {
+                        draw_loop_region(
+                            &painter.with_clip_rect(playhead_clip),
+                            sticky_ruler,
+                            body,
+                            metrics,
+                            loop_start,
+                            loop_end,
+                            theme,
+                        );
+                    }
                     let playhead = engine.current_beats();
                     draw_playhead(
                         &painter.with_clip_rect(playhead_clip),

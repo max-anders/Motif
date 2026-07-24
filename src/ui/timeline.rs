@@ -303,6 +303,52 @@ pub fn draw_playhead(
     painter.circle_filled(Pos2::new(x, ruler.center().y), 4.0, theme.playhead);
 }
 
+/// Highlight the active loop/cycle region: a translucent band across the body,
+/// a marker strip along the bottom of the ruler, and vertical edges. Drawn only
+/// when the caller has a valid enabled loop (`end > start`).
+pub fn draw_loop_region(
+    painter: &egui::Painter,
+    ruler: Rect,
+    body: Rect,
+    metrics: TimelineMetrics,
+    loop_start: f32,
+    loop_end: f32,
+    theme: &ThemeColors,
+) {
+    if loop_end <= loop_start {
+        return;
+    }
+    let x_start = timeline_x(body, loop_start, metrics);
+    let x_end = timeline_x(body, loop_end, metrics);
+
+    // Translucent band over the lanes.
+    painter.rect_filled(
+        Rect::from_min_max(
+            Pos2::new(x_start, body.top()),
+            Pos2::new(x_end, body.bottom()),
+        ),
+        0.0,
+        theme.loop_region_fill,
+    );
+
+    // Marker strip along the bottom of the ruler.
+    let strip_top = ruler.bottom() - 4.0;
+    painter.rect_filled(
+        Rect::from_min_max(
+            Pos2::new(x_start, strip_top),
+            Pos2::new(x_end, ruler.bottom()),
+        ),
+        0.0,
+        theme.loop_region_edge,
+    );
+
+    // Vertical edges from the ruler strip down through the body.
+    let edge = egui::Stroke::new(1.5_f32, theme.loop_region_edge);
+    for x in [x_start, x_end] {
+        painter.line_segment([Pos2::new(x, strip_top), Pos2::new(x, body.bottom())], edge);
+    }
+}
+
 pub fn draw_timeline_grid_lines(
     painter: &egui::Painter,
     body: Rect,

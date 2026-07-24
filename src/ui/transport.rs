@@ -1,7 +1,7 @@
 use egui::{RichText, Stroke, Ui};
 
 use crate::engine::DawEngine;
-use crate::model::Project;
+use crate::model::{Project, MIN_LOOP_SPAN_BEATS};
 
 pub struct TransportUi;
 
@@ -78,17 +78,41 @@ impl TransportUi {
 
             ui.separator();
 
-            ui.label(RichText::new("Loop end (beats)").strong());
-            let mut loop_end = project.loop_end_beats;
+            let mut loop_enabled = project.loop_enabled;
             if ui
-                .add(
-                    egui::DragValue::new(&mut loop_end)
-                        .speed(0.25)
-                        .range(4.0..=256.0),
-                )
+                .toggle_value(&mut loop_enabled, "Loop")
+                .on_hover_text("Cycle playback inside the loop region. Off = play through to the end.")
                 .changed()
             {
-                project.loop_end_beats = loop_end.max(4.0);
+                project.loop_enabled = loop_enabled;
+            }
+            if project.loop_enabled {
+                ui.label(RichText::new("start").weak());
+                let mut loop_start = project.loop_start_beats;
+                if ui
+                    .add(
+                        egui::DragValue::new(&mut loop_start)
+                            .speed(0.25)
+                            .range(0.0..=252.0),
+                    )
+                    .changed()
+                {
+                    project.loop_start_beats =
+                        loop_start.clamp(0.0, project.loop_end_beats - MIN_LOOP_SPAN_BEATS);
+                }
+                ui.label(RichText::new("end").weak());
+                let mut loop_end = project.loop_end_beats;
+                if ui
+                    .add(
+                        egui::DragValue::new(&mut loop_end)
+                            .speed(0.25)
+                            .range(1.0..=256.0),
+                    )
+                    .changed()
+                {
+                    project.loop_end_beats =
+                        loop_end.max(project.loop_start_beats + MIN_LOOP_SPAN_BEATS);
+                }
             }
 
             ui.separator();

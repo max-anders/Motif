@@ -10,6 +10,12 @@ use super::Note;
 pub const DEFAULT_BPM: f32 = 120.0;
 pub const DEFAULT_BEATS_PER_BAR: f32 = 4.0;
 pub const SNAP_BEATS: f32 = 0.25;
+/// Minimum visible arrangement length (in beats) even for an empty project.
+pub const DEFAULT_ARRANGEMENT_MIN_BEATS: f32 = 16.0;
+/// Empty bars kept past the last clip so the grid always extends beyond content.
+pub const ARRANGEMENT_HEADROOM_BARS: f32 = 4.0;
+/// Smallest loop region the UI allows (one beat).
+pub const MIN_LOOP_SPAN_BEATS: f32 = 1.0;
 /// Full MIDI note range (C-1 .. G9), like a normal DAW piano roll.
 pub const MIN_PITCH: u8 = 0;
 pub const MAX_PITCH: u8 = 127;
@@ -19,7 +25,15 @@ pub const DEFAULT_NOTE_DURATION_BEATS: f32 = 1.0;
 pub struct Project {
     pub bpm: f32,
     pub beats_per_bar: f32,
+    /// Loop region end (beats). Only affects playback when `loop_enabled`.
     pub loop_end_beats: f32,
+    /// Loop region start (beats). Missing on pre-loop-region saves; starts at 0.
+    #[serde(default)]
+    pub loop_start_beats: f32,
+    /// When true, playback cycles inside `[loop_start_beats, loop_end_beats]`.
+    /// When false, playback runs straight through and stops at the end of content.
+    #[serde(default)]
+    pub loop_enabled: bool,
     /// Master bus fader in dB (0 = unity).
     #[serde(default)]
     pub master_gain_db: f32,
@@ -52,6 +66,8 @@ impl Default for Project {
             bpm: DEFAULT_BPM,
             beats_per_bar: DEFAULT_BEATS_PER_BAR,
             loop_end_beats: 16.0,
+            loop_start_beats: 0.0,
+            loop_enabled: false,
             master_gain_db: 0.0,
             tracks: Vec::new(),
             next_note_id: 1,
@@ -524,6 +540,38 @@ impl Project {
         self.bpm / 60.0
     }
 
+    /// End (in beats) of the last clip across all tracks; 0 when the project is empty.
+    pub fn content_end_beats(&self) -> f32 {
+        self.tracks
+            .iter()
+            .flat_map(|track| track.clips.iter())
+            .map(|clip| clip.start_beats + clip.length_beats)
+            .fold(0.0_f32, f32::max)
+    }
+
+    /// Grid extent for the arrangement view. Grows with content (rounded up to a
+    /// bar plus a few empty bars of headroom) and is independent of the loop
+    /// region, except that it always stays wide enough to show an active loop.
+    pub fn arrangement_length_beats(&self) -> f32 {
+        let bar = self.beats_per_bar.max(1.0);
+        let content_bars_end = (self.content_end_beats() / bar).ceil() * bar;
+        let mut length =
+            (content_bars_end + bar * ARRANGEMENT_HEADROOM_BARS).max(DEFAULT_ARRANGEMENT_MIN_BEATS);
+        if self.loop_enabled {
+            length = length.max(self.loop_end_beats + bar);
+        }
+        length
+    }
+
+    /// The active loop span `(start, end)` when looping is enabled and valid.
+    pub fn loop_span(&self) -> Option<(f32, f32)> {
+        if self.loop_enabled && self.loop_end_beats > self.loop_start_beats {
+            Some((self.loop_start_beats, self.loop_end_beats))
+        } else {
+            None
+        }
+    }
+
     pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
         // Versioned envelope (current on-disk format for .motif files).
         if let Ok(envelope) = serde_json::from_str::<super::persistence::ProjectEnvelope>(json) {
@@ -557,6 +605,8 @@ impl Project {
             bpm: legacy.bpm,
             beats_per_bar: legacy.beats_per_bar,
             loop_end_beats: legacy.loop_end_beats,
+            loop_start_beats: 0.0,
+            loop_enabled: false,
             master_gain_db: 0.0,
             tracks: vec![track],
             next_note_id: legacy.next_note_id,
@@ -627,6 +677,57 @@ mod tests {
         assert_eq!(pasted.notes.len(), 1);
         assert_eq!(pasted.notes[0].pitch, 60);
         assert_eq!(project.track(track_id).map(|t| t.clips.len()), Some(2));
+    }
+
+    #[test]
+    fn arrangement_length_grows_with_content_not_loop() {
+        let mut project = Project::default();
+        // Default project has one 4-beat clip at 0: content rounded to a bar (4)
+        // plus the headroom bars, never below the minimum.
+        assert!(project.arrangement_length_beats() >= DEFAULT_ARRANGEMENT_MIN_BEATS);
+        let empty_len = project.arrangement_length_beats();
+
+        // A far-out clip extends the grid past the (unchanged) loop end.
+        let track_id = project.tracks[0].id;
+        project
+            .add_clip_to_track(track_id, 40.0, 8.0)
+            .expect("clip");
+        let length = project.arrangement_length_beats();
+        assert!(
+            length > empty_len,
+            "grid should grow when content is added, got {length}"
+        );
+        assert!(
+            length >= 48.0 + project.beats_per_bar,
+            "grid should extend past the last clip end, got {length}"
+        );
+        // Grid extent is independent of the (default 16) loop end.
+        assert!(length > project.loop_end_beats);
+    }
+
+    #[test]
+    fn loop_span_only_when_enabled_and_valid() {
+        let mut project = Project::default();
+        assert!(!project.loop_enabled);
+        assert_eq!(project.loop_span(), None);
+
+        project.loop_enabled = true;
+        project.loop_start_beats = 4.0;
+        project.loop_end_beats = 12.0;
+        assert_eq!(project.loop_span(), Some((4.0, 12.0)));
+
+        // Invalid (end <= start) yields no loop even when enabled.
+        project.loop_end_beats = 4.0;
+        assert_eq!(project.loop_span(), None);
+    }
+
+    #[test]
+    fn arrangement_length_stays_wide_enough_for_active_loop() {
+        let mut project = Project::default();
+        project.loop_enabled = true;
+        project.loop_end_beats = 200.0;
+        let length = project.arrangement_length_beats();
+        assert!(length >= 200.0 + project.beats_per_bar);
     }
 
     #[test]

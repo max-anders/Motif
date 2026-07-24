@@ -1,7 +1,7 @@
 use crate::model::Project;
 
 use super::plugins::{PluginCatalog, PluginRef};
-use super::DawEngine;
+use super::{DawEngine, LoopPlayback};
 
 pub struct MockEngine {
     playing: bool,
@@ -66,15 +66,24 @@ impl DawEngine for MockEngine {
         self.beats_per_second = beats_per_second;
     }
 
-    fn advance(&mut self, delta_seconds: f32, loop_end_beats: f32) {
-        if !self.playing || loop_end_beats <= 0.0 {
+    fn advance(&mut self, delta_seconds: f32, playback: LoopPlayback) {
+        if !self.playing {
             return;
         }
 
         self.current_beats += delta_seconds * self.beats_per_second;
 
-        if self.current_beats >= loop_end_beats {
-            self.current_beats %= loop_end_beats;
+        if playback.enabled && playback.end_beats > playback.start_beats {
+            if self.current_beats >= playback.end_beats {
+                let span = playback.end_beats - playback.start_beats;
+                let overshoot = (self.current_beats - playback.end_beats).rem_euclid(span);
+                self.current_beats = playback.start_beats + overshoot;
+            }
+        } else if playback.content_end_beats > 0.0
+            && self.current_beats >= playback.content_end_beats
+        {
+            self.current_beats = playback.content_end_beats;
+            self.playing = false;
         }
     }
 

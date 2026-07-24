@@ -3,7 +3,9 @@ use std::path::{Path, PathBuf};
 
 use eframe::egui;
 
-use crate::engine::{AudioEngine, DawEngine, PluginCatalog, PluginRef, PLUGIN_CACHE_FILE};
+use crate::engine::{
+    AudioEngine, DawEngine, LoopPlayback, PluginCatalog, PluginRef, PLUGIN_CACHE_FILE,
+};
 use crate::model::{
     clear_recovery, ensure_motif_extension, format_unix_time, legacy_project_path,
     load_project_from, load_recovery_meta, load_recovery_project, project_display_name,
@@ -1138,10 +1140,15 @@ impl DawApp {
 impl eframe::App for DawApp {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         let delta_seconds = ctx.input(|input| input.unstable_dt);
-        let loop_end = self.project.loop_end_beats;
+        let playback = LoopPlayback {
+            enabled: self.project.loop_enabled,
+            start_beats: self.project.loop_start_beats,
+            end_beats: self.project.loop_end_beats,
+            content_end_beats: self.project.content_end_beats(),
+        };
         self.sync_instruments();
         self.engine.sync_channels(&self.project);
-        self.engine.advance(delta_seconds, loop_end);
+        self.engine.advance(delta_seconds, playback);
         self.engine.schedule_project(&self.project);
         let editor_poll = self.engine.poll_plugin_editors();
         if editor_poll.any_open {

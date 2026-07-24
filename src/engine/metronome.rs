@@ -89,6 +89,7 @@ pub struct MetronomeRunner {
     position_beats: f64,
     beats_per_second: f64,
     beats_per_bar: f32,
+    loop_start_beats: f32,
     loop_end_beats: f32,
     sample_rate: f64,
     #[cfg(test)]
@@ -105,6 +106,7 @@ impl MetronomeRunner {
             position_beats: 0.0,
             beats_per_second: 2.0,
             beats_per_bar: 4.0,
+            loop_start_beats: 0.0,
             loop_end_beats: 16.0,
             sample_rate: sr,
             #[cfg(test)]
@@ -150,6 +152,10 @@ impl MetronomeRunner {
         self.beats_per_bar = beats_per_bar.max(1.0);
     }
 
+    pub fn set_loop_start_beats(&mut self, loop_start_beats: f32) {
+        self.loop_start_beats = loop_start_beats;
+    }
+
     pub fn set_loop_end_beats(&mut self, loop_end_beats: f32) {
         self.loop_end_beats = loop_end_beats;
     }
@@ -183,9 +189,10 @@ impl MetronomeRunner {
         let prev = self.position_beats;
         let delta = self.beats_per_second / self.sample_rate;
         let mut next = prev + delta;
+        let loop_start = self.loop_start_beats as f64;
         let loop_end = self.loop_end_beats as f64;
 
-        if loop_end > 0.0 && next >= loop_end {
+        if loop_end > loop_start && next >= loop_end {
             let prev_int = prev.floor() as i64;
             let last_int = (loop_end - 1e-9).floor() as i64;
             for beat in (prev_int + 1)..=last_int {
@@ -194,7 +201,7 @@ impl MetronomeRunner {
                 }
             }
             self.fire_click(true);
-            next -= loop_end;
+            next = loop_start + (next - loop_end);
         } else {
             let prev_int = prev.floor() as i64;
             let next_int = next.floor() as i64;
