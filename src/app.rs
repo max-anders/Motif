@@ -16,9 +16,11 @@ use crate::model::{
     Project, PROJECT_EXTENSION, RecoveryMeta,
 };
 use crate::ui::{
-    show_inspector, Action, AppSettings, AudioImportRequest, Chord, DevicesUi, MixerUi,
+    choice_to_instrument, show_inspector, track_name_for_choice, Action, AddBrowserAction,
+    AddBrowserUi, AppSettings, AudioImportRequest, BrowserTab, Chord, DevicesUi, MixerUi,
     PianoRollUi, PlaylistUi, PluginEditorRequest, PollFilter, ProjectBrowserAction,
-    ProjectBrowserUi, SettingsAction, SettingsUi, TransportUi, SETTINGS_FILE,
+    ProjectBrowserUi, SettingsAction, SettingsUi, TransportUi, DEVICES_STRIP_HEIGHT,
+    SETTINGS_FILE,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +50,7 @@ pub struct DawApp {
     devices: DevicesUi,
     settings_ui: SettingsUi,
     project_browser: ProjectBrowserUi,
+    add_browser: AddBrowserUi,
     center_view: CenterView,
     /// View to restore when leaving Settings (playlist, mixer, or piano roll).
     settings_return: CenterView,
@@ -61,6 +64,8 @@ pub struct DawApp {
     selected_track: Option<u64>,
     /// Toggleable properties panel (same Track facets as Mixer).
     show_inspector: bool,
+    /// Bottom device strip (primary Devices UI over playlist / piano roll).
+    show_devices_strip: bool,
     /// Session clipboard for notes/clips (Ctrl/Cmd+C/X/V).
     clipboard: EditClipboard,
     /// Snapshot undo/redo for clip and note edits.
@@ -69,6 +74,8 @@ pub struct DawApp {
     autosave_accum: f32,
     pending_recovery: Option<RecoveryMeta>,
     show_project_browser: bool,
+    /// Unified add browser (Instruments / FX / Samples); `Some` while open.
+    show_add_browser: Option<BrowserTab>,
     /// Confirm discard when New is requested while dirty.
     confirm_new_discard: bool,
     /// Force dirty (e.g. after restoring a recovery backup that has no clean disk match).
@@ -122,6 +129,7 @@ impl DawApp {
             devices: DevicesUi::default(),
             settings_ui: SettingsUi::default(),
             project_browser: ProjectBrowserUi::default(),
+            add_browser: AddBrowserUi::default(),
             center_view: CenterView::Playlist,
             settings_return: CenterView::Playlist,
             settings,
@@ -130,12 +138,14 @@ impl DawApp {
             device_errors: HashMap::new(),
             selected_track,
             show_inspector: false,
+            show_devices_strip: false,
             clipboard: EditClipboard::Empty,
             history: EditHistory::new(undo_limit),
             status_message,
             autosave_accum: 0.0,
             pending_recovery,
             show_project_browser: show_browser,
+            show_add_browser: None,
             confirm_new_discard: false,
             dirty_forced: false,
             decoded_audio: HashMap::new(),
@@ -393,6 +403,21 @@ impl DawApp {
             self.status_message = String::from("Import sample cancelled");
             return;
         };
+        self.add_audio_clip_from_path(request.track_id, request.start_beats, path);
+    }
+
+    fn sample_import_target(&self) -> AudioImportRequest {
+        let track_id = self
+            .selected_track
+            .or_else(|| self.project.tracks.first().map(|track| track.id))
+            .unwrap_or(0);
+        AudioImportRequest {
+            track_id,
+            start_beats: Project::snap_beats(self.engine.current_beats().max(0.0)),
+        }
+    }
+
+    fn add_audio_clip_from_path(&mut self, track_id: u64, start_beats: f32, path: PathBuf) {
         let name = path
             .file_stem()
             .and_then(|stem| stem.to_str())
@@ -407,18 +432,80 @@ impl DawApp {
         } else {
             self.queue_decode(path.clone());
         }
+        if self.project.track(track_id).is_none() {
+            self.status_message = String::from("Import failed: track not found");
+            return;
+        }
+        if !self
+            .project
+            .clip_range_free(track_id, start_beats, length_beats, &[])
+        {
+            self.status_message = String::from("Import failed: overlaps existing clip");
+            return;
+        }
         self.history.push_before(self.project.clone());
         if let Some(clip_id) = self.project.add_audio_clip_to_track(
-            request.track_id,
+            track_id,
             path.clone(),
             name,
-            request.start_beats,
+            start_beats,
             length_beats,
         ) {
             self.playlist.set_selection([clip_id]);
+            self.selected_track = Some(track_id);
+            self.settings.push_recent_sample(path.clone());
+            self.save_settings();
             self.status_message = format!("Imported sample: {}", path.display());
         } else {
-            self.status_message = String::from("Import failed: track not found");
+            self.status_message = String::from("Import failed: overlaps existing clip");
+        }
+    }
+
+    fn open_add_browser(&mut self, tab: BrowserTab) {
+        self.add_browser.prepare_open(tab);
+        self.show_add_browser = Some(tab);
+    }
+
+    fn handle_add_browser_action(&mut self, action: AddBrowserAction) {
+        match action {
+            AddBrowserAction::CreateTrack(choice) => {
+                let number = self.project.tracks.len() + 1;
+                let name = track_name_for_choice(&choice, number);
+                let instrument = choice_to_instrument(choice);
+                self.history.push_before(self.project.clone());
+                let track_id = self.project.add_track(&name, instrument);
+                self.selected_track = Some(track_id);
+                self.status_message = format!("Added track: {name}");
+            }
+            AddBrowserAction::AddEffect(entry) => {
+                let Some(track_id) = self
+                    .selected_track
+                    .or_else(|| self.project.tracks.first().map(|track| track.id))
+                else {
+                    self.status_message = String::from("Add FX failed: no tracks");
+                    return;
+                };
+                self.history.push_before(self.project.clone());
+                if self
+                    .project
+                    .add_device(track_id, entry.format, &entry.unique_id, &entry.name)
+                    .is_some()
+                {
+                    self.selected_track = Some(track_id);
+                    self.status_message = format!("Added FX: {}", entry.name);
+                } else {
+                    self.status_message = String::from("Add FX failed: track not found");
+                }
+            }
+            AddBrowserAction::AddSample(path) => {
+                let request = self.sample_import_target();
+                self.add_audio_clip_from_path(request.track_id, request.start_beats, path);
+            }
+            AddBrowserAction::BrowseSample => {
+                let request = self.sample_import_target();
+                self.import_audio_clip(request);
+            }
+            AddBrowserAction::Close => {}
         }
     }
 
@@ -943,7 +1030,12 @@ impl DawApp {
                 .map(|clip| (clip.start_beats(), clip.end_beats()))
         }));
         self.history.push_before(self.project.clone());
-        let new_ids = self.project.duplicate_clips(&ids, span);
+        let new_ids: Vec<u64> = self
+            .project
+            .duplicate_clips(&ids, span, false)
+            .into_iter()
+            .map(|(_, id)| id)
+            .collect();
         if !new_ids.is_empty() {
             self.playlist.set_selection(new_ids);
         }
@@ -1025,7 +1117,8 @@ impl DawApp {
         let new_ids = self.project.paste_clips(&clips, origin);
         if new_ids.is_empty() {
             self.project = before;
-            self.status_message = String::from("Paste failed (missing track?)");
+            self.status_message =
+                String::from("Paste failed (overlap or missing track)");
             return;
         }
         self.history.push_before(before);
@@ -1297,6 +1390,21 @@ impl DawApp {
         self.center_view = CenterView::Devices;
     }
 
+    fn toggle_devices_strip(&mut self) {
+        self.show_devices_strip = !self.show_devices_strip;
+        if self.show_devices_strip && self.selected_track.is_none() {
+            self.selected_track = self.project.tracks.first().map(|t| t.id);
+        }
+    }
+
+    fn devices_strip_visible(&self) -> bool {
+        self.show_devices_strip
+            && matches!(
+                self.center_view,
+                CenterView::Playlist | CenterView::PianoRoll { .. }
+            )
+    }
+
     fn open_settings(&mut self) {
         if matches!(self.center_view, CenterView::Settings) {
             return;
@@ -1363,23 +1471,34 @@ impl DawApp {
             Action::SaveProjectAs => self.save_as(),
             Action::NewProject => self.request_new_project(),
             Action::OpenProjectBrowser => self.show_project_browser = true,
-            Action::BackToPlaylist => match self.center_view {
-                CenterView::Settings => self.close_settings(),
-                CenterView::PianoRoll { .. } | CenterView::Mixer | CenterView::Devices => {
-                    self.back_to_playlist()
+            Action::OpenInstrumentBrowser => self.open_add_browser(BrowserTab::Instruments),
+            Action::OpenEffectBrowser => self.open_add_browser(BrowserTab::Fx),
+            Action::OpenSampleBrowser => self.open_add_browser(BrowserTab::Samples),
+            Action::BackToPlaylist => {
+                if self.show_add_browser.is_some() {
+                    self.show_add_browser = None;
+                    return;
                 }
-                CenterView::Playlist => {}
-            },
+                match self.center_view {
+                    CenterView::Settings => self.close_settings(),
+                    CenterView::PianoRoll { .. } | CenterView::Mixer | CenterView::Devices => {
+                        self.back_to_playlist()
+                    }
+                    CenterView::Playlist => {}
+                }
+            }
             Action::ToggleMixer => match self.center_view {
                 CenterView::Mixer => self.back_to_playlist(),
                 CenterView::Settings => {}
                 _ => self.open_mixer(),
             },
             Action::ToggleDevices => match self.center_view {
-                CenterView::Devices => self.back_to_playlist(),
                 CenterView::Settings => {}
-                _ => self.open_devices(),
+                _ => self.toggle_devices_strip(),
             },
+            Action::DeleteTrack => {
+                // Handled in `update` after track headers report pointer hover.
+            }
             Action::TogglePluginEditor => {
                 // Handled in `update` (needs egui Context + Frame for native editor).
             }
@@ -1427,11 +1546,15 @@ impl eframe::App for DawApp {
         } else {
             PollFilter::All
         };
+        let mut delete_hovered_track = false;
         for action in self.settings.shortcuts.poll(ctx, poll_filter) {
             if action == Action::TogglePluginEditor {
                 self.toggle_selected_track_plugin_editor(ctx, frame);
             } else if action == Action::ClosePluginEditor {
                 self.close_selected_track_plugin_editor(ctx, frame);
+            } else if action == Action::DeleteTrack {
+                // Needs current-frame header hover from playlist/devices paint.
+                delete_hovered_track = true;
             } else {
                 self.dispatch_action(action);
             }
@@ -1475,9 +1598,15 @@ impl eframe::App for DawApp {
                 }
 
                 if !matches!(self.center_view, CenterView::Settings | CenterView::Devices)
-                    && ui.button("Devices").clicked()
+                    && ui
+                        .button(if self.show_devices_strip {
+                            "Hide devices"
+                        } else {
+                            "Devices"
+                        })
+                        .clicked()
                 {
-                    self.open_devices();
+                    self.toggle_devices_strip();
                 }
 
                 if matches!(self.center_view, CenterView::Playlist | CenterView::Mixer)
@@ -1539,11 +1668,51 @@ impl eframe::App for DawApp {
                 });
         }
 
+        if self.devices_strip_visible() {
+            egui::TopBottomPanel::bottom("devices_strip")
+                .default_height(DEVICES_STRIP_HEIGHT)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    let theme = self.settings.themes.colors().clone();
+                    let strip_output = {
+                        let DawApp {
+                            devices,
+                            project,
+                            engine,
+                            catalog,
+                            history,
+                            device_errors,
+                            selected_track,
+                            ..
+                        } = self;
+                        devices.show_strip(
+                            ui,
+                            project,
+                            engine,
+                            catalog,
+                            history,
+                            device_errors,
+                            selected_track,
+                            &theme,
+                        )
+                    };
+                    if strip_output.hide {
+                        self.show_devices_strip = false;
+                    }
+                    if strip_output.expand {
+                        self.open_devices();
+                    }
+                    if let Some(request) = self.devices.take_plugin_editor_request() {
+                        self.handle_plugin_editor_request(ctx, frame, request);
+                    }
+                });
+        }
+
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show(ctx, |ui| match self.center_view {
                 CenterView::Playlist => {
-                    let (open_clip, editor_request, delete_track, import_audio) = {
+                    let (open_clip, editor_request, delete_track, import_audio, hovered_header) = {
                         let DawApp {
                             playlist,
                             project,
@@ -1570,6 +1739,7 @@ impl eframe::App for DawApp {
                             playlist.take_plugin_editor_request(),
                             playlist.take_delete_track_request(),
                             playlist.take_audio_import_request(),
+                            playlist.hovered_track_header(),
                         )
                     };
                     if let Some(clip_id) = open_clip {
@@ -1580,6 +1750,10 @@ impl eframe::App for DawApp {
                     }
                     if let Some(track_id) = delete_track {
                         self.delete_track(track_id);
+                    } else if delete_hovered_track {
+                        if let Some(track_id) = hovered_header {
+                            self.delete_track(track_id);
+                        }
                     }
                     if let Some(request) = import_audio {
                         self.import_audio_clip(request);
@@ -1605,7 +1779,7 @@ impl eframe::App for DawApp {
                     );
                 }
                 CenterView::Devices => {
-                    let (editor_request, open_clip, delete_track) = {
+                    let (editor_request, open_clip, delete_track, hovered_header) = {
                         let DawApp {
                             devices,
                             project,
@@ -1633,6 +1807,7 @@ impl eframe::App for DawApp {
                             devices.take_plugin_editor_request(),
                             devices.take_open_clip_request(),
                             devices.take_delete_track_request(),
+                            devices.hovered_track_header(),
                         )
                     };
                     if let Some(request) = editor_request {
@@ -1643,6 +1818,10 @@ impl eframe::App for DawApp {
                     }
                     if let Some(track_id) = delete_track {
                         self.delete_track(track_id);
+                    } else if delete_hovered_track {
+                        if let Some(track_id) = hovered_header {
+                            self.delete_track(track_id);
+                        }
                     }
                 }
                 CenterView::PianoRoll { clip_id } => {
@@ -1717,6 +1896,23 @@ impl eframe::App for DawApp {
                 &self.settings.recent_projects,
             ) {
                 self.handle_project_browser_action(action);
+            }
+            if let Some(action) = {
+                let DawApp {
+                    add_browser,
+                    show_add_browser,
+                    catalog,
+                    settings,
+                    ..
+                } = self;
+                add_browser.show(
+                    ctx,
+                    show_add_browser,
+                    catalog,
+                    &settings.recent_samples,
+                )
+            } {
+                self.handle_add_browser_action(action);
             }
         }
 

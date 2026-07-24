@@ -268,7 +268,8 @@ impl PianoRollUi {
                             engine,
                             &mut self.dragging_playhead,
                             clip_start,
-                            // Piano roll owns body right-click: delete note or seek.
+                            // Body right-click drag scrubs in the shared handler;
+                            // click-without-drag stays here (delete note or seek).
                             false,
                         );
 

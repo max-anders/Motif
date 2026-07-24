@@ -1,3 +1,4 @@
+mod add_browser;
 mod app_settings;
 mod devices;
 mod inspector;
@@ -12,8 +13,10 @@ mod theme;
 mod timeline;
 mod transport;
 
+pub use add_browser::{AddBrowserAction, AddBrowserUi, BrowserTab};
 pub use app_settings::AppSettings;
-pub use devices::DevicesUi;
+pub use instrument_menu::{choice_to_instrument, track_name_for_choice};
+pub use devices::{DevicesUi, DEVICES_STRIP_HEIGHT};
 pub use inspector::show_inspector;
 pub use mixer::MixerUi;
 pub use piano_roll::PianoRollUi;

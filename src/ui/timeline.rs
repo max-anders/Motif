@@ -388,10 +388,12 @@ pub fn draw_timeline_grid_lines(
     let _ = timeline_left;
 }
 
-/// Shared playhead scrubbing: ruler click/drag, shift+click, optional body right-click seek.
+/// Shared playhead scrubbing: ruler click/drag (primary or secondary), body
+/// right-click drag, shift+click, optional body right-click seek.
 ///
-/// When `seek_on_body_secondary` is false, body right-clicks are left for the caller
-/// (e.g. piano roll: delete note under cursor, else seek).
+/// Body secondary *drag* always scrubs (playlist + piano roll). When
+/// `seek_on_body_secondary` is false, body secondary *clicks* are left for the
+/// caller (e.g. piano roll: delete note under cursor, else seek).
 pub fn handle_timeline_playhead_pointer(
     response: &Response,
     ruler: Rect,
@@ -440,11 +442,16 @@ pub fn handle_timeline_playhead_pointer(
     }
 
     let shift_held = response.ctx.input(|input| input.modifiers.shift);
+    let primary_or_secondary_drag = response.drag_started_by(egui::PointerButton::Primary)
+        || response.drag_started_by(egui::PointerButton::Secondary);
+    let ruler_drag_started =
+        primary_or_secondary_drag && is_ruler_timeline_pointer(ruler, press_pos);
+    // Right-click drag on the arrangement / note grid scrubs like the ruler.
+    let body_secondary_drag_started = response.drag_started_by(egui::PointerButton::Secondary)
+        && is_timeline_pointer(body, press_pos);
 
     if is_ruler_timeline_pointer(ruler, press_pos) || is_ruler_timeline_pointer(ruler, pointer) {
-        if response.drag_started_by(egui::PointerButton::Primary)
-            && is_ruler_timeline_pointer(ruler, press_pos)
-        {
+        if ruler_drag_started {
             *dragging_playhead = true;
             seek_from_pointer(body, pointer, metrics, engine, beat_offset);
             return true;
@@ -457,6 +464,12 @@ pub fn handle_timeline_playhead_pointer(
             seek_from_pointer(body, pointer, metrics, engine, beat_offset);
             return true;
         }
+    }
+
+    if body_secondary_drag_started {
+        *dragging_playhead = true;
+        seek_from_pointer(body, pointer, metrics, engine, beat_offset);
+        return true;
     }
 
     if response.clicked_by(egui::PointerButton::Primary)

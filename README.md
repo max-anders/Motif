@@ -104,9 +104,9 @@ cargo run --release
 - **Double-click clip** - open piano roll for that clip
 - **Audio clips** - do not open piano roll (arrangement-only clips)
 - **Ctrl/Cmd + left-click clip** - toggle multi-select
-- **Drag clip body** - move selected clip(s) on timeline
+- **Drag clip body** - move selected clip(s) on timeline (same-track clips cannot overlap)
 - **Shift + drag clip body** - duplicate selection, then move the copies
-- **Drag clip edges** - resize clip length
+- **Drag clip edges** - resize clip length (stops at neighboring clips)
 - **Delete / Backspace** - remove selected clip(s)
 - **Ctrl/Cmd+C** - copy selected clip(s)
 - **Ctrl/Cmd+X** - cut selected clip(s)
@@ -118,6 +118,7 @@ cargo run --release
 - **Import sample...** - import an audio clip (`wav/mp3/flac/ogg/m4a/aac`) onto the selected track at the playhead
 - **M / S** on track header (or right-click **Mute** / **Solo**) - mute or solo a track; when any track is soloed, only soloed tracks play; otherwise muted tracks are silent
 - **Right-click track header → Delete track** - remove the track and its clips (last track cannot be deleted; Ctrl/Cmd+Z restores a deleted track)
+- **X** (while pointer is over a track header) - delete that track (remappable; same rules as context-menu delete)
 - **Right-click track header** - open/close plugin editor (plugin tracks) or change instrument (searchable list)
 - **Ctrl/Cmd+Shift+E** - open/close plugin editor for the selected track (remappable)
 - **Shift+Q** - close a focused plugin editor window (remappable; default)

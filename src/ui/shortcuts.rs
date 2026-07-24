@@ -14,6 +14,8 @@ pub const SETTINGS_FILE: &str = "settings.json";
 pub enum Action {
     TogglePlayback,
     DeleteSelection,
+    /// Delete the track under the pointer (track header hover).
+    DeleteTrack,
     CopySelection,
     CutSelection,
     PasteSelection,
@@ -30,10 +32,16 @@ pub enum Action {
     NewProject,
     /// Open the in-app Recent Projects loader.
     OpenProjectBrowser,
+    /// Open the add browser on the Instruments tab (create track).
+    OpenInstrumentBrowser,
+    /// Open the add browser on the FX tab (add insert effect).
+    OpenEffectBrowser,
+    /// Open the add browser on the Samples tab (add audio clip).
+    OpenSampleBrowser,
     BackToPlaylist,
     /// Toggle the Mixer view (or return to playlist when already there).
     ToggleMixer,
-    /// Toggle the Devices view (or return to playlist when already there).
+    /// Toggle the bottom device strip (or no-op in Settings).
     ToggleDevices,
     /// Open or close the native plugin editor for the selected track's instrument.
     TogglePluginEditor,
@@ -50,6 +58,7 @@ impl<'de> Deserialize<'de> for Action {
         match raw.as_str() {
             "toggle_playback" => Ok(Self::TogglePlayback),
             "delete_selection" => Ok(Self::DeleteSelection),
+            "delete_track" => Ok(Self::DeleteTrack),
             "copy_selection" => Ok(Self::CopySelection),
             "cut_selection" => Ok(Self::CutSelection),
             "paste_selection" => Ok(Self::PasteSelection),
@@ -61,6 +70,9 @@ impl<'de> Deserialize<'de> for Action {
             "save_project_as" => Ok(Self::SaveProjectAs),
             "new_project" => Ok(Self::NewProject),
             "open_project_browser" => Ok(Self::OpenProjectBrowser),
+            "open_instrument_browser" => Ok(Self::OpenInstrumentBrowser),
+            "open_effect_browser" => Ok(Self::OpenEffectBrowser),
+            "open_sample_browser" => Ok(Self::OpenSampleBrowser),
             "back_to_playlist" => Ok(Self::BackToPlaylist),
             "toggle_mixer" => Ok(Self::ToggleMixer),
             "toggle_devices" => Ok(Self::ToggleDevices),
@@ -71,6 +83,7 @@ impl<'de> Deserialize<'de> for Action {
                 &[
                     "toggle_playback",
                     "delete_selection",
+                    "delete_track",
                     "copy_selection",
                     "cut_selection",
                     "paste_selection",
@@ -82,6 +95,9 @@ impl<'de> Deserialize<'de> for Action {
                     "save_project_as",
                     "new_project",
                     "open_project_browser",
+                    "open_instrument_browser",
+                    "open_effect_browser",
+                    "open_sample_browser",
                     "back_to_playlist",
                     "toggle_mixer",
                     "toggle_devices",
@@ -95,9 +111,10 @@ impl<'de> Deserialize<'de> for Action {
 
 impl Action {
     /// All actions in Settings / docs order (includes actions with no factory binding).
-    pub const ALL: [Self; 18] = [
+    pub const ALL: [Self; 22] = [
         Self::TogglePlayback,
         Self::DeleteSelection,
+        Self::DeleteTrack,
         Self::CopySelection,
         Self::CutSelection,
         Self::PasteSelection,
@@ -109,6 +126,9 @@ impl Action {
         Self::Save,
         Self::SaveProjectAs,
         Self::OpenProjectBrowser,
+        Self::OpenInstrumentBrowser,
+        Self::OpenEffectBrowser,
+        Self::OpenSampleBrowser,
         Self::BackToPlaylist,
         Self::ToggleMixer,
         Self::ToggleDevices,
@@ -120,6 +140,7 @@ impl Action {
         match self {
             Self::TogglePlayback => "Play / Pause",
             Self::DeleteSelection => "Delete selection",
+            Self::DeleteTrack => "Delete track",
             Self::CopySelection => "Copy selection",
             Self::CutSelection => "Cut selection",
             Self::PasteSelection => "Paste",
@@ -131,6 +152,9 @@ impl Action {
             Self::SaveProjectAs => "Save As...",
             Self::NewProject => "New project",
             Self::OpenProjectBrowser => "Projects...",
+            Self::OpenInstrumentBrowser => "Add instrument...",
+            Self::OpenEffectBrowser => "Add effect...",
+            Self::OpenSampleBrowser => "Add sample...",
             Self::BackToPlaylist => "Back / close",
             Self::ToggleMixer => "Mixer",
             Self::ToggleDevices => "Devices",
@@ -313,6 +337,7 @@ impl ShortcutRegistry {
                     Action::DeleteSelection,
                     Binding::Key(Chord::new(Key::Backspace)),
                 ),
+                (Action::DeleteTrack, Binding::Key(Chord::new(Key::X))),
                 (Action::CopySelection, Binding::CopyEvent),
                 (Action::CutSelection, Binding::CutEvent),
                 (Action::PasteSelection, Binding::PasteEvent),
@@ -334,6 +359,18 @@ impl ShortcutRegistry {
                 (
                     Action::NewProject,
                     Binding::Key(Chord::ctrl_or_cmd(Key::N)),
+                ),
+                (
+                    Action::OpenInstrumentBrowser,
+                    Binding::Key(Chord::ctrl_or_cmd(Key::W)),
+                ),
+                (
+                    Action::OpenEffectBrowser,
+                    Binding::Key(Chord::ctrl_or_cmd(Key::F)),
+                ),
+                (
+                    Action::OpenSampleBrowser,
+                    Binding::Key(Chord::ctrl_or_cmd(Key::B)),
                 ),
                 (
                     Action::BackToPlaylist,

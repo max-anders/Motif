@@ -25,6 +25,23 @@ const TILE_WIDTH: f32 = 146.0;
 const TILE_HEIGHT: f32 = 74.0;
 const TILE_ROUNDING: f32 = 4.0;
 const TILE_GAP: f32 = 8.0;
+const STRIP_HEADER_HEIGHT: f32 = 28.0;
+const STRIP_PADDING: f32 = 8.0;
+/// Default height for the bottom device strip (header + one tile row + scrollbar).
+pub const DEVICES_STRIP_HEIGHT: f32 =
+    STRIP_HEADER_HEIGHT + TILE_HEIGHT + STRIP_PADDING + MINI_SCROLLBAR_WIDTH;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChainLayout {
+    Page,
+    Strip,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DevicesStripOutput {
+    pub expand: bool,
+    pub hide: bool,
+}
 // Ruler + one lane + the horizontal scrollbar strip; no vertical scroll, no gap.
 const MINI_PLAYLIST_HEIGHT: f32 = RULER_HEIGHT + LANE_HEIGHT + MINI_SCROLLBAR_WIDTH;
 // Matches `with_solid_scrollbars` bar width so the lane sits flush above the bar.
@@ -46,6 +63,8 @@ pub struct DevicesUi {
     plugin_editor_request: Option<PluginEditorRequest>,
     /// Delete track request (consumed by app).
     delete_track_request: Option<u64>,
+    /// Track header currently under the pointer (for Delete track shortcut).
+    hovered_track_header: Option<u64>,
     /// Open clip request (consumed by app for piano-roll transition).
     open_clip_request: Option<u64>,
     mini_selected_clip_ids: HashSet<u64>,
@@ -64,6 +83,7 @@ impl Default for DevicesUi {
             change_instrument_search: String::new(),
             plugin_editor_request: None,
             delete_track_request: None,
+            hovered_track_header: None,
             open_clip_request: None,
             mini_selected_clip_ids: HashSet::new(),
             mini_active_drag: None,
@@ -85,6 +105,10 @@ impl DevicesUi {
         self.delete_track_request.take()
     }
 
+    pub fn hovered_track_header(&self) -> Option<u64> {
+        self.hovered_track_header
+    }
+
     pub fn take_open_clip_request(&mut self) -> Option<u64> {
         self.open_clip_request.take()
     }
@@ -103,6 +127,7 @@ impl DevicesUi {
         theme: &ThemeColors,
     ) {
         ui.painter().rect_filled(ui.max_rect(), 0.0, theme.panel_bg);
+        self.hovered_track_header = None;
         if selected_track.and_then(|id| project.track(id)).is_none() {
             *selected_track = project.tracks.first().map(|track| track.id);
         }
@@ -166,6 +191,7 @@ impl DevicesUi {
                                             &mut select_request,
                                             &mut self.plugin_editor_request,
                                             &mut self.delete_track_request,
+                                            &mut self.hovered_track_header,
                                             "devices",
                                         );
                                         if let Some(id) = select_request {
@@ -196,7 +222,7 @@ impl DevicesUi {
                             theme,
                         );
                         ui.add_space(8.0);
-                        self.show_fx_grid(
+                        self.show_device_chain(
                             ui,
                             project,
                             engine,
@@ -205,6 +231,7 @@ impl DevicesUi {
                             device_errors,
                             &track_snapshot,
                             theme,
+                            ChainLayout::Page,
                         );
                     }
                 } else {
@@ -214,6 +241,68 @@ impl DevicesUi {
                 }
             });
         });
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn show_strip(
+        &mut self,
+        ui: &mut Ui,
+        project: &mut Project,
+        engine: &mut dyn DawEngine,
+        catalog: &PluginCatalog,
+        history: &mut EditHistory,
+        device_errors: &HashMap<(u64, u64), String>,
+        selected_track: &mut Option<u64>,
+        theme: &ThemeColors,
+    ) -> DevicesStripOutput {
+        ui.painter().rect_filled(ui.max_rect(), 0.0, theme.panel_bg);
+        let mut output = DevicesStripOutput::default();
+
+        if selected_track.and_then(|id| project.track(id)).is_none() {
+            *selected_track = project.tracks.first().map(|track| track.id);
+        }
+
+        let Some(track_id) = *selected_track else {
+            ui.centered_and_justified(|ui| {
+                ui.label(RichText::new("No tracks in project").color(theme.text_muted));
+            });
+            return output;
+        };
+
+        let Some(track_snapshot) = project.track(track_id).cloned() else {
+            return output;
+        };
+
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new(&track_snapshot.name)
+                    .color(theme.track_header_text)
+                    .strong(),
+            );
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui.small_button("Hide").clicked() {
+                    output.hide = true;
+                }
+                if ui.button("Expand").clicked() {
+                    output.expand = true;
+                }
+            });
+        });
+        ui.add_space(4.0);
+
+        self.show_device_chain(
+            ui,
+            project,
+            engine,
+            catalog,
+            history,
+            device_errors,
+            &track_snapshot,
+            theme,
+            ChainLayout::Strip,
+        );
+
+        output
     }
 }
 
@@ -385,7 +474,74 @@ impl DevicesUi {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn show_fx_grid(
+    fn show_device_chain(
+        &mut self,
+        ui: &mut Ui,
+        project: &mut Project,
+        engine: &mut dyn DawEngine,
+        catalog: &PluginCatalog,
+        history: &mut EditHistory,
+        device_errors: &HashMap<(u64, u64), String>,
+        track: &Track,
+        theme: &ThemeColors,
+        layout: ChainLayout,
+    ) {
+        if layout == ChainLayout::Page {
+            ui.label(
+                RichText::new(format!("Track devices: {}", track.name))
+                    .color(theme.track_header_text)
+                    .strong(),
+            );
+            ui.add_space(4.0);
+        }
+
+        match layout {
+            ChainLayout::Page => {
+                egui::ScrollArea::vertical()
+                    .id_salt(("devices_fx_grid", track.id))
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing = Vec2::new(TILE_GAP, TILE_GAP);
+                        ui.horizontal_wrapped(|ui| {
+                            self.paint_device_chain_tiles(
+                                ui,
+                                project,
+                                engine,
+                                catalog,
+                                history,
+                                device_errors,
+                                track,
+                                theme,
+                            );
+                        });
+                    });
+            }
+            ChainLayout::Strip => {
+                egui::ScrollArea::horizontal()
+                    .id_salt(("devices_fx_strip", track.id))
+                    .auto_shrink([false, false])
+                    .scroll_bar_visibility(ScrollBarVisibility::AlwaysVisible)
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing = Vec2::new(TILE_GAP, TILE_GAP);
+                        ui.horizontal(|ui| {
+                            self.paint_device_chain_tiles(
+                                ui,
+                                project,
+                                engine,
+                                catalog,
+                                history,
+                                device_errors,
+                                track,
+                                theme,
+                            );
+                        });
+                    });
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn paint_device_chain_tiles(
         &mut self,
         ui: &mut Ui,
         project: &mut Project,
@@ -396,107 +552,89 @@ impl DevicesUi {
         track: &Track,
         theme: &ThemeColors,
     ) {
-        ui.label(
-            RichText::new(format!("Track devices: {}", track.name))
-                .color(theme.track_header_text)
-                .strong(),
+        instrument_tile(
+            ui,
+            project,
+            track,
+            catalog,
+            history,
+            &mut self.change_instrument_search,
+            track.id,
+            theme,
         );
-        ui.add_space(4.0);
 
-        egui::ScrollArea::vertical()
-            .id_salt(("devices_fx_grid", track.id))
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                ui.spacing_mut().item_spacing = Vec2::new(TILE_GAP, TILE_GAP);
-                ui.horizontal_wrapped(|ui| {
-                    instrument_tile(
-                        ui,
-                        project,
-                        track,
-                        catalog,
-                        history,
-                        &mut self.change_instrument_search,
-                        track.id,
-                        theme,
-                    );
+        let mut drag_from: Option<usize> = None;
+        let mut drag_to: Option<usize> = None;
 
-                    let mut drag_from: Option<usize> = None;
-                    let mut drag_to: Option<usize> = None;
+        for (index, device) in track.devices.iter().enumerate() {
+            let status = device_errors.get(&(track.id, device.id)).map(String::as_str);
+            let editor_open = engine.plugin_editor_is_open(PluginRef::device(track.id, device.id));
+            let slot_ready = engine.plugin_slot_ready(PluginRef::device(track.id, device.id));
 
-                    for (index, device) in track.devices.iter().enumerate() {
-                        let status = device_errors.get(&(track.id, device.id)).map(String::as_str);
-                        let editor_open = engine.plugin_editor_is_open(PluginRef::device(track.id, device.id));
-                        let slot_ready = engine.plugin_slot_ready(PluginRef::device(track.id, device.id));
-
-                        let payload = (track.id, index);
-                        let tile_id = Id::new(("device_tile", track.id, device.id));
-                        let mut action = DeviceTileAction::None;
-                        let drag_result = ui.dnd_drag_source(tile_id, payload, |ui| {
-                            action =
-                                device_tile_contents(ui, device, status, editor_open, slot_ready, theme);
-                        });
-                        let response = drag_result.response;
-
-                        if let Some(pointer) = ui.input(|input| input.pointer.interact_pos()) {
-                            if let Some(hovered) = response.dnd_hover_payload::<(u64, usize)>() {
-                                if hovered.0 == track.id {
-                                    let insert_idx = if pointer.x < response.rect.center().x {
-                                        index
-                                    } else {
-                                        index + 1
-                                    };
-                                    if let Some(released) =
-                                        response.dnd_release_payload::<(u64, usize)>()
-                                    {
-                                        if released.0 == track.id {
-                                            drag_from = Some(released.1);
-                                            drag_to = Some(insert_idx);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        match action {
-                            DeviceTileAction::None => {}
-                            DeviceTileAction::ToggleBypass => {
-                                history.push_before(project.clone());
-                                project.set_device_bypass(track.id, device.id, !device.bypassed);
-                            }
-                            DeviceTileAction::Remove => {
-                                history.push_before(project.clone());
-                                project.remove_device(track.id, device.id);
-                            }
-                            DeviceTileAction::OpenEditor => {
-                                self.plugin_editor_request = Some(PluginEditorRequest::Open {
-                                    track_id: track.id,
-                                    device_id: Some(device.id),
-                                    title: device.name.clone(),
-                                });
-                            }
-                            DeviceTileAction::CloseEditor => {
-                                self.plugin_editor_request = Some(PluginEditorRequest::Close {
-                                    track_id: track.id,
-                                    device_id: Some(device.id),
-                                });
-                            }
-                        }
-                    }
-
-                    if let (Some(from), Some(mut to)) = (drag_from, drag_to) {
-                        if from < to {
-                            to -= 1;
-                        }
-                        if from != to {
-                            history.begin(project);
-                            project.move_device(track.id, from, to);
-                            history.commit(project);
-                        }
-                    }
-
-                    add_fx_tile(ui, project, catalog, &mut self.add_fx_search, track.id);
-                });
+            let payload = (track.id, index);
+            let tile_id = Id::new(("device_tile", track.id, device.id));
+            let mut action = DeviceTileAction::None;
+            let drag_result = ui.dnd_drag_source(tile_id, payload, |ui| {
+                action = device_tile_contents(ui, device, status, editor_open, slot_ready, theme);
             });
+            let response = drag_result.response;
+
+            if let Some(pointer) = ui.input(|input| input.pointer.interact_pos()) {
+                if let Some(hovered) = response.dnd_hover_payload::<(u64, usize)>() {
+                    if hovered.0 == track.id {
+                        let insert_idx = if pointer.x < response.rect.center().x {
+                            index
+                        } else {
+                            index + 1
+                        };
+                        if let Some(released) = response.dnd_release_payload::<(u64, usize)>() {
+                            if released.0 == track.id {
+                                drag_from = Some(released.1);
+                                drag_to = Some(insert_idx);
+                            }
+                        }
+                    }
+                }
+            }
+
+            match action {
+                DeviceTileAction::None => {}
+                DeviceTileAction::ToggleBypass => {
+                    history.push_before(project.clone());
+                    project.set_device_bypass(track.id, device.id, !device.bypassed);
+                }
+                DeviceTileAction::Remove => {
+                    history.push_before(project.clone());
+                    project.remove_device(track.id, device.id);
+                }
+                DeviceTileAction::OpenEditor => {
+                    self.plugin_editor_request = Some(PluginEditorRequest::Open {
+                        track_id: track.id,
+                        device_id: Some(device.id),
+                        title: device.name.clone(),
+                    });
+                }
+                DeviceTileAction::CloseEditor => {
+                    self.plugin_editor_request = Some(PluginEditorRequest::Close {
+                        track_id: track.id,
+                        device_id: Some(device.id),
+                    });
+                }
+            }
+        }
+
+        if let (Some(from), Some(mut to)) = (drag_from, drag_to) {
+            if from < to {
+                to -= 1;
+            }
+            if from != to {
+                history.begin(project);
+                project.move_device(track.id, from, to);
+                history.commit(project);
+            }
+        }
+
+        add_fx_tile(ui, project, catalog, &mut self.add_fx_search, track.id);
     }
 }
 
@@ -553,6 +691,7 @@ fn instrument_tile(
             catalog,
             change_instrument_search,
             &format!("devfx_chg_{track_id}"),
+            false,
         ) {
             let rename = match &choice {
                 InstrumentChoice::Plugin(entry) => Some(entry.name.clone()),
@@ -668,7 +807,13 @@ fn add_fx_tile(
 ) {
     ui.menu_button("+ Add FX", |ui| {
         if let Some(entry) =
-            show_effect_picker(ui, catalog, add_fx_search, &format!("devfx_add_{track_id}"))
+            show_effect_picker(
+                ui,
+                catalog,
+                add_fx_search,
+                &format!("devfx_add_{track_id}"),
+                false,
+            )
         {
             project.add_device(track_id, entry.format, &entry.unique_id, &entry.name);
             add_fx_search.clear();

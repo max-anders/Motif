@@ -1,16 +1,3426 @@
 {
-  "scanned_at_unix": 1784854143,
-  "extra_paths": [
-    "/home/max/.clap"
-  ],
+  "scanned_at_unix": 1784880139,
+  "extra_paths": [],
   "entries": [
+    {
+      "name": "A/B Tester x2 Mono",
+      "vendor": "",
+      "unique_id": "64737020616270326d2020206162326d",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "A/B Tester x2 Stereo",
+      "vendor": "",
+      "unique_id": "64737020616270327320202061623273",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "A/B Tester x4 Mono",
+      "vendor": "",
+      "unique_id": "64737020616270346d2020206162346d",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "A/B Tester x4 Stereo",
+      "vendor": "",
+      "unique_id": "64737020616270347320202061623473",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "A/B Tester x8 Mono",
+      "vendor": "",
+      "unique_id": "64737020616270386d2020206162386d",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "A/B Tester x8 Stereo",
+      "vendor": "",
+      "unique_id": "64737020616270387320202061623873",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Artistic Delay Mono",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.art_delay_mono",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Artistic Delay Mono",
+      "vendor": "",
+      "unique_id": "647370206b7631366d20202076786c6c",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Artistic Delay Stereo",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.art_delay_stereo",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Artistic Delay Stereo",
+      "vendor": "",
+      "unique_id": "647370206b763136732020206b626272",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Autogain Mono",
+      "vendor": "",
+      "unique_id": "647370206167316d202020206167316d",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Autogain Stereo",
+      "vendor": "",
+      "unique_id": "64737020616731732020202061673173",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Beat Breather Mono",
+      "vendor": "",
+      "unique_id": "647370206262316d202020206262316d",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Beat Breather Stereo",
+      "vendor": "",
+      "unique_id": "64737020626231732020202062623173",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Chorus Mono",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.chorus_mono",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Chorus Mono",
+      "vendor": "",
+      "unique_id": "647370206368316d202020206368316d",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Chorus Stereo",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.chorus_stereo",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Chorus Stereo",
+      "vendor": "",
+      "unique_id": "64737020636831732020202063683173",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Clipper Mono",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.clipper_mono",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Clipper Mono",
+      "vendor": "",
+      "unique_id": "64737020636c316d20202020636c316d",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Clipper Stereo",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.clipper_stereo",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Clipper Stereo",
+      "vendor": "",
+      "unique_id": "64737020636c317320202020636c3173",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Compressor LeftRight",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.compressor_lr",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Compressor LeftRight",
+      "vendor": "",
+      "unique_id": "647370206b316c7220202020336e616d",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Compressor MidSide",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.compressor_ms",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Compressor MidSide",
+      "vendor": "",
+      "unique_id": "647370206b316d73202020206a6a6566",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Compressor Mono",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.compressor_mono",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Compressor Mono",
+      "vendor": "",
+      "unique_id": "647370206b316d202020202062677379",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Compressor Stereo",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.compressor_stereo",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Compressor Stereo",
+      "vendor": "",
+      "unique_id": "647370206b31732020202020756e7363",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Crossover LeftRight x8",
+      "vendor": "",
+      "unique_id": "647370206677386c7220202077766272",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Crossover MidSide x8",
+      "vendor": "",
+      "unique_id": "647370206677386d73202020766c7176",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Crossover Mono x8",
+      "vendor": "",
+      "unique_id": "647370206677386d20202020726d6e76",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Crossover Stereo x8",
+      "vendor": "",
+      "unique_id": "6473702066773873202020206f6f7162",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Delay Compensator Mono",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.comp_delay_mono",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Delay Compensator Mono",
+      "vendor": "",
+      "unique_id": "647370207661316d202020206a617638",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Delay Compensator Stereo",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.comp_delay_stereo",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Delay Compensator Stereo",
+      "vendor": "",
+      "unique_id": "64737020766131732020202071707772",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Delay Compensator x2 Stereo",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.comp_delay_x2_stereo",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Delay Compensator x2 Stereo",
+      "vendor": "",
+      "unique_id": "64737020766132732020202066776433",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Dynamics Processor LeftRight",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.dyna_processor_lr",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Dynamics Processor LeftRight",
+      "vendor": "",
+      "unique_id": "647370206470316c72202020686c3967",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Dynamics Processor MidSide",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.dyna_processor_ms",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Dynamics Processor MidSide",
+      "vendor": "",
+      "unique_id": "647370206470316d7320202075767267",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Dynamics Processor Mono",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.dyna_processor_mono",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Dynamics Processor Mono",
+      "vendor": "",
+      "unique_id": "647370206470316d202020206c71706d",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Dynamics Processor Stereo",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.dyna_processor_stereo",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Dynamics Processor Stereo",
+      "vendor": "",
+      "unique_id": "64737020647031732020202061617439",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Expander LeftRight",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.expander_lr",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Expander LeftRight",
+      "vendor": "",
+      "unique_id": "6473702065316c72202020207a767366",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Expander MidSide",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.expander_ms",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Expander MidSide",
+      "vendor": "",
+      "unique_id": "6473702065316d73202020206562686b",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Expander Mono",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.expander_mono",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Expander Mono",
+      "vendor": "",
+      "unique_id": "6473702065316d202020202074646471",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Expander Stereo",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.expander_stereo",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Expander Stereo",
+      "vendor": "",
+      "unique_id": "64737020653173202020202061753066",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Filter Mono",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.filter_mono",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Filter Mono",
+      "vendor": "",
+      "unique_id": "64737020666c746d20202020666c746d",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Filter Stereo",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.filter_stereo",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Filter Stereo",
+      "vendor": "",
+      "unique_id": "64737020666c747320202020666c7473",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Flanger Mono",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.flanger_mono",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Flanger Mono",
+      "vendor": "",
+      "unique_id": "6473702066316d20202020206c66316d",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Flanger Stereo",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.flanger_stereo",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Flanger Stereo",
+      "vendor": "",
+      "unique_id": "6473702066317320202020206c663173",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Gate LeftRight",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.gate_lr",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Gate LeftRight",
+      "vendor": "",
+      "unique_id": "6473702067316c722020202069636d77",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Gate MidSide",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.gate_ms",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Gate MidSide",
+      "vendor": "",
+      "unique_id": "6473702067316d73202020207a636931",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Gate Mono",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.gate_mono",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Gate Mono",
+      "vendor": "",
+      "unique_id": "6473702067316d202020202075723065",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Gate Stereo",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.gate_stereo",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Gate Stereo",
+      "vendor": "",
+      "unique_id": "6473702067317320202020207767346f",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "GOTT Compressor LeftRight",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.gott_compressor_lr",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "GOTT Compressor LeftRight",
+      "vendor": "",
+      "unique_id": "647370206763316c722020206e67636c",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "GOTT Compressor MidSide",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.gott_compressor_ms",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "GOTT Compressor MidSide",
+      "vendor": "",
+      "unique_id": "647370206763316d732020206e67634d",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "GOTT Compressor Mono",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.gott_compressor_mono",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "GOTT Compressor Mono",
+      "vendor": "",
+      "unique_id": "647370206763316d202020206e67636d",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "GOTT Compressor Stereo",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.gott_compressor_stereo",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "GOTT Compressor Stereo",
+      "vendor": "",
+      "unique_id": "6473702067633173202020206e676373",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Graphic Equalizer x16 LeftRight",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.graph_equalizer_x16_lr",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Graphic Equalizer x16 LeftRight",
+      "vendor": "",
+      "unique_id": "64737020676531366c7220207a656669",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Graphic Equalizer x16 MidSide",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.graph_equalizer_x16_ms",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Graphic Equalizer x16 MidSide",
+      "vendor": "",
+      "unique_id": "64737020676531366d732020776f7973",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Graphic Equalizer x16 Mono",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.graph_equalizer_x16_mono",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Graphic Equalizer x16 Mono",
+      "vendor": "",
+      "unique_id": "64737020676531366d2020207276776b",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Graphic Equalizer x16 Stereo",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.graph_equalizer_x16_stereo",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Graphic Equalizer x16 Stereo",
+      "vendor": "",
+      "unique_id": "6473702067653136732020206172676c",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Graphic Equalizer x32 LeftRight",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.graph_equalizer_x32_lr",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Graphic Equalizer x32 LeftRight",
+      "vendor": "",
+      "unique_id": "64737020676533326c72202030686575",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Graphic Equalizer x32 MidSide",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.graph_equalizer_x32_ms",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Graphic Equalizer x32 MidSide",
+      "vendor": "",
+      "unique_id": "64737020676533326d7320206b75386a",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Graphic Equalizer x32 Mono",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.graph_equalizer_x32_mono",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Graphic Equalizer x32 Mono",
+      "vendor": "",
+      "unique_id": "64737020676533326d202020766e6361",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Graphic Equalizer x32 Stereo",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.graph_equalizer_x32_stereo",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Graphic Equalizer x32 Stereo",
+      "vendor": "",
+      "unique_id": "6473702067653332732020206e767364",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Impulse Responses Mono",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.impulse_responses_mono",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Impulse Responses Mono",
+      "vendor": "",
+      "unique_id": "647370206961316d2020202077767774",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Impulse Responses Stereo",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.impulse_responses_stereo",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Impulse Responses Stereo",
+      "vendor": "",
+      "unique_id": "647370206961317320202020316b687a",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Impulse Reverb Mono",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.impulse_reverb_mono",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Impulse Reverb Mono",
+      "vendor": "",
+      "unique_id": "64737020696e68316d20202066676771",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Impulse Reverb Stereo",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.impulse_reverb_stereo",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Impulse Reverb Stereo",
+      "vendor": "",
+      "unique_id": "64737020696e6831732020206f397a6a",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Latency Meter",
+      "vendor": "",
+      "unique_id": "647370206c6d316d2020202061626565",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Limiter Mono",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.limiter_mono",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Limiter Mono",
+      "vendor": "",
+      "unique_id": "6473702062316d20202020206a7a357a",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Limiter Stereo",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.limiter_stereo",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Limiter Stereo",
+      "vendor": "",
+      "unique_id": "64737020623173202020202072667563",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Loudness Compensator Mono",
+      "vendor": "",
+      "unique_id": "647370206c6b316d20202020656e6f39",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Loudness Compensator Stereo",
+      "vendor": "",
+      "unique_id": "647370206c6b31732020202077766130",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Matcher Mono",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.matcher_mono",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Matcher Mono",
+      "vendor": "",
+      "unique_id": "647370206d71316d202020204d51314d",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Matcher Stereo",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.matcher_stereo",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Matcher Stereo",
+      "vendor": "",
+      "unique_id": "647370206d713173202020204d513153",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Mixer x16 Mono",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.mixer_x16_mono",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Mixer x16 Mono",
+      "vendor": "",
+      "unique_id": "647370206d31366d202020206d31366d",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Mixer x16 Stereo",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.mixer_x16_stereo",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Mixer x16 Stereo",
+      "vendor": "",
+      "unique_id": "647370206d313673202020206d313673",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Mixer x4 Mono",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.mixer_x4_mono",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Mixer x4 Mono",
+      "vendor": "",
+      "unique_id": "647370206d346d20202020206d30346d",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Mixer x4 Stereo",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.mixer_x4_stereo",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Mixer x4 Stereo",
+      "vendor": "",
+      "unique_id": "647370206d347320202020206d303473",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Mixer x8 Mono",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.mixer_x8_mono",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Mixer x8 Mono",
+      "vendor": "",
+      "unique_id": "647370206d386d20202020206d30386d",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Mixer x8 Stereo",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.mixer_x8_stereo",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Mixer x8 Stereo",
+      "vendor": "",
+      "unique_id": "647370206d387320202020206d303873",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Multi-Sampler x12 DirectOut",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.multisampler_x12_do",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "instrument"
+    },
+    {
+      "name": "Multi-Sampler x12 DirectOut",
+      "vendor": "",
+      "unique_id": "64737020737a313264202020377a6b6a",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Multi-Sampler x12 Stereo",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.multisampler_x12",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "instrument"
+    },
+    {
+      "name": "Multi-Sampler x12 Stereo",
+      "vendor": "",
+      "unique_id": "64737020737a313220202020636c7273",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Multi-Sampler x24 DirectOut",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.multisampler_x24_do",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "instrument"
+    },
+    {
+      "name": "Multi-Sampler x24 DirectOut",
+      "vendor": "",
+      "unique_id": "64737020737a32346420202076696d6a",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Multi-Sampler x24 Stereo",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.multisampler_x24",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "instrument"
+    },
+    {
+      "name": "Multi-Sampler x24 Stereo",
+      "vendor": "",
+      "unique_id": "64737020737a3234202020207669736c",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Multi-Sampler x48 DirectOut",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.multisampler_x48_do",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "instrument"
+    },
+    {
+      "name": "Multi-Sampler x48 DirectOut",
+      "vendor": "",
+      "unique_id": "64737020737a343864202020626c7969",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Multi-Sampler x48 Stereo",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.multisampler_x48",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "instrument"
+    },
+    {
+      "name": "Multi-Sampler x48 Stereo",
+      "vendor": "",
+      "unique_id": "64737020737a343820202020686e6a34",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Multiband Clipper Mono",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.mb_clipper_mono",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Multiband Clipper Mono",
+      "vendor": "",
+      "unique_id": "647370206d62636c316d2020434c314d",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Multiband Clipper Stereo",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.mb_clipper_stereo",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Multiband Clipper Stereo",
+      "vendor": "",
+      "unique_id": "647370206d62636c31732020434c3153",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Multiband Compressor LeftRight x8",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.mb_compressor_lr",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Multiband Compressor LeftRight x8",
+      "vendor": "",
+      "unique_id": "647370206d626b386c72202030656766",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Multiband Compressor MidSide x8",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.mb_compressor_ms",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Multiband Compressor MidSide x8",
+      "vendor": "",
+      "unique_id": "647370206d626b386d73202076686369",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Multiband Compressor Mono x8",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.mb_compressor_mono",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Multiband Compressor Mono x8",
+      "vendor": "",
+      "unique_id": "647370206d626b386d20202066646975",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Multiband Compressor Stereo x8",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.mb_compressor_stereo",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Multiband Compressor Stereo x8",
+      "vendor": "",
+      "unique_id": "647370206d626b3873202020676a736e",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Multiband Dynamics Processor LeftRight x8",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.mb_dyna_processor_lr",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Multiband Dynamics Processor LeftRight x8",
+      "vendor": "",
+      "unique_id": "647370206d626470386c72206d647032",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Multiband Dynamics Processor MidSide x8",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.mb_dyna_processor_ms",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Multiband Dynamics Processor MidSide x8",
+      "vendor": "",
+      "unique_id": "647370206d626470386d73206d647033",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Multiband Dynamics Processor Mono x8",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.mb_dyna_processor_mono",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Multiband Dynamics Processor Mono x8",
+      "vendor": "",
+      "unique_id": "647370206d626470386d20206d647030",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Multiband Dynamics Processor Stereo x8",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.mb_dyna_processor_stereo",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Multiband Dynamics Processor Stereo x8",
+      "vendor": "",
+      "unique_id": "647370206d626470387320206d647031",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Multiband Expander LeftRight x8",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.mb_expander_lr",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Multiband Expander LeftRight x8",
+      "vendor": "",
+      "unique_id": "647370206d6265386c72202062666d6b",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Multiband Expander MidSide x8",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.mb_expander_ms",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Multiband Expander MidSide x8",
+      "vendor": "",
+      "unique_id": "647370206d6265386d732020756c7465",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Multiband Expander Mono x8",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.mb_expander_mono",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Multiband Expander Mono x8",
+      "vendor": "",
+      "unique_id": "647370206d6265386d2020206d79676f",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Multiband Expander Stereo x8",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.mb_expander_stereo",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Multiband Expander Stereo x8",
+      "vendor": "",
+      "unique_id": "647370206d62653873202020686f6274",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Multiband Gate LeftRight x8",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.mb_gate_lr",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Multiband Gate LeftRight x8",
+      "vendor": "",
+      "unique_id": "647370206d6267386c7220206574616a",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Multiband Gate MidSide x8",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.mb_gate_ms",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Multiband Gate MidSide x8",
+      "vendor": "",
+      "unique_id": "647370206d6267386d73202078396e72",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Multiband Gate Mono x8",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.mb_gate_mono",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Multiband Gate Mono x8",
+      "vendor": "",
+      "unique_id": "647370206d6267386d202020626d6868",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Multiband Gate Stereo x8",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.mb_gate_stereo",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Multiband Gate Stereo x8",
+      "vendor": "",
+      "unique_id": "647370206d6267387320202079737531",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Multiband Limiter Mono",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.mb_limiter_mono",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Multiband Limiter Mono",
+      "vendor": "",
+      "unique_id": "647370206d6262316d2020206d626c6d",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Multiband Limiter Stereo",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.mb_limiter_stereo",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Multiband Limiter Stereo",
+      "vendor": "",
+      "unique_id": "647370206d626231732020206d626c73",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Multiband Ring Modulated Sidechain Mono",
+      "vendor": "",
+      "unique_id": "647370206d6272316d62346d7363316d",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Multiband Ring Modulated Sidechain Stereo",
+      "vendor": "",
+      "unique_id": "647370206d6252316d62346d73633173",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Noise Generator x1",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.noise_generator_x1",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Noise Generator x1",
+      "vendor": "",
+      "unique_id": "647370206e673120202020206c6e6730",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Noise Generator x2",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.noise_generator_x2",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Noise Generator x2",
+      "vendor": "",
+      "unique_id": "647370206e673220202020206c6e6731",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Noise Generator x4",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.noise_generator_x4",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Noise Generator x4",
+      "vendor": "",
+      "unique_id": "647370206e673420202020206c6e6732",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Oscillator Mono",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.oscillator_mono",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Oscillator Mono",
+      "vendor": "",
+      "unique_id": "647370206f316d2020202020736e7471",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Oscilloscope x1",
+      "vendor": "",
+      "unique_id": "647370206f3120202020202071626c61",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Oscilloscope x2",
+      "vendor": "",
+      "unique_id": "647370206f3220202020202075627362",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Oscilloscope x4",
+      "vendor": "",
+      "unique_id": "647370206f3420202020202061747669",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Parametric Equalizer x16 LeftRight",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.para_equalizer_x16_lr",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Parametric Equalizer x16 LeftRight",
+      "vendor": "",
+      "unique_id": "64737020706531366c722020346b6566",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Parametric Equalizer x16 MidSide",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.para_equalizer_x16_ms",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Parametric Equalizer x16 MidSide",
+      "vendor": "",
+      "unique_id": "64737020706531366d7320206f706a73",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Parametric Equalizer x16 Mono",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.para_equalizer_x16_mono",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Parametric Equalizer x16 Mono",
+      "vendor": "",
+      "unique_id": "64737020706531366d20202064683379",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Parametric Equalizer x16 Stereo",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.para_equalizer_x16_stereo",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Parametric Equalizer x16 Stereo",
+      "vendor": "",
+      "unique_id": "64737020706531367320202061356572",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Parametric Equalizer x32 LeftRight",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.para_equalizer_x32_lr",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Parametric Equalizer x32 LeftRight",
+      "vendor": "",
+      "unique_id": "64737020706533326c722020696c716a",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Parametric Equalizer x32 MidSide",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.para_equalizer_x32_ms",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Parametric Equalizer x32 MidSide",
+      "vendor": "",
+      "unique_id": "64737020706533326d7320206c677a39",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Parametric Equalizer x32 Mono",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.para_equalizer_x32_mono",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Parametric Equalizer x32 Mono",
+      "vendor": "",
+      "unique_id": "64737020706533326d20202069307078",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Parametric Equalizer x32 Stereo",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.para_equalizer_x32_stereo",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Parametric Equalizer x32 Stereo",
+      "vendor": "",
+      "unique_id": "64737020706533327320202073326e7a",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Parametric Equalizer x8 LeftRight",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.para_equalizer_x8_lr",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Parametric Equalizer x8 LeftRight",
+      "vendor": "",
+      "unique_id": "647370207065386c72202020346b6538",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Parametric Equalizer x8 MidSide",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.para_equalizer_x8_ms",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Parametric Equalizer x8 MidSide",
+      "vendor": "",
+      "unique_id": "647370207065386d732020206f706a38",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Parametric Equalizer x8 Mono",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.para_equalizer_x8_mono",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Parametric Equalizer x8 Mono",
+      "vendor": "",
+      "unique_id": "647370207065386d2020202064683338",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Parametric Equalizer x8 Stereo",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.para_equalizer_x8_stereo",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Parametric Equalizer x8 Stereo",
+      "vendor": "",
+      "unique_id": "64737020706538732020202061356538",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Phase Detector",
+      "vendor": "",
+      "unique_id": "6473702070643120202020206a66667a",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Phaser Mono",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.phaser_mono",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Phaser Mono",
+      "vendor": "",
+      "unique_id": "647370207068316d202020207068316d",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Phaser Stereo",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.phaser_stereo",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Phaser Stereo",
+      "vendor": "",
+      "unique_id": "64737020706831732020202070683173",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Profiler Mono",
+      "vendor": "",
+      "unique_id": "6473702070316d202020202068777263",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Profiler Stereo",
+      "vendor": "",
+      "unique_id": "64737020703173202020202068756277",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Referencer Mono",
+      "vendor": "",
+      "unique_id": "647370207266316d202020207266316d",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Referencer Stereo",
+      "vendor": "",
+      "unique_id": "64737020726631732020202072663173",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Return Mono",
+      "vendor": "",
+      "unique_id": "647370207230316d202020207230316d",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Return Stereo",
+      "vendor": "",
+      "unique_id": "64737020723031732020202072303173",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Ring Modulated Sidechain Mono",
+      "vendor": "",
+      "unique_id": "64737020726d316d2020726d7363316d",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Ring Modulated Sidechain Stereo",
+      "vendor": "",
+      "unique_id": "64737020726d31732020726d73633173",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Room Builder Mono",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.room_builder_mono",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Room Builder Mono",
+      "vendor": "",
+      "unique_id": "647370207262316d2020202063716272",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Room Builder Stereo",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.room_builder_stereo",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Room Builder Stereo",
+      "vendor": "",
+      "unique_id": "6473702072623173202020206d707268",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sampler Mono",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.sampler_mono",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "instrument"
+    },
+    {
+      "name": "Sampler Mono",
+      "vendor": "",
+      "unique_id": "647370206b7a316d2020202063613472",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sampler Stereo",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.sampler_stereo",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "instrument"
+    },
+    {
+      "name": "Sampler Stereo",
+      "vendor": "",
+      "unique_id": "647370206b7a3173202020206b6a7733",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Send Mono",
+      "vendor": "",
+      "unique_id": "647370207330316d202020207330316d",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Send Stereo",
+      "vendor": "",
+      "unique_id": "64737020733031732020202073303173",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Autogain Mono",
+      "vendor": "",
+      "unique_id": "6473702073636167316d20206167314d",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Autogain Stereo",
+      "vendor": "",
+      "unique_id": "64737020736361673173202061673153",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Compressor LeftRight",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.sc_compressor_lr",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Compressor LeftRight",
+      "vendor": "",
+      "unique_id": "6473702073636b316c722020666f7767",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Compressor MidSide",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.sc_compressor_ms",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Compressor MidSide",
+      "vendor": "",
+      "unique_id": "6473702073636b316d732020696f7167",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Compressor Mono",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.sc_compressor_mono",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Compressor Mono",
+      "vendor": "",
+      "unique_id": "6473702073636b316d2020206c796a71",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Compressor Stereo",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.sc_compressor_stereo",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Compressor Stereo",
+      "vendor": "",
+      "unique_id": "6473702073636b317320202035787a69",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Dynamics Processor LeftRight",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.sc_dyna_processor_lr",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Dynamics Processor LeftRight",
+      "vendor": "",
+      "unique_id": "6473702073636470316c722073786d69",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Dynamics Processor MidSide",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.sc_dyna_processor_ms",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Dynamics Processor MidSide",
+      "vendor": "",
+      "unique_id": "6473702073636470316d732066636a39",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Dynamics Processor Mono",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.sc_dyna_processor_mono",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Dynamics Processor Mono",
+      "vendor": "",
+      "unique_id": "6473702073636470316d202061706b78",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Dynamics Processor Stereo",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.sc_dyna_processor_stereo",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Dynamics Processor Stereo",
+      "vendor": "",
+      "unique_id": "64737020736364703173202066716e65",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Expander LeftRight",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.sc_expander_lr",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Expander LeftRight",
+      "vendor": "",
+      "unique_id": "64737020736365316c722020706e7677",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Expander MidSide",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.sc_expander_ms",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Expander MidSide",
+      "vendor": "",
+      "unique_id": "64737020736365316d7320207a633064",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Expander Mono",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.sc_expander_mono",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Expander Mono",
+      "vendor": "",
+      "unique_id": "64737020736365316d2020207574756c",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Expander Stereo",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.sc_expander_stereo",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Expander Stereo",
+      "vendor": "",
+      "unique_id": "6473702073636531732020206c777176",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Gate LeftRight",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.sc_gate_lr",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Gate LeftRight",
+      "vendor": "",
+      "unique_id": "64737020736367316c722020666d786f",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Gate MidSide",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.sc_gate_ms",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Gate MidSide",
+      "vendor": "",
+      "unique_id": "64737020736367316d7320206c366c63",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Gate Mono",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.sc_gate_mono",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Gate Mono",
+      "vendor": "",
+      "unique_id": "64737020736367316d2020206e6e7a32",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Gate Stereo",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.sc_gate_stereo",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Gate Stereo",
+      "vendor": "",
+      "unique_id": "647370207363673173202020666f7367",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain GOTT Compressor LeftRight",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.sc_gott_compressor_lr",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain GOTT Compressor LeftRight",
+      "vendor": "",
+      "unique_id": "6473702073636763316c72207367636c",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain GOTT Compressor MidSide",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.sc_gott_compressor_ms",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain GOTT Compressor MidSide",
+      "vendor": "",
+      "unique_id": "6473702073636763316d73207367634d",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain GOTT Compressor Mono",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.sc_gott_compressor_mono",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain GOTT Compressor Mono",
+      "vendor": "",
+      "unique_id": "6473702073636763316d20207367636d",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain GOTT Compressor Stereo",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.sc_gott_compressor_stereo",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain GOTT Compressor Stereo",
+      "vendor": "",
+      "unique_id": "64737020736367633173202073676373",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Limiter Mono",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.sc_limiter_mono",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Limiter Mono",
+      "vendor": "",
+      "unique_id": "64737020736362316d2020206b797a75",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Limiter Stereo",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.sc_limiter_stereo",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Limiter Stereo",
+      "vendor": "",
+      "unique_id": "6473702073636231732020207a776637",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Matcher Mono",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.sc_matcher_mono",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Matcher Mono",
+      "vendor": "",
+      "unique_id": "6473702073636d71316d20204d51734d",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Matcher Stereo",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.sc_matcher_stereo",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Matcher Stereo",
+      "vendor": "",
+      "unique_id": "6473702073636d71317320204d517353",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Multiband Compressor LeftRight x8",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.sc_mb_compressor_lr",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Multiband Compressor LeftRight x8",
+      "vendor": "",
+      "unique_id": "6473702073636d626b386c726b767865",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Multiband Compressor MidSide x8",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.sc_mb_compressor_ms",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Multiband Compressor MidSide x8",
+      "vendor": "",
+      "unique_id": "6473702073636d626b386d73686a6470",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Multiband Compressor Mono x8",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.sc_mb_compressor_mono",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Multiband Compressor Mono x8",
+      "vendor": "",
+      "unique_id": "6473702073636d626b386d207676306d",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Multiband Compressor Stereo x8",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.sc_mb_compressor_stereo",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Multiband Compressor Stereo x8",
+      "vendor": "",
+      "unique_id": "6473702073636d626b3873207a71726e",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Multiband Dynamics Processor LeftRight x8",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.sc_mb_dyna_processor_lr",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Multiband Dynamics Processor LeftRight x8",
+      "vendor": "",
+      "unique_id": "6473702073636d626470386c6d647036",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Multiband Dynamics Processor MidSide x8",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.sc_mb_dyna_processor_ms",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Multiband Dynamics Processor MidSide x8",
+      "vendor": "",
+      "unique_id": "6473702073636d626470386d6d647037",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Multiband Dynamics Processor Mono x8",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.sc_mb_dyna_processor_mono",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Multiband Dynamics Processor Mono x8",
+      "vendor": "",
+      "unique_id": "6473702073636d626470386d6d647034",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Multiband Dynamics Processor Stereo x8",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.sc_mb_dyna_processor_stereo",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Multiband Dynamics Processor Stereo x8",
+      "vendor": "",
+      "unique_id": "6473702073636d62647038736d647035",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Multiband Expander LeftRight x8",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.sc_mb_expander_lr",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Multiband Expander LeftRight x8",
+      "vendor": "",
+      "unique_id": "6473702073636d6265386c726b786476",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Multiband Expander MidSide x8",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.sc_mb_expander_ms",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Multiband Expander MidSide x8",
+      "vendor": "",
+      "unique_id": "6473702073636d6265386d73776b6765",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Multiband Expander Mono x8",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.sc_mb_expander_mono",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Multiband Expander Mono x8",
+      "vendor": "",
+      "unique_id": "6473702073636d6265386d20737a6b66",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Multiband Expander Stereo x8",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.sc_mb_expander_stereo",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Multiband Expander Stereo x8",
+      "vendor": "",
+      "unique_id": "6473702073636d626538732066307172",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Multiband Gate LeftRight x8",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.sc_mb_gate_lr",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Multiband Gate LeftRight x8",
+      "vendor": "",
+      "unique_id": "6473702073636d6267386c726668666b",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Multiband Gate MidSide x8",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.sc_mb_gate_ms",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Multiband Gate MidSide x8",
+      "vendor": "",
+      "unique_id": "6473702073636d6267386d73756b7a73",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Multiband Gate Mono x8",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.sc_mb_gate_mono",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Multiband Gate Mono x8",
+      "vendor": "",
+      "unique_id": "6473702073636d6267386d206d687a38",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Multiband Gate Stereo x8",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.sc_mb_gate_stereo",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Multiband Gate Stereo x8",
+      "vendor": "",
+      "unique_id": "6473702073636d626738732072766a61",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Multiband Limiter Mono",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.sc_mb_limiter_mono",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Multiband Limiter Mono",
+      "vendor": "",
+      "unique_id": "6473702073636d6262316d206d626c4d",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Multiband Limiter Stereo",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.sc_mb_limiter_stereo",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Multiband Limiter Stereo",
+      "vendor": "",
+      "unique_id": "6473702073636d62623173206d626c53",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Slapback Delay Mono",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.slap_delay_mono",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Slapback Delay Mono",
+      "vendor": "",
+      "unique_id": "64737020736431366d20202067743064",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Slapback Delay Stereo",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.slap_delay_stereo",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Slapback Delay Stereo",
+      "vendor": "",
+      "unique_id": "6473702073643136732020203078786a",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Spectrum Analyzer x1",
+      "vendor": "",
+      "unique_id": "6473702073613120202020207174657a",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Spectrum Analyzer x12",
+      "vendor": "",
+      "unique_id": "647370207361313220202020746a336c",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Spectrum Analyzer x16",
+      "vendor": "",
+      "unique_id": "6473702073613136202020206e757a69",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Spectrum Analyzer x2",
+      "vendor": "",
+      "unique_id": "64737020736132202020202061773772",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Spectrum Analyzer x4",
+      "vendor": "",
+      "unique_id": "647370207361342020202020787a676f",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Spectrum Analyzer x8",
+      "vendor": "",
+      "unique_id": "64737020736138202020202065356862",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Surge Filter Mono",
+      "vendor": "",
+      "unique_id": "647370207366316d2020202066656c69",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Surge Filter Stereo",
+      "vendor": "",
+      "unique_id": "64737020736631732020202063726a66",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Trigger MIDI Mono",
+      "vendor": "",
+      "unique_id": "6473702074736d316d2020207434797a",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Trigger MIDI Stereo",
+      "vendor": "",
+      "unique_id": "6473702074736d317320202039637166",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Trigger Mono",
+      "vendor": "",
+      "unique_id": "647370207473316d202020207a676876",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Trigger Stereo",
+      "vendor": "",
+      "unique_id": "6473702074733173202020207a696b61",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
     {
       "name": "Vital",
       "vendor": "Vital Audio",
       "unique_id": "audio.vital.synth",
       "format": "clap",
       "path": "/home/max/.clap/Vital.clap",
-      "accepts_midi": false
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "instrument"
     },
     {
       "name": "Vital",
@@ -18,7 +3428,9 @@
       "unique_id": "56535456697461766974616c00000000",
       "format": "vst3",
       "path": "/home/max/.vst3/Vital.vst3",
-      "accepts_midi": false
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
     }
   ]
 }

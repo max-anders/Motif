@@ -79,6 +79,13 @@ impl EditHistory {
         self.open = None;
     }
 
+    /// Restore the pre-gesture snapshot and drop the open gesture (no undo entry).
+    pub fn abort(&mut self, project: &mut Project) {
+        if let Some(before) = self.open.take() {
+            *project = before;
+        }
+    }
+
     pub fn undo(&mut self, project: &mut Project) -> bool {
         self.open = None;
         let Some(previous) = self.undo.pop_back() else {
@@ -136,9 +143,12 @@ mod tests {
     fn tiny_project(n: u64) -> Project {
         let mut project = Project::default();
         // Distinguish snapshots via next ids / clip count.
-        for _ in 0..n {
-            let track_id = project.tracks[0].id;
-            project.add_clip_to_track(track_id, n as f32, 1.0);
+        // Default project already has a 4-beat clip at 0; place extras after it.
+        let track_id = project.tracks[0].id;
+        for i in 0..n {
+            project
+                .add_clip_to_track(track_id, 4.0 + i as f32, 1.0)
+                .expect("non-overlapping clip");
         }
         let _ = TrackInstrument::BuiltInPiano;
         project

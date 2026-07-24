@@ -127,6 +127,107 @@ impl Project {
         (value / SNAP_BEATS).round() * SNAP_BEATS
     }
 
+    /// Half-open beat ranges `[a_start, a_end)` and `[b_start, b_end)`.
+    /// Touching endpoints (adjacent clips) do not count as overlap.
+    pub fn beat_ranges_overlap(a_start: f32, a_end: f32, b_start: f32, b_end: f32) -> bool {
+        a_start < b_end && b_start < a_end
+    }
+
+    /// Whether `[start_beats, start_beats + length_beats)` is free on the track.
+    pub fn clip_range_free(
+        &self,
+        track_id: u64,
+        start_beats: f32,
+        length_beats: f32,
+        ignore_ids: &[u64],
+    ) -> bool {
+        let Some(track) = self.track(track_id) else {
+            return false;
+        };
+        let start = Self::snap_beats(start_beats.max(0.0));
+        let length = Self::snap_beats(length_beats.max(SNAP_BEATS));
+        !track.range_overlaps_any(start, start + length, ignore_ids)
+    }
+
+    /// Clamp a multi-clip move delta so no mover overlaps a non-moving clip on its track.
+    /// `ignore_ids` are additional clips movers may overlap (Shift+drag sources).
+    pub fn clamp_clip_move_delta(
+        &self,
+        originals: &[(u64, f32, f32)],
+        mut delta: f32,
+        ignore_ids: &[u64],
+    ) -> f32 {
+        if originals.is_empty() {
+            return delta;
+        }
+        let moving: std::collections::HashSet<u64> =
+            originals.iter().map(|(id, _, _)| *id).collect();
+        let min_start = originals
+            .iter()
+            .map(|(_, start, _)| *start)
+            .fold(f32::INFINITY, f32::min);
+        if min_start + delta < 0.0 {
+            delta = -min_start;
+        }
+
+        for &(clip_id, start, length) in originals {
+            let Some(track_id) = self.track_id_for_clip(clip_id) else {
+                continue;
+            };
+            let Some(track) = self.track(track_id) else {
+                continue;
+            };
+            let m_end = start + length;
+            for other in &track.clips {
+                if moving.contains(&other.id()) || ignore_ids.contains(&other.id()) {
+                    continue;
+                }
+                let o_start = other.start_beats();
+                let o_end = other.end_beats();
+                if delta >= 0.0 {
+                    if m_end <= o_start {
+                        delta = delta.min(o_start - m_end);
+                    }
+                } else if start >= o_end {
+                    delta = delta.max(o_end - start);
+                }
+            }
+        }
+        delta
+    }
+
+    /// Left edge a resize-start drag may not cross (neighbor end, or 0).
+    pub fn clip_resize_start_bound(&self, clip_id: u64, original_start: f32) -> f32 {
+        let Some(track_id) = self.track_id_for_clip(clip_id) else {
+            return 0.0;
+        };
+        let Some(track) = self.track(track_id) else {
+            return 0.0;
+        };
+        track
+            .clips
+            .iter()
+            .filter(|clip| clip.id() != clip_id && clip.end_beats() <= original_start)
+            .map(Clip::end_beats)
+            .fold(0.0_f32, f32::max)
+    }
+
+    /// Right edge a resize-end drag may not cross (`f32::INFINITY` if none).
+    pub fn clip_resize_end_bound(&self, clip_id: u64, original_end: f32) -> f32 {
+        let Some(track_id) = self.track_id_for_clip(clip_id) else {
+            return f32::INFINITY;
+        };
+        let Some(track) = self.track(track_id) else {
+            return f32::INFINITY;
+        };
+        track
+            .clips
+            .iter()
+            .filter(|clip| clip.id() != clip_id && clip.start_beats() >= original_end)
+            .map(Clip::start_beats)
+            .fold(f32::INFINITY, f32::min)
+    }
+
     pub fn clamp_pitch(pitch: i32) -> u8 {
         pitch.clamp(MIN_PITCH as i32, MAX_PITCH as i32) as u8
     }
@@ -245,14 +346,19 @@ impl Project {
         start_beats: f32,
         length_beats: f32,
     ) -> Option<u64> {
+        let start = Self::snap_beats(start_beats.max(0.0));
+        let length = Self::snap_beats(length_beats.max(SNAP_BEATS));
+        if !self.clip_range_free(track_id, start, length, &[]) {
+            return None;
+        }
         let clip_number = self.track(track_id)?.clips.len() + 1;
         let clip_id = self.next_clip_id();
         self.bump_clip_id();
         let clip = MidiClip {
             id: clip_id,
             name: format!("Clip {clip_number}"),
-            start_beats: Self::snap_beats(start_beats.max(0.0)),
-            length_beats: Self::snap_beats(length_beats.max(SNAP_BEATS)),
+            start_beats: start,
+            length_beats: length,
             notes: Vec::new(),
         };
         self.track_mut(track_id)?.clips.push(Clip::Midi(clip));
@@ -267,13 +373,18 @@ impl Project {
         start_beats: f32,
         length_beats: f32,
     ) -> Option<u64> {
+        let start = Self::snap_beats(start_beats.max(0.0));
+        let length = Self::snap_beats(length_beats.max(SNAP_BEATS));
+        if !self.clip_range_free(track_id, start, length, &[]) {
+            return None;
+        }
         let clip_id = self.next_clip_id();
         self.bump_clip_id();
         let clip = AudioClip {
             id: clip_id,
             name,
-            start_beats: Self::snap_beats(start_beats.max(0.0)),
-            length_beats: Self::snap_beats(length_beats.max(SNAP_BEATS)),
+            start_beats: start,
+            length_beats: length,
             source,
             gain_db: 0.0,
             missing: false,
@@ -483,15 +594,28 @@ impl Project {
     }
 
     /// Paste clipboard clips at an arrangement origin. Keeps each entry's track when present;
-    /// otherwise skips. Returns new clip ids.
+    /// otherwise skips. Skips placements that would overlap an existing or earlier-pasted clip.
+    /// Returns new clip ids.
     pub fn paste_clips(&mut self, clips: &[ClipboardClip], origin_beats: f32) -> Vec<u64> {
         if clips.is_empty() {
             return Vec::new();
         }
         let origin = Self::snap_beats(origin_beats.max(0.0));
         let mut new_ids = Vec::with_capacity(clips.len());
+        let mut placed: Vec<(u64, f32, f32)> = Vec::new();
         for template in clips {
             if self.track(template.track_id).is_none() {
+                continue;
+            }
+            let start = Self::snap_beats((origin + template.start_beats).max(0.0));
+            let length = Self::snap_beats(template.length_beats.max(SNAP_BEATS));
+            let end = start + length;
+            if !self.clip_range_free(template.track_id, start, length, &[]) {
+                continue;
+            }
+            if placed.iter().any(|(track_id, p_start, p_end)| {
+                *track_id == template.track_id && Self::beat_ranges_overlap(start, end, *p_start, *p_end)
+            }) {
                 continue;
             }
             let clip_id = self.next_clip_id();
@@ -511,12 +635,13 @@ impl Project {
             let clip = Clip::Midi(MidiClip {
                 id: clip_id,
                 name: format!("{} copy", template.name),
-                start_beats: Self::snap_beats((origin + template.start_beats).max(0.0)),
-                length_beats: template.length_beats,
+                start_beats: start,
+                length_beats: length,
                 notes,
             });
             if let Some(track) = self.track_mut(template.track_id) {
                 track.clips.push(clip);
+                placed.push((template.track_id, start, end));
                 new_ids.push(clip_id);
             }
         }
@@ -524,10 +649,19 @@ impl Project {
     }
 
     /// Deep-copy clips (new clip + note ids) onto the same tracks, offset in time.
-    /// Returns new clip ids in input order (skipping missing ids).
-    pub fn duplicate_clips(&mut self, clip_ids: &[u64], delta_beats: f32) -> Vec<u64> {
+    /// Returns `(source_id, new_id)` pairs for successful placements only.
+    ///
+    /// When `allow_overlap_sources` is true (Shift+drag), copies may start on top of the
+    /// clips being duplicated; they still cannot overlap any other clip.
+    pub fn duplicate_clips(
+        &mut self,
+        clip_ids: &[u64],
+        delta_beats: f32,
+        allow_overlap_sources: bool,
+    ) -> Vec<(u64, u64)> {
         #[derive(Clone)]
         struct ClipTemplate {
+            source_id: u64,
             track_id: u64,
             name: String,
             start_beats: f32,
@@ -544,6 +678,7 @@ impl Project {
                 continue;
             };
             templates.push(ClipTemplate {
+                source_id: clip_id,
                 track_id,
                 name: clip.name().to_string(),
                 start_beats: clip.start_beats(),
@@ -552,13 +687,32 @@ impl Project {
             });
         }
 
-        let mut new_ids = Vec::with_capacity(templates.len());
+        let source_ignore: Vec<u64> = if allow_overlap_sources {
+            templates.iter().map(|t| t.source_id).collect()
+        } else {
+            Vec::new()
+        };
+
+        let mut created = Vec::with_capacity(templates.len());
+        let mut placed: Vec<(u64, f32, f32)> = Vec::new();
         for template in templates {
+            let start = Self::snap_beats((template.start_beats + delta_beats).max(0.0));
+            let length = Self::snap_beats(template.length_beats.max(SNAP_BEATS));
+            let end = start + length;
+            if !self.clip_range_free(template.track_id, start, length, &source_ignore) {
+                continue;
+            }
+            if placed.iter().any(|(track_id, p_start, p_end)| {
+                *track_id == template.track_id
+                    && Self::beat_ranges_overlap(start, end, *p_start, *p_end)
+            }) {
+                continue;
+            }
             let clip_id = self.next_clip_id();
             self.bump_clip_id();
             let mut clip = template.clip;
-            clip.set_start_beats((template.start_beats + delta_beats).max(0.0));
-            clip.set_length_beats(template.length_beats);
+            clip.set_start_beats(start);
+            clip.set_length_beats(length);
             match &mut clip {
                 Clip::Midi(midi) => {
                     midi.id = clip_id;
@@ -576,10 +730,11 @@ impl Project {
             }
             if let Some(track) = self.track_mut(template.track_id) {
                 track.clips.push(clip);
-                new_ids.push(clip_id);
+                placed.push((template.track_id, start, end));
+                created.push((template.source_id, clip_id));
             }
         }
-        new_ids
+        created
     }
 
     /// Beat span of a time selection: `max(end) - min(start)`, snapped, at least one grid step.
@@ -949,12 +1104,13 @@ mod tests {
     fn audio_clip_round_trip_in_project_json() {
         let mut project = Project::default();
         let track_id = project.tracks[0].id;
+        // Default project already has a MIDI clip at [0, 4); place audio after it.
         let clip_id = project
             .add_audio_clip_to_track(
                 track_id,
                 PathBuf::from("/tmp/kick.wav"),
                 String::from("kick"),
-                2.0,
+                4.0,
                 8.0,
             )
             .expect("audio clip");
@@ -968,6 +1124,75 @@ mod tests {
         assert_eq!(audio.name, "kick");
         assert_eq!(audio.source, PathBuf::from("/tmp/kick.wav"));
         assert_eq!(audio.length_beats, 8.0);
+    }
+
+    #[test]
+    fn adjacent_clips_do_not_overlap_half_open() {
+        assert!(!Project::beat_ranges_overlap(0.0, 4.0, 4.0, 8.0));
+        assert!(Project::beat_ranges_overlap(0.0, 4.0, 3.75, 8.0));
+    }
+
+    #[test]
+    fn add_clip_rejects_same_track_overlap() {
+        let mut project = Project::default();
+        let track_id = project.tracks[0].id;
+        assert!(project.add_clip_to_track(track_id, 2.0, 4.0).is_none());
+        assert!(project.add_clip_to_track(track_id, 4.0, 4.0).is_some());
+    }
+
+    #[test]
+    fn clamp_move_stops_at_neighbor() {
+        let mut project = Project::default();
+        let track_id = project.tracks[0].id;
+        let left_id = project.tracks[0].clips[0].id();
+        let right_id = project
+            .add_clip_to_track(track_id, 8.0, 4.0)
+            .expect("right");
+        // Moving left clip right by 10 beats should stop adjacent to right ([4, 8)).
+        let delta = project.clamp_clip_move_delta(&[(left_id, 0.0, 4.0)], 10.0, &[]);
+        assert!((delta - 4.0).abs() < 1e-5);
+        // Moving right clip left should stop adjacent to left.
+        let delta_left = project.clamp_clip_move_delta(&[(right_id, 8.0, 4.0)], -10.0, &[]);
+        assert!((delta_left - (-4.0)).abs() < 1e-5);
+    }
+
+    #[test]
+    fn duplicate_without_space_is_skipped() {
+        let mut project = Project::default();
+        let track_id = project.tracks[0].id;
+        let src = project.tracks[0].clips[0].id();
+        project
+            .add_clip_to_track(track_id, 4.0, 4.0)
+            .expect("blocker");
+        let created = project.duplicate_clips(&[src], 4.0, false);
+        assert!(created.is_empty());
+    }
+
+    #[test]
+    fn duplicate_stacked_may_overlap_sources_only() {
+        let mut project = Project::default();
+        let track_id = project.tracks[0].id;
+        let src = project.tracks[0].clips[0].id();
+        project
+            .add_clip_to_track(track_id, 4.0, 4.0)
+            .expect("neighbor");
+        let created = project.duplicate_clips(&[src], 0.0, true);
+        assert_eq!(created.len(), 1);
+        assert_eq!(created[0].0, src);
+        let copy = project.clip(created[0].1).expect("copy");
+        assert_eq!(copy.start_beats(), 0.0);
+    }
+
+    #[test]
+    fn resize_bounds_respect_neighbors() {
+        let mut project = Project::default();
+        let track_id = project.tracks[0].id;
+        let left_id = project.tracks[0].clips[0].id();
+        let right_id = project
+            .add_clip_to_track(track_id, 8.0, 4.0)
+            .expect("right");
+        assert!((project.clip_resize_end_bound(left_id, 4.0) - 8.0).abs() < 1e-5);
+        assert!((project.clip_resize_start_bound(right_id, 8.0) - 4.0).abs() < 1e-5);
     }
 
     #[test]

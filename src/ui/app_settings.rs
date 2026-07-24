@@ -35,6 +35,8 @@ struct SettingsFile {
     metronome_enabled: bool,
     #[serde(default)]
     recent_projects: Vec<PathBuf>,
+    #[serde(default)]
+    recent_samples: Vec<PathBuf>,
 }
 
 fn default_active_theme() -> String {
@@ -116,7 +118,11 @@ pub struct AppSettings {
     pub autosave_interval_secs: u32,
     pub metronome_enabled: bool,
     pub recent_projects: Vec<PathBuf>,
+    pub recent_samples: Vec<PathBuf>,
 }
+
+/// Cap for recently imported sample paths (add browser Samples tab).
+pub const MAX_RECENT_SAMPLES: usize = 20;
 
 impl Default for AppSettings {
     fn default() -> Self {
@@ -130,11 +136,21 @@ impl Default for AppSettings {
             autosave_interval_secs: DEFAULT_AUTOSAVE_INTERVAL_SECS,
             metronome_enabled: true,
             recent_projects: Vec::new(),
+            recent_samples: Vec::new(),
         }
     }
 }
 
 impl AppSettings {
+    /// Push a sample path to the front of the recent list (dedupe, cap).
+    pub fn push_recent_sample(&mut self, path: PathBuf) {
+        self.recent_samples.retain(|existing| existing != &path);
+        self.recent_samples.insert(0, path);
+        if self.recent_samples.len() > MAX_RECENT_SAMPLES {
+            self.recent_samples.truncate(MAX_RECENT_SAMPLES);
+        }
+    }
+
     pub fn load_or_defaults(path: &Path) -> Self {
         match fs::read_to_string(path) {
             Ok(json) => Self::from_json(&json).unwrap_or_default(),
@@ -164,6 +180,7 @@ impl AppSettings {
             autosave_interval_secs: file.autosave_interval_secs.max(30),
             metronome_enabled: file.metronome_enabled,
             recent_projects: file.recent_projects,
+            recent_samples: file.recent_samples,
         })
     }
 
@@ -180,6 +197,7 @@ impl AppSettings {
             autosave_interval_secs: self.autosave_interval_secs.max(30),
             metronome_enabled: self.metronome_enabled,
             recent_projects: self.recent_projects.clone(),
+            recent_samples: self.recent_samples.clone(),
         };
         let json = serde_json::to_string_pretty(&file).map_err(|error| error.to_string())?;
         fs::write(path, json).map_err(|error| error.to_string())

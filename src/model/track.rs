@@ -69,6 +69,16 @@ impl Track {
     pub fn midi_clip(&self, clip_id: u64) -> Option<&MidiClip> {
         self.clip(clip_id).and_then(Clip::as_midi)
     }
+
+    /// True if `[start, end)` overlaps any clip whose id is not in `ignore_ids`.
+    pub fn range_overlaps_any(&self, start: f32, end: f32, ignore_ids: &[u64]) -> bool {
+        self.clips.iter().any(|clip| {
+            if ignore_ids.contains(&clip.id()) {
+                return false;
+            }
+            Project::beat_ranges_overlap(start, end, clip.start_beats(), clip.end_beats())
+        })
+    }
 }
 
 pub fn migrate_notes_to_clip(notes: Vec<Note>, loop_end_beats: f32) -> MidiClip {

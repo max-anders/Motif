@@ -60,6 +60,8 @@ pub(crate) struct ClipDrag {
     mode: ClipDragMode,
     pointer_start_beats: f32,
     originals: Vec<ClipOriginal>,
+    /// Clips movers may overlap during this drag (Shift+drag duplicate sources).
+    ignore_ids: Vec<u64>,
 }
 
 /// `device_id: None` means the track's instrument; `Some(id)` means one of
@@ -97,6 +99,8 @@ pub struct PlaylistUi {
     plugin_editor_request: Option<PluginEditorRequest>,
     /// Delete track (consumed by app for piano-roll / engine cleanup).
     delete_track_request: Option<u64>,
+    /// Track header currently under the pointer (for Delete track shortcut).
+    hovered_track_header: Option<u64>,
     /// Import audio clip request (consumed by app).
     audio_import_request: Option<AudioImportRequest>,
     /// True if pointer moved enough during drag to count as a drag, not a click.
@@ -119,6 +123,7 @@ impl Default for PlaylistUi {
             open_clip_request: None,
             plugin_editor_request: None,
             delete_track_request: None,
+            hovered_track_header: None,
             audio_import_request: None,
             drag_moved: false,
             add_track_search: String::new(),
@@ -143,6 +148,10 @@ impl PlaylistUi {
 
     pub fn take_delete_track_request(&mut self) -> Option<u64> {
         self.delete_track_request.take()
+    }
+
+    pub fn hovered_track_header(&self) -> Option<u64> {
+        self.hovered_track_header
     }
 
     pub fn take_audio_import_request(&mut self) -> Option<AudioImportRequest> {
@@ -181,11 +190,18 @@ impl PlaylistUi {
     ) {
         // CentralPanel uses Frame::NONE; paint the full panel so nothing shows through.
         ui.painter().rect_filled(ui.max_rect(), 0.0, theme.panel_bg);
+        self.hovered_track_header = None;
 
         ui.horizontal(|ui| {
             egui::menu::menu_button(ui, "Add track", |ui| {
                 if let Some(choice) =
-                    show_instrument_picker(ui, catalog, &mut self.add_track_search, "add_track")
+                    show_instrument_picker(
+                        ui,
+                        catalog,
+                        &mut self.add_track_search,
+                        "add_track",
+                        false,
+                    )
                 {
                     let number = project.tracks.len() + 1;
                     let name = track_name_for_choice(&choice, number);
@@ -428,6 +444,7 @@ impl PlaylistUi {
                             selected_track,
                             &mut self.plugin_editor_request,
                             &mut self.delete_track_request,
+                            &mut self.hovered_track_header,
                             "playlist",
                         );
                     }
@@ -491,6 +508,7 @@ pub(crate) fn track_header_row(
     select_track_request: &mut Option<u64>,
     plugin_editor_request: &mut Option<PluginEditorRequest>,
     delete_track_request: &mut Option<u64>,
+    hovered_track_header: &mut Option<u64>,
     id_scope: &'static str,
 ) {
     draw_track_header(
@@ -513,6 +531,9 @@ pub(crate) fn track_header_row(
 
     let id = ui.id().with((id_scope, "track_header", track_id));
     let header_response = ui.interact(header, id, Sense::click());
+    if ui.rect_contains_pointer(header) {
+        *hovered_track_header = Some(track_id);
+    }
     if header_response.clicked() {
         *select_track_request = Some(track_id);
     }
@@ -586,6 +607,7 @@ pub(crate) fn track_header_row(
             catalog,
             change_instrument_search,
             &format!("chg_{track_id}"),
+            false,
         ) {
             let rename = match &choice {
                 InstrumentChoice::Plugin(entry) => Some(entry.name.clone()),
@@ -1081,11 +1103,7 @@ fn handle_clip_pointer(
         || (!primary_down && (active_drag.is_some() || marquee.is_some()));
     if end_drag {
         if let Some(drag) = active_drag.take() {
-            history.commit(project);
-            if !*drag_moved {
-                selected.clear();
-                selected.insert(drag.clip_id);
-            }
+            finish_clip_drag(project, history, selected, &drag, *drag_moved);
             *selected_track = Some(drag.track_id);
         }
         *marquee = None;
@@ -1183,21 +1201,21 @@ fn handle_clip_pointer(
             history.begin(project);
 
             let mut primary_id = clip.id();
+            let mut ignore_ids = Vec::new();
             // Shift+Move: leave originals, drag duplicates (same as piano-roll notes).
             if matches!(mode, ClipDragMode::Move) && shift_held {
                 let source_ids: Vec<u64> = selected.iter().copied().collect();
-                let new_ids = project.duplicate_clips(&source_ids, 0.0);
-                if let Some(mapped_primary) = source_ids
-                    .iter()
-                    .position(|id| *id == clip.id())
-                    .and_then(|index| new_ids.get(index).copied())
+                ignore_ids = source_ids.clone();
+                let created = project.duplicate_clips(&source_ids, 0.0, true);
+                if let Some((_, mapped_primary)) =
+                    created.iter().find(|(src, _)| *src == clip.id())
                 {
-                    primary_id = mapped_primary;
-                } else if let Some(first) = new_ids.first().copied() {
-                    primary_id = first;
+                    primary_id = *mapped_primary;
+                } else if let Some((_, first)) = created.first() {
+                    primary_id = *first;
                 }
                 selected.clear();
-                selected.extend(new_ids);
+                selected.extend(created.into_iter().map(|(_, id)| id));
             }
 
             let originals = match mode {
@@ -1229,6 +1247,7 @@ fn handle_clip_pointer(
                 mode,
                 pointer_start_beats: x_to_beat(body, press_pos.x, metrics),
                 originals,
+                ignore_ids,
             });
             return;
         }
@@ -1333,11 +1352,7 @@ pub(crate) fn handle_single_track_clip_pointer(
         || (!primary_down && (active_drag.is_some() || marquee.is_some()));
     if end_drag {
         if let Some(drag) = active_drag.take() {
-            history.commit(project);
-            if !*drag_moved {
-                selected.clear();
-                selected.insert(drag.clip_id);
-            }
+            finish_clip_drag(project, history, selected, &drag, *drag_moved);
         }
         *marquee = None;
         *drag_moved = false;
@@ -1415,20 +1430,20 @@ pub(crate) fn handle_single_track_clip_pointer(
             history.begin(project);
 
             let mut primary_id = clip.id();
+            let mut ignore_ids = Vec::new();
             if matches!(mode, ClipDragMode::Move) && shift_held {
                 let source_ids: Vec<u64> = selected.iter().copied().collect();
-                let new_ids = project.duplicate_clips(&source_ids, 0.0);
-                if let Some(mapped_primary) = source_ids
-                    .iter()
-                    .position(|id| *id == clip.id())
-                    .and_then(|index| new_ids.get(index).copied())
+                ignore_ids = source_ids.clone();
+                let created = project.duplicate_clips(&source_ids, 0.0, true);
+                if let Some((_, mapped_primary)) =
+                    created.iter().find(|(src, _)| *src == clip.id())
                 {
-                    primary_id = mapped_primary;
-                } else if let Some(first) = new_ids.first().copied() {
-                    primary_id = first;
+                    primary_id = *mapped_primary;
+                } else if let Some((_, first)) = created.first() {
+                    primary_id = *first;
                 }
                 selected.clear();
-                selected.extend(new_ids);
+                selected.extend(created.into_iter().map(|(_, id)| id));
             }
 
             let originals = match mode {
@@ -1460,6 +1475,7 @@ pub(crate) fn handle_single_track_clip_pointer(
                 mode,
                 pointer_start_beats: x_to_beat(body, press_pos.x, metrics),
                 originals,
+                ignore_ids,
             });
             return;
         }
@@ -1536,6 +1552,64 @@ fn hit_test_clip_id(
     })
 }
 
+fn finish_clip_drag(
+    project: &mut Project,
+    history: &mut EditHistory,
+    selected: &mut HashSet<u64>,
+    drag: &ClipDrag,
+    drag_moved: bool,
+) {
+    // Shift+click without move: discard stacked copies.
+    if !drag.ignore_ids.is_empty() && !drag_moved {
+        history.abort(project);
+        selected.clear();
+        selected.extend(drag.ignore_ids.iter().copied());
+        return;
+    }
+    if !drag.ignore_ids.is_empty() {
+        settle_clips_no_overlap(project, &drag.originals);
+    }
+    history.commit(project);
+    if !drag_moved {
+        selected.clear();
+        selected.insert(drag.clip_id);
+    }
+}
+
+/// Nudge clips right on the grid until each is free of same-track overlaps.
+fn settle_clips_no_overlap(project: &mut Project, originals: &[ClipOriginal]) {
+    let mut ids: Vec<u64> = originals.iter().map(|original| original.clip_id).collect();
+    ids.sort_by(|a, b| {
+        let sa = project
+            .clip(*a)
+            .map(|clip| clip.start_beats())
+            .unwrap_or(0.0);
+        let sb = project
+            .clip(*b)
+            .map(|clip| clip.start_beats())
+            .unwrap_or(0.0);
+        sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal)
+    });
+    for clip_id in ids {
+        let Some(track_id) = project.track_id_for_clip(clip_id) else {
+            continue;
+        };
+        let Some(clip) = project.clip(clip_id) else {
+            continue;
+        };
+        let length = clip.length_beats();
+        let mut start = clip.start_beats();
+        let mut steps = 0;
+        while !project.clip_range_free(track_id, start, length, &[clip_id]) && steps < 10_000 {
+            start = Project::snap_beats(start + SNAP_BEATS);
+            steps += 1;
+        }
+        if let Some(clip) = project.clip_mut(clip_id) {
+            clip.set_start_beats(start);
+        }
+    }
+}
+
 pub(crate) fn apply_clip_drag(project: &mut Project, drag: &ClipDrag, current_beats: f32) {
     match drag.mode {
         ClipDragMode::Move => {
@@ -1547,16 +1621,21 @@ pub(crate) fn apply_clip_drag(project: &mut Project, drag: &ClipDrag, current_be
                 return;
             };
             let raw_delta = current_beats - drag.pointer_start_beats;
-            let mut snapped_delta =
+            let desired_delta =
                 Project::snap_beats(primary.start_beats + raw_delta).max(0.0) - primary.start_beats;
-            let min_start = drag
+            let originals: Vec<(u64, f32, f32)> = drag
                 .originals
                 .iter()
-                .map(|original| original.start_beats)
-                .fold(f32::INFINITY, f32::min);
-            if min_start + snapped_delta < 0.0 {
-                snapped_delta = -min_start;
-            }
+                .map(|original| {
+                    (
+                        original.clip_id,
+                        original.start_beats,
+                        original.length_beats,
+                    )
+                })
+                .collect();
+            let snapped_delta =
+                project.clamp_clip_move_delta(&originals, desired_delta, &drag.ignore_ids);
             for original in &drag.originals {
                 if let Some(clip) = project.clip_mut(original.clip_id) {
                     clip.set_start_beats((original.start_beats + snapped_delta).max(0.0));
@@ -1567,12 +1646,16 @@ pub(crate) fn apply_clip_drag(project: &mut Project, drag: &ClipDrag, current_be
             let Some(original) = drag.originals.first() else {
                 return;
             };
+            let end = original.start_beats + original.length_beats;
+            let left_bound = project.clip_resize_start_bound(drag.clip_id, original.start_beats);
+            let new_start = Project::snap_beats(current_beats.max(0.0));
+            let clamped_start = new_start
+                .max(left_bound)
+                .min(end - SNAP_BEATS)
+                .max(0.0);
             let Some(clip) = project.clip_mut(drag.clip_id) else {
                 return;
             };
-            let new_start = Project::snap_beats(current_beats.max(0.0));
-            let end = original.start_beats + original.length_beats;
-            let clamped_start = new_start.min(end - SNAP_BEATS);
             clip.set_start_beats(clamped_start);
             clip.set_length_beats(end - clamped_start);
         }
@@ -1580,12 +1663,19 @@ pub(crate) fn apply_clip_drag(project: &mut Project, drag: &ClipDrag, current_be
             let Some(original) = drag.originals.first() else {
                 return;
             };
+            let right_bound = project.clip_resize_end_bound(
+                drag.clip_id,
+                original.start_beats + original.length_beats,
+            );
+            let new_end = Project::snap_beats(current_beats.max(0.0));
+            let clamped_end = new_end
+                .min(right_bound)
+                .max(original.start_beats + SNAP_BEATS);
             let Some(clip) = project.clip_mut(drag.clip_id) else {
                 return;
             };
-            let new_end = Project::snap_beats(current_beats.max(0.0));
             clip.set_start_beats(original.start_beats);
-            clip.set_length_beats((new_end - original.start_beats).max(SNAP_BEATS));
+            clip.set_length_beats(clamped_end - original.start_beats);
         }
     }
 }
