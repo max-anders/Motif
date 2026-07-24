@@ -1,4 +1,6 @@
-//! Per-track plugin editor sessions (native parent window + PluginEditor).
+//! Plugin editor sessions (native parent window + PluginEditor), keyed by
+//! [`PluginRef`] so a track's instrument and each insert-FX device can each
+//! have their own independent editor window.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -9,6 +11,31 @@ use super::host::HostedPlugin;
 use super::editor_window::{EditorParentWindow, EditorWindowEvent, HostX11};
 #[cfg(target_os = "linux")]
 use truce_rack::core::editor::WindowHandle;
+
+/// Identifies a single hosted plugin slot: a track's instrument
+/// (`device_id: None`) or one insert-FX device on that track
+/// (`device_id: Some(id)`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PluginRef {
+    pub track_id: u64,
+    pub device_id: Option<u64>,
+}
+
+impl PluginRef {
+    pub fn instrument(track_id: u64) -> Self {
+        Self {
+            track_id,
+            device_id: None,
+        }
+    }
+
+    pub fn device(track_id: u64, device_id: u64) -> Self {
+        Self {
+            track_id,
+            device_id: Some(device_id),
+        }
+    }
+}
 
 struct EditorSession {
     plugin: Arc<Mutex<HostedPlugin>>,
@@ -32,7 +59,7 @@ pub struct EditorPoll {
 /// UI-thread manager for open plugin editor windows.
 #[derive(Default)]
 pub struct PluginEditorHost {
-    sessions: HashMap<u64, EditorSession>,
+    sessions: HashMap<PluginRef, EditorSession>,
 }
 
 /// Outcome of polling a single editor window.
@@ -43,8 +70,8 @@ struct PollOne {
 }
 
 impl PluginEditorHost {
-    pub fn is_open(&self, track_id: u64) -> bool {
-        self.sessions.contains_key(&track_id)
+    pub fn is_open(&self, target: PluginRef) -> bool {
+        self.sessions.contains_key(&target)
     }
 
     pub fn any_open(&self) -> bool {
@@ -53,13 +80,13 @@ impl PluginEditorHost {
 
     pub fn open(
         &mut self,
-        track_id: u64,
+        target: PluginRef,
         plugin: Arc<Mutex<HostedPlugin>>,
         title: &str,
         host_x11: Option<HostX11>,
         forward_transport: bool,
     ) -> Result<(), String> {
-        if self.sessions.contains_key(&track_id) {
+        if self.sessions.contains_key(&target) {
             return Ok(());
         }
 
@@ -94,7 +121,7 @@ impl PluginEditorHost {
             }
 
             self.sessions.insert(
-                track_id,
+                target,
                 EditorSession {
                     plugin,
                     window,
@@ -106,17 +133,17 @@ impl PluginEditorHost {
         }
     }
 
-    /// Track ids + titles of currently open editors (for the UI strip).
-    pub fn open_editors(&self) -> Vec<(u64, String)> {
+    /// Plugin refs + titles of currently open editors (for the UI strip).
+    pub fn open_editors(&self) -> Vec<(PluginRef, String)> {
         self.sessions
             .iter()
-            .map(|(id, session)| (*id, session.title.clone()))
+            .map(|(target, session)| (*target, session.title.clone()))
             .collect()
     }
 
     /// Live-toggle Space transport forwarding for one open editor.
-    pub fn set_forward_transport(&mut self, track_id: u64, forward: bool) {
-        if let Some(session) = self.sessions.get_mut(&track_id) {
+    pub fn set_forward_transport(&mut self, target: PluginRef, forward: bool) {
+        if let Some(session) = self.sessions.get_mut(&target) {
             #[cfg(target_os = "linux")]
             session.window.set_forward_transport(forward);
             #[cfg(not(target_os = "linux"))]
@@ -124,8 +151,8 @@ impl PluginEditorHost {
         }
     }
 
-    pub fn close(&mut self, track_id: u64) {
-        let Some(session) = self.sessions.remove(&track_id) else {
+    pub fn close(&mut self, target: PluginRef) {
+        let Some(session) = self.sessions.remove(&target) else {
             return;
         };
         if let Ok(mut guard) = session.plugin.lock() {
@@ -133,22 +160,36 @@ impl PluginEditorHost {
         };
     }
 
+    /// Close every open editor belonging to a track (its instrument and all
+    /// of its insert-FX devices). Used when the whole track is removed.
+    pub fn close_track(&mut self, track_id: u64) {
+        let targets: Vec<PluginRef> = self
+            .sessions
+            .keys()
+            .copied()
+            .filter(|target| target.track_id == track_id)
+            .collect();
+        for target in targets {
+            self.close(target);
+        }
+    }
+
     pub fn close_all(&mut self) {
-        let ids: Vec<u64> = self.sessions.keys().copied().collect();
-        for track_id in ids {
-            self.close(track_id);
+        let targets: Vec<PluginRef> = self.sessions.keys().copied().collect();
+        for target in targets {
+            self.close(target);
         }
     }
 
     /// Drain window events, idle editors; returns aggregated poll outcome.
     pub fn poll(&mut self) -> EditorPoll {
-        let track_ids: Vec<u64> = self.sessions.keys().copied().collect();
+        let targets: Vec<PluginRef> = self.sessions.keys().copied().collect();
         let mut toggle_playback = false;
-        for track_id in track_ids {
-            let result = self.poll_one(track_id);
+        for target in targets {
+            let result = self.poll_one(target);
             toggle_playback |= result.toggle_playback;
             if !result.keep_open {
-                self.close(track_id);
+                self.close(target);
             }
         }
         EditorPoll {
@@ -157,8 +198,8 @@ impl PluginEditorHost {
         }
     }
 
-    fn poll_one(&mut self, track_id: u64) -> PollOne {
-        let Some(session) = self.sessions.get_mut(&track_id) else {
+    fn poll_one(&mut self, target: PluginRef) -> PollOne {
+        let Some(session) = self.sessions.get_mut(&target) else {
             return PollOne::default();
         };
 

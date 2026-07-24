@@ -2,6 +2,7 @@ mod clip;
 mod clipboard;
 mod history;
 mod instrument;
+mod mixer;
 mod note;
 mod persistence;
 mod project;
@@ -15,6 +16,10 @@ pub use history::{
     clamp_undo_limit, EditHistory, DEFAULT_UNDO_LIMIT, MAX_UNDO_LIMIT, MIN_UNDO_LIMIT,
 };
 pub use instrument::{PluginFormat, TrackInstrument};
+#[allow(unused_imports)] // public mixer surface for UI / engine / tests
+pub use mixer::{
+    db_to_linear, pan_gains, Device, Macro, Send, MAX_GAIN_DB, MIN_GAIN_DB,
+};
 pub use note::Note;
 pub use persistence::{
     clear_recovery, ensure_motif_extension, format_unix_time, legacy_project_path, load_project_from,

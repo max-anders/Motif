@@ -6,8 +6,8 @@ mod editor;
 mod editor_window;
 mod host;
 
-pub use catalog::{CatalogEntry, PluginCatalog, PLUGIN_CACHE_FILE};
-pub use editor::{EditorPoll, PluginEditorHost};
+pub use catalog::{CatalogEntry, EntryCategory, PluginCatalog, PLUGIN_CACHE_FILE};
+pub use editor::{EditorPoll, PluginEditorHost, PluginRef};
 pub use host::{load_and_activate, HostedPlugin};
 
 #[cfg(not(target_os = "linux"))]

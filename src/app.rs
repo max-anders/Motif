@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use eframe::egui;
 
-use crate::engine::{AudioEngine, DawEngine, PluginCatalog, PLUGIN_CACHE_FILE};
+use crate::engine::{AudioEngine, DawEngine, PluginCatalog, PluginRef, PLUGIN_CACHE_FILE};
 use crate::model::{
     clear_recovery, ensure_motif_extension, format_unix_time, legacy_project_path,
     load_project_from, load_recovery_meta, load_recovery_project, project_display_name,
@@ -11,14 +11,17 @@ use crate::model::{
     Project, PROJECT_EXTENSION, RecoveryMeta,
 };
 use crate::ui::{
-    Action, AppSettings, PianoRollUi, PlaylistUi, PluginEditorRequest, PollFilter,
-    ProjectBrowserAction, ProjectBrowserUi, SettingsAction, SettingsUi, TransportUi, SETTINGS_FILE,
+    show_inspector, Action, AppSettings, DevicesUi, MixerUi, PianoRollUi, PlaylistUi,
+    PluginEditorRequest, PollFilter, ProjectBrowserAction, ProjectBrowserUi, SettingsAction,
+    SettingsUi, TransportUi, SETTINGS_FILE,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CenterView {
     Playlist,
     PianoRoll { clip_id: u64 },
+    Mixer,
+    Devices,
     Settings,
 }
 
@@ -31,15 +34,23 @@ pub struct DawApp {
     engine: AudioEngine,
     playlist: PlaylistUi,
     piano_roll: PianoRollUi,
+    mixer: MixerUi,
+    devices: DevicesUi,
     settings_ui: SettingsUi,
     project_browser: ProjectBrowserUi,
     center_view: CenterView,
-    /// View to restore when leaving Settings (playlist or piano roll).
+    /// View to restore when leaving Settings (playlist, mixer, or piano roll).
     settings_return: CenterView,
     settings: AppSettings,
     catalog: PluginCatalog,
     /// Per-track instrument load errors for playlist headers.
     instrument_errors: HashMap<u64, String>,
+    /// Per-device (track_id, device_id) insert-FX load errors for the Devices view.
+    device_errors: HashMap<(u64, u64), String>,
+    /// Shared selection for Mixer + Inspector (playlist header / mixer strip).
+    selected_track: Option<u64>,
+    /// Toggleable properties panel (same Track facets as Mixer).
+    show_inspector: bool,
     /// Session clipboard for notes/clips (Ctrl/Cmd+C/X/V).
     clipboard: EditClipboard,
     /// Snapshot undo/redo for clip and note edits.
@@ -64,7 +75,8 @@ impl DawApp {
         let (project, current_path, show_browser, status_message) =
             Self::startup_project(&settings, pending_recovery.is_some());
 
-        let engine = AudioEngine::new(project.beats_per_second());
+        let mut engine = AudioEngine::new(project.beats_per_second());
+        engine.set_metronome_enabled(settings.metronome_enabled);
         let status_message = if !engine.audio_available() {
             let detail = engine.init_error().unwrap_or("unknown error");
             format!("Audio unavailable ({detail}). Transport still works silently.")
@@ -80,6 +92,7 @@ impl DawApp {
             .unwrap_or_else(|| String::from("Untitled"));
         let saved_snapshot = project.clone();
         let undo_limit = settings.undo_limit;
+        let selected_track = project.tracks.first().map(|t| t.id);
 
         let mut app = Self {
             project,
@@ -89,6 +102,8 @@ impl DawApp {
             engine,
             playlist: PlaylistUi::default(),
             piano_roll: PianoRollUi::default(),
+            mixer: MixerUi::default(),
+            devices: DevicesUi::default(),
             settings_ui: SettingsUi::default(),
             project_browser: ProjectBrowserUi::default(),
             center_view: CenterView::Playlist,
@@ -96,6 +111,9 @@ impl DawApp {
             settings,
             catalog,
             instrument_errors: HashMap::new(),
+            device_errors: HashMap::new(),
+            selected_track,
+            show_inspector: false,
             clipboard: EditClipboard::Empty,
             history: EditHistory::new(undo_limit),
             status_message,
@@ -191,6 +209,9 @@ impl DawApp {
         self.dirty_forced || self.project != self.saved_snapshot
     }
 
+    /// Syncs both per-track instrument voices and per-track insert-FX device
+    /// chains every frame (kept in one call site so the two engine syncs
+    /// never drift out of step).
     fn sync_instruments(&mut self) {
         let updates = self.engine.sync_instruments(&self.project, &self.catalog);
         let mut dirty = false;
@@ -212,6 +233,20 @@ impl DawApp {
             self.playlist
                 .set_instrument_errors(self.instrument_errors.clone());
         }
+
+        let device_updates = self.engine.sync_devices(&self.project, &self.catalog);
+        for (track_id, device_id, error) in device_updates {
+            if error.is_empty() {
+                self.device_errors.remove(&(track_id, device_id));
+            } else {
+                self.device_errors.insert((track_id, device_id), error);
+            }
+        }
+        self.device_errors.retain(|(track_id, device_id), _| {
+            self.project
+                .track(*track_id)
+                .is_some_and(|track| track.devices.iter().any(|d| d.id == *device_id))
+        });
     }
 
     fn save_plugin_cache(&mut self) {
@@ -254,6 +289,7 @@ impl DawApp {
         self.center_view = CenterView::Playlist;
         self.settings_return = CenterView::Playlist;
         self.playlist.clear_selection();
+        self.selected_track = self.project.tracks.first().map(|t| t.id);
         self.piano_roll.release_audition(&mut self.engine);
         self.piano_roll.clear_selection();
         self.settings_ui.clear_capture();
@@ -281,6 +317,7 @@ impl DawApp {
             return;
         };
         self.engine.capture_plugin_states(&mut self.project);
+        self.engine.capture_device_states(&mut self.project);
         match save_project_to(&path, &self.project) {
             Ok(()) => {
                 self.project_name = project_display_name(&path);
@@ -306,6 +343,7 @@ impl DawApp {
         };
         let path = ensure_motif_extension(path);
         self.engine.capture_plugin_states(&mut self.project);
+        self.engine.capture_device_states(&mut self.project);
         match save_project_to(&path, &self.project) {
             Ok(()) => {
                 self.current_path = Some(path.clone());
@@ -362,6 +400,7 @@ impl DawApp {
 
     fn write_recovery_backup(&mut self) {
         self.engine.capture_plugin_states(&mut self.project);
+        self.engine.capture_device_states(&mut self.project);
         match write_recovery(
             &self.project,
             self.current_path.as_deref(),
@@ -555,6 +594,11 @@ impl DawApp {
     fn prune_ui_after_history(&mut self) {
         self.engine.set_beats_per_second(self.project.beats_per_second());
         self.playlist.prune_selection(&self.project);
+        if let Some(track_id) = self.selected_track {
+            if self.project.track(track_id).is_none() {
+                self.selected_track = self.project.tracks.first().map(|t| t.id);
+            }
+        }
         if let CenterView::PianoRoll { clip_id } = self.center_view {
             if self.project.clip(clip_id).is_none() {
                 self.back_to_playlist();
@@ -567,6 +611,7 @@ impl DawApp {
             self.settings_return = CenterView::Playlist;
         }
         self.sync_instruments();
+        self.engine.sync_channels(&self.project);
     }
 
     fn undo_edit(&mut self) {
@@ -640,6 +685,43 @@ impl DawApp {
                 self.settings_return = CenterView::Playlist;
             }
         }
+    }
+
+    fn delete_track(&mut self, track_id: u64) {
+        if !self.project.can_remove_track() || self.project.track(track_id).is_none() {
+            return;
+        }
+        let clip_ids: Vec<u64> = self
+            .project
+            .track(track_id)
+            .map(|track| track.clips.iter().map(|clip| clip.id).collect())
+            .unwrap_or_default();
+
+        self.history.push_before(self.project.clone());
+
+        for id in &clip_ids {
+            if matches!(self.center_view, CenterView::PianoRoll { clip_id } if clip_id == *id) {
+                self.center_view = CenterView::Playlist;
+                self.piano_roll.clear_selection();
+            }
+            if matches!(self.settings_return, CenterView::PianoRoll { clip_id } if clip_id == *id)
+            {
+                self.settings_return = CenterView::Playlist;
+            }
+        }
+
+        let removed = self.project.remove_track(track_id);
+        debug_assert!(removed, "delete_track preconditions should guarantee removal");
+        self.playlist.prune_selection(&self.project);
+        if self.selected_track == Some(track_id) {
+            self.selected_track = self.project.tracks.first().map(|t| t.id);
+        }
+        self.engine.close_plugin_editor(PluginRef::instrument(track_id));
+        self.engine.all_notes_off();
+        self.instrument_errors.remove(&track_id);
+        self.device_errors.retain(|(tid, _), _| *tid != track_id);
+        self.sync_instruments();
+        self.engine.sync_channels(&self.project);
     }
 
     fn duplicate_selected_notes(&mut self) {
@@ -828,13 +910,15 @@ impl DawApp {
         request: PluginEditorRequest,
     ) {
         match request {
-            PluginEditorRequest::Open { track_id, title } => {
+            PluginEditorRequest::Open {
+                track_id,
+                device_id,
+                title,
+            } => {
+                let target = PluginRef { track_id, device_id };
                 let host_x11 = host_x11_from_frame(frame);
-                let forward = self.plugin_forward_transport(track_id);
-                match self
-                    .engine
-                    .open_plugin_editor(track_id, &title, host_x11, forward)
-                {
+                let forward = self.plugin_forward_transport(target);
+                match self.engine.open_plugin_editor(target, &title, host_x11, forward) {
                     Ok(()) => {
                         self.status_message = format!("Opened plugin editor: {title}");
                         ctx.request_repaint();
@@ -844,28 +928,37 @@ impl DawApp {
                     }
                 }
             }
-            PluginEditorRequest::Close { track_id } => {
-                self.engine.close_plugin_editor(track_id);
+            PluginEditorRequest::Close { track_id, device_id } => {
+                self.engine
+                    .close_plugin_editor(PluginRef { track_id, device_id });
                 self.status_message = String::from("Closed plugin editor");
             }
         }
     }
 
-    /// Plugin `unique_id` for a track, if it hosts a plugin instrument.
-    fn track_plugin_unique_id(&self, track_id: u64) -> Option<String> {
-        self.project
+    /// Plugin `unique_id` for a slot, if it hosts a plugin (instrument or device).
+    fn plugin_unique_id_for(&self, target: PluginRef) -> Option<String> {
+        let track = self
+            .project
             .tracks
             .iter()
-            .find(|track| track.id == track_id)
-            .and_then(|track| match &track.instrument {
+            .find(|track| track.id == target.track_id)?;
+        match target.device_id {
+            None => match &track.instrument {
                 crate::model::TrackInstrument::Plugin { unique_id, .. } => Some(unique_id.clone()),
                 crate::model::TrackInstrument::BuiltInPiano => None,
-            })
+            },
+            Some(device_id) => track
+                .devices
+                .iter()
+                .find(|device| device.id == device_id)
+                .map(|device| device.unique_id.clone()),
+        }
     }
 
-    /// Effective "forward Space to Motif" setting for a track's plugin.
-    fn plugin_forward_transport(&self, track_id: u64) -> bool {
-        match self.track_plugin_unique_id(track_id) {
+    /// Effective "forward Space to Motif" setting for a slot's plugin.
+    fn plugin_forward_transport(&self, target: PluginRef) -> bool {
+        match self.plugin_unique_id_for(target) {
             Some(unique_id) => self
                 .settings
                 .plugin_keys
@@ -874,16 +967,16 @@ impl DawApp {
         }
     }
 
-    /// Toggle Space forwarding for a track's plugin: persist the override and
+    /// Toggle Space forwarding for a slot's plugin: persist the override and
     /// apply it live to the open editor.
-    fn set_plugin_forward_transport(&mut self, track_id: u64, forward: bool) {
-        if let Some(unique_id) = self.track_plugin_unique_id(track_id) {
+    fn set_plugin_forward_transport(&mut self, target: PluginRef, forward: bool) {
+        if let Some(unique_id) = self.plugin_unique_id_for(target) {
             self.settings
                 .plugin_keys
                 .set_forward_transport_for(&unique_id, forward);
             self.save_settings();
         }
-        self.engine.set_plugin_editor_transport(track_id, forward);
+        self.engine.set_plugin_editor_transport(target, forward);
     }
 
     /// Always-visible row of open plugin editors with a close button and a
@@ -897,10 +990,10 @@ impl DawApp {
         ui.separator();
         ui.horizontal_wrapped(|ui| {
             ui.label("Plugin editors:");
-            for (track_id, title) in editors {
+            for (target, title) in editors {
                 ui.group(|ui| {
                     ui.label(&title);
-                    let mut forward = self.plugin_forward_transport(track_id);
+                    let mut forward = self.plugin_forward_transport(target);
                     if ui
                         .checkbox(&mut forward, "Space -> Motif")
                         .on_hover_text(
@@ -909,14 +1002,14 @@ impl DawApp {
                         )
                         .changed()
                     {
-                        self.set_plugin_forward_transport(track_id, forward);
+                        self.set_plugin_forward_transport(target, forward);
                     }
                     if ui
                         .button("Close")
                         .on_hover_text("Close this plugin editor (or press Ctrl+W in it)")
                         .clicked()
                     {
-                        self.engine.close_plugin_editor(track_id);
+                        self.engine.close_plugin_editor(target);
                     }
                 });
             }
@@ -927,6 +1020,32 @@ impl DawApp {
         self.piano_roll.release_audition(&mut self.engine);
         self.piano_roll.clear_selection();
         self.center_view = CenterView::Playlist;
+    }
+
+    fn open_mixer(&mut self) {
+        if matches!(self.center_view, CenterView::Mixer) {
+            return;
+        }
+        if matches!(self.center_view, CenterView::PianoRoll { .. }) {
+            self.piano_roll.release_audition(&mut self.engine);
+        }
+        if self.selected_track.is_none() {
+            self.selected_track = self.project.tracks.first().map(|t| t.id);
+        }
+        self.center_view = CenterView::Mixer;
+    }
+
+    fn open_devices(&mut self) {
+        if matches!(self.center_view, CenterView::Devices) {
+            return;
+        }
+        if matches!(self.center_view, CenterView::PianoRoll { .. }) {
+            self.piano_roll.release_audition(&mut self.engine);
+        }
+        if self.selected_track.is_none() {
+            self.selected_track = self.project.tracks.first().map(|t| t.id);
+        }
+        self.center_view = CenterView::Devices;
     }
 
     fn open_settings(&mut self) {
@@ -960,27 +1079,27 @@ impl DawApp {
             Action::DeleteSelection => match self.center_view {
                 CenterView::Playlist => self.delete_selected_clips(),
                 CenterView::PianoRoll { .. } => self.delete_selected_notes(),
-                CenterView::Settings => {}
+                CenterView::Mixer | CenterView::Devices | CenterView::Settings => {}
             },
             Action::CopySelection => match self.center_view {
                 CenterView::Playlist => self.copy_selected_clips(),
                 CenterView::PianoRoll { .. } => self.copy_selected_notes(),
-                CenterView::Settings => {}
+                CenterView::Mixer | CenterView::Devices | CenterView::Settings => {}
             },
             Action::CutSelection => match self.center_view {
                 CenterView::Playlist => self.cut_selected_clips(),
                 CenterView::PianoRoll { .. } => self.cut_selected_notes(),
-                CenterView::Settings => {}
+                CenterView::Mixer | CenterView::Devices | CenterView::Settings => {}
             },
             Action::PasteSelection => match self.center_view {
                 CenterView::Playlist => self.paste_clips_at_playhead(),
                 CenterView::PianoRoll { clip_id } => self.paste_notes_at_playhead(clip_id),
-                CenterView::Settings => {}
+                CenterView::Mixer | CenterView::Devices | CenterView::Settings => {}
             },
             Action::DuplicateSelection => match self.center_view {
                 CenterView::Playlist => self.duplicate_selected_clips(),
                 CenterView::PianoRoll { .. } => self.duplicate_selected_notes(),
-                CenterView::Settings => {}
+                CenterView::Mixer | CenterView::Devices | CenterView::Settings => {}
             },
             Action::Undo => match self.center_view {
                 CenterView::Settings => {}
@@ -997,8 +1116,20 @@ impl DawApp {
             Action::OpenProjectBrowser => self.show_project_browser = true,
             Action::BackToPlaylist => match self.center_view {
                 CenterView::Settings => self.close_settings(),
-                CenterView::PianoRoll { .. } => self.back_to_playlist(),
+                CenterView::PianoRoll { .. } | CenterView::Mixer | CenterView::Devices => {
+                    self.back_to_playlist()
+                }
                 CenterView::Playlist => {}
+            },
+            Action::ToggleMixer => match self.center_view {
+                CenterView::Mixer => self.back_to_playlist(),
+                CenterView::Settings => {}
+                _ => self.open_mixer(),
+            },
+            Action::ToggleDevices => match self.center_view {
+                CenterView::Devices => self.back_to_playlist(),
+                CenterView::Settings => {}
+                _ => self.open_devices(),
             },
         }
     }
@@ -1009,6 +1140,7 @@ impl eframe::App for DawApp {
         let delta_seconds = ctx.input(|input| input.unstable_dt);
         let loop_end = self.project.loop_end_beats;
         self.sync_instruments();
+        self.engine.sync_channels(&self.project);
         self.engine.advance(delta_seconds, loop_end);
         self.engine.schedule_project(&self.project);
         let editor_poll = self.engine.poll_plugin_editors();
@@ -1042,7 +1174,10 @@ impl eframe::App for DawApp {
         egui::TopBottomPanel::top("transport_panel").show(ctx, |ui| {
             ui.heading("Motif");
             ui.add_space(4.0);
-            TransportUi::show(ui, &mut self.project, &mut self.engine);
+            if TransportUi::show(ui, &mut self.project, &mut self.engine) {
+                self.settings.metronome_enabled = self.engine.metronome_enabled();
+                self.save_settings();
+            }
 
             ui.separator();
             ui.horizontal(|ui| {
@@ -1053,7 +1188,7 @@ impl eframe::App for DawApp {
                         }
                         ui.separator();
                     }
-                    CenterView::PianoRoll { .. } => {
+                    CenterView::PianoRoll { .. } | CenterView::Mixer | CenterView::Devices => {
                         if ui.button("Back to playlist").clicked() {
                             self.back_to_playlist();
                         }
@@ -1063,6 +1198,33 @@ impl eframe::App for DawApp {
                 }
 
                 self.show_file_menu(ui);
+
+                if !matches!(self.center_view, CenterView::Settings | CenterView::Mixer)
+                    && ui.button("Mixer").clicked()
+                {
+                    self.open_mixer();
+                }
+
+                if !matches!(self.center_view, CenterView::Settings | CenterView::Devices)
+                    && ui.button("Devices").clicked()
+                {
+                    self.open_devices();
+                }
+
+                if matches!(self.center_view, CenterView::Playlist | CenterView::Mixer)
+                    && ui
+                        .button(if self.show_inspector {
+                            "Hide inspector"
+                        } else {
+                            "Inspector"
+                        })
+                        .clicked()
+                {
+                    self.show_inspector = !self.show_inspector;
+                    if self.show_inspector && self.selected_track.is_none() {
+                        self.selected_track = self.project.tracks.first().map(|t| t.id);
+                    }
+                }
 
                 if !matches!(self.center_view, CenterView::Settings)
                     && ui.button("Settings").clicked()
@@ -1078,17 +1240,41 @@ impl eframe::App for DawApp {
                         ui.label(format!("Editing: {}", clip.name));
                     }
                 }
+                if matches!(self.center_view, CenterView::Mixer) {
+                    ui.label("Mixer");
+                }
+                if matches!(self.center_view, CenterView::Devices) {
+                    ui.label("Devices");
+                }
                 ui.label(&self.status_message);
             });
 
             self.show_open_editors_strip(ui);
         });
 
+        if self.show_inspector
+            && matches!(self.center_view, CenterView::Playlist | CenterView::Mixer)
+        {
+            egui::SidePanel::right("track_inspector")
+                .default_width(260.0)
+                .min_width(200.0)
+                .show(ctx, |ui| {
+                    let theme = self.settings.themes.colors().clone();
+                    show_inspector(
+                        ui,
+                        &mut self.project,
+                        &mut self.history,
+                        self.selected_track,
+                        &theme,
+                    );
+                });
+        }
+
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show(ctx, |ui| match self.center_view {
                 CenterView::Playlist => {
-                    let (open_clip, editor_request) = {
+                    let (open_clip, editor_request, delete_track) = {
                         let DawApp {
                             playlist,
                             project,
@@ -1096,6 +1282,7 @@ impl eframe::App for DawApp {
                             settings,
                             catalog,
                             history,
+                            selected_track,
                             ..
                         } = self;
                         playlist.show(
@@ -1104,11 +1291,13 @@ impl eframe::App for DawApp {
                             engine,
                             catalog,
                             history,
+                            selected_track,
                             settings.themes.colors(),
                         );
                         (
                             playlist.take_open_clip_request(),
                             playlist.take_plugin_editor_request(),
+                            playlist.take_delete_track_request(),
                         )
                     };
                     if let Some(clip_id) = open_clip {
@@ -1116,6 +1305,67 @@ impl eframe::App for DawApp {
                     }
                     if let Some(request) = editor_request {
                         self.handle_plugin_editor_request(ctx, frame, request);
+                    }
+                    if let Some(track_id) = delete_track {
+                        self.delete_track(track_id);
+                    }
+                }
+                CenterView::Mixer => {
+                    let DawApp {
+                        mixer,
+                        project,
+                        engine,
+                        settings,
+                        history,
+                        selected_track,
+                        ..
+                    } = self;
+                    mixer.show(
+                        ui,
+                        project,
+                        engine,
+                        history,
+                        selected_track,
+                        settings.themes.colors(),
+                    );
+                }
+                CenterView::Devices => {
+                    let (editor_request, open_clip, delete_track) = {
+                        let DawApp {
+                            devices,
+                            project,
+                            engine,
+                            catalog,
+                            history,
+                            device_errors,
+                            settings,
+                            selected_track,
+                            ..
+                        } = self;
+                        devices.show(
+                            ui,
+                            project,
+                            engine,
+                            catalog,
+                            history,
+                            device_errors,
+                            selected_track,
+                            settings.themes.colors(),
+                        );
+                        (
+                            devices.take_plugin_editor_request(),
+                            devices.take_open_clip_request(),
+                            devices.take_delete_track_request(),
+                        )
+                    };
+                    if let Some(request) = editor_request {
+                        self.handle_plugin_editor_request(ctx, frame, request);
+                    }
+                    if let Some(clip_id) = open_clip {
+                        self.open_clip(clip_id);
+                    }
+                    if let Some(track_id) = delete_track {
+                        self.delete_track(track_id);
                     }
                 }
                 CenterView::PianoRoll { clip_id } => {

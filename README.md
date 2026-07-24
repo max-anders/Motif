@@ -14,7 +14,7 @@ Open-source music sketchpad: piano roll, playlist, soft-synth piano, and CLAP/VS
 | Plugin editor GUI | Working on Linux (X11 / XWayland); not Wayland-native |
 | Piano roll (notes + key audition + copy/paste) | Working |
 | Undo / redo (clips + notes) | Working (depth in Settings → Editing) |
-| Transport + loop + BPM | Working |
+| Transport + loop + BPM + metronome | Working |
 | Soft piano + plugin mix (`cpal`) | Working (UI continues if device open fails) |
 | Project save/load | Working (`.motif` files; recent projects; recovery autosave) |
 | Settings (shortcuts + themes + plugins + editing + project) | Working (`settings.json` in CWD) |
@@ -113,6 +113,8 @@ cargo run --release
 - **Ctrl/Cmd+Z** - undo last clip/note edit (remappable)
 - **Ctrl/Cmd+Shift+Z** - redo (remappable)
 - **Add track** - menu: Built-in Piano or a scanned CLAP/VST3 instrument
+- **M / S** on track header (or right-click **Mute** / **Solo**) - mute or solo a track; when any track is soloed, only soloed tracks play; otherwise muted tracks are silent
+- **Right-click track header → Delete track** - remove the track and its clips (last track cannot be deleted; Ctrl/Cmd+Z restores a deleted track)
 - **Right-click track header** - open/close plugin editor (plugin tracks) or change instrument (searchable list)
 - **Left-click / drag ruler** - move playhead (snapped to 1/16)
 - **Shift + left-click** or **right-click empty timeline** - move playhead
@@ -148,6 +150,7 @@ cargo run --release
 
 - **Play / Pause** - play arrangement notes through each track's instrument (playhead loops)
 - **Stop** - stop, silence, and return to start
+- **Metronome** - checkbox in the transport bar; quarter-note clicks at project BPM while playing (downbeat accent on beat 1). Default **on**; persisted in `settings.json`. No clicks when stopped or during piano-key audition alone.
 - **Space** - play/pause (factory default; remappable)
 - **File** menu - New / Open... / Open Recent / Projects... / Save / Save As...
 - **Ctrl/Cmd+N** - new project (remappable)

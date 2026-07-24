@@ -1,5 +1,8 @@
 mod app_settings;
+mod devices;
+mod inspector;
 mod instrument_menu;
+mod mixer;
 mod piano_roll;
 mod playlist;
 mod project_browser;
@@ -10,6 +13,9 @@ mod timeline;
 mod transport;
 
 pub use app_settings::AppSettings;
+pub use devices::DevicesUi;
+pub use inspector::show_inspector;
+pub use mixer::MixerUi;
 pub use piano_roll::PianoRollUi;
 pub use playlist::{PlaylistUi, PluginEditorRequest};
 pub use project_browser::{ProjectBrowserAction, ProjectBrowserUi};

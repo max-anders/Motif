@@ -14,6 +14,24 @@ use crate::model::{PluginFormat, TrackInstrument};
 
 pub const PLUGIN_CACHE_FILE: &str = "plugin_cache.json";
 
+/// Which picker an entry belongs in. CLAP reports this accurately; VST3 is
+/// heuristic (see `classify_candidate`) since truce-rack tags every VST3 as
+/// `PluginCategory::Effect` regardless of its real role.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EntryCategory {
+    Instrument,
+    Effect,
+}
+
+impl Default for EntryCategory {
+    /// Missing on cache files written before Phase 2 (effect scanning);
+    /// every entry in that older cache was an instrument.
+    fn default() -> Self {
+        Self::Instrument
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CatalogEntry {
     pub name: String,
@@ -25,6 +43,8 @@ pub struct CatalogEntry {
     /// Scanner-reported custom editor; confirm after load via the instance.
     #[serde(default)]
     pub has_editor: bool,
+    #[serde(default)]
+    pub category: EntryCategory,
 }
 
 impl CatalogEntry {
@@ -96,41 +116,58 @@ impl PluginCatalog {
         fs::write(path, json).map_err(|error| error.to_string())
     }
 
-    pub fn instrument_count(&self) -> usize {
-        self.entries.len()
+    /// Instrument entries only (excludes insert-FX effects).
+    pub fn instruments(&self) -> Vec<&CatalogEntry> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.category == EntryCategory::Instrument)
+            .collect()
     }
 
+    /// Effect entries only (excludes instruments).
+    pub fn effects(&self) -> Vec<&CatalogEntry> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.category == EntryCategory::Effect)
+            .collect()
+    }
+
+    pub fn instrument_count(&self) -> usize {
+        self.instruments().len()
+    }
+
+    pub fn effect_count(&self) -> usize {
+        self.effects().len()
+    }
+
+    /// Look up by identity across both instruments and effects.
     pub fn find(&self, format: PluginFormat, unique_id: &str) -> Option<&CatalogEntry> {
         self.entries
             .iter()
             .find(|entry| entry.format == format && entry.unique_id == unique_id)
     }
 
+    /// Instrument picker search (built-in piano is added by the caller).
     pub fn filtered(&self, query: &str) -> Vec<&CatalogEntry> {
-        let q = query.trim().to_lowercase();
-        if q.is_empty() {
-            return self.entries.iter().collect();
-        }
-        self.entries
-            .iter()
-            .filter(|entry| {
-                entry.name.to_lowercase().contains(&q)
-                    || entry.vendor.to_lowercase().contains(&q)
-                    || entry.format.as_str().contains(&q)
-            })
-            .collect()
+        filter_entries(self.instruments(), query)
     }
 
-    /// Full rescan of default OS paths plus `extra_paths`. Instruments only.
+    /// Effect picker search (insert FX chain).
+    pub fn filtered_effects(&self, query: &str) -> Vec<&CatalogEntry> {
+        filter_entries(self.effects(), query)
+    }
+
+    /// Full rescan of default OS paths plus `extra_paths`. Populates both
+    /// instruments and effects.
     pub fn rescan(&mut self) {
         let mut entries = Vec::new();
         let mut errors = Vec::new();
 
-        match scan_clap_instruments(&[]) {
+        match scan_clap(&[]) {
             Ok(mut found) => entries.append(&mut found),
             Err(error) => errors.push(format!("CLAP: {error}")),
         }
-        match scan_vst3_instruments(&[]) {
+        match scan_vst3(&[]) {
             Ok(mut found) => entries.append(&mut found),
             Err(error) => errors.push(format!("VST3: {error}")),
         }
@@ -150,11 +187,11 @@ impl PluginCatalog {
                 ));
                 continue;
             }
-            match scan_clap_instruments(&[path.clone()]) {
+            match scan_clap(&[path.clone()]) {
                 Ok(mut found) => entries.append(&mut found),
                 Err(error) => errors.push(format!("CLAP {}: {error}", path.display())),
             }
-            match scan_vst3_instruments(&[path.clone()]) {
+            match scan_vst3(&[path.clone()]) {
                 Ok(mut found) => entries.append(&mut found),
                 Err(error) => errors.push(format!("VST3 {}: {error}", path.display())),
             }
@@ -193,23 +230,50 @@ fn is_yabridge_path(path: &Path) -> bool {
     })
 }
 
-fn keep_catalog_candidate(
+/// Classify a scanned plugin as an instrument or effect for Motif's two
+/// pickers, or `None` to drop it entirely (note effects / analyzers / tools
+/// are out of scope for Phase 2 — neither an instrument voice nor an insert
+/// effect).
+fn classify_candidate(
     format: PluginFormat,
     category: PluginCategory,
     accepts_midi: bool,
-) -> bool {
+) -> Option<EntryCategory> {
     match format {
-        // truce-rack currently tags every VST3 as Effect; keep MIDI-capable modules.
+        PluginFormat::Clap => match category {
+            PluginCategory::Instrument => Some(EntryCategory::Instrument),
+            PluginCategory::Effect => Some(EntryCategory::Effect),
+            PluginCategory::NoteEffect | PluginCategory::Analyzer | PluginCategory::Tool => None,
+        },
+        // truce-rack currently tags every VST3 as Effect, so category alone
+        // can't tell a synth from a reverb. MIDI-capable modules are
+        // heuristically instruments; everything else is a real insert effect.
         PluginFormat::Vst3 => {
-            matches!(category, PluginCategory::Instrument)
-                || accepts_midi
-                || matches!(category, PluginCategory::Effect)
+            if accepts_midi || matches!(category, PluginCategory::Instrument) {
+                Some(EntryCategory::Instrument)
+            } else {
+                Some(EntryCategory::Effect)
+            }
         }
-        PluginFormat::Clap => matches!(category, PluginCategory::Instrument),
     }
 }
 
-fn scan_clap_instruments(extra_only: &[PathBuf]) -> Result<Vec<CatalogEntry>, String> {
+fn filter_entries<'a>(entries: Vec<&'a CatalogEntry>, query: &str) -> Vec<&'a CatalogEntry> {
+    let q = query.trim().to_lowercase();
+    if q.is_empty() {
+        return entries;
+    }
+    entries
+        .into_iter()
+        .filter(|entry| {
+            entry.name.to_lowercase().contains(&q)
+                || entry.vendor.to_lowercase().contains(&q)
+                || entry.format.as_str().contains(&q)
+        })
+        .collect()
+}
+
+fn scan_clap(extra_only: &[PathBuf]) -> Result<Vec<CatalogEntry>, String> {
     let scanner = ClapScanner::new();
     let infos = if extra_only.is_empty() {
         scanner.scan().map_err(|e| e.to_string())?
@@ -228,9 +292,7 @@ fn scan_clap_instruments(extra_only: &[PathBuf]) -> Result<Vec<CatalogEntry>, St
         .filter(|info| !is_yabridge_path(&info.path))
         .filter_map(|info| {
             let format = PluginFormat::from_rack_format(info.format)?;
-            if !keep_catalog_candidate(format, info.category, info.accepts_midi) {
-                return None;
-            }
+            let category = classify_candidate(format, info.category, info.accepts_midi)?;
             Some(CatalogEntry {
                 name: info.name,
                 vendor: info.vendor,
@@ -239,12 +301,13 @@ fn scan_clap_instruments(extra_only: &[PathBuf]) -> Result<Vec<CatalogEntry>, St
                 path: info.path,
                 accepts_midi: info.accepts_midi,
                 has_editor: info.has_editor,
+                category,
             })
         })
         .collect())
 }
 
-fn scan_vst3_instruments(extra_only: &[PathBuf]) -> Result<Vec<CatalogEntry>, String> {
+fn scan_vst3(extra_only: &[PathBuf]) -> Result<Vec<CatalogEntry>, String> {
     let scanner = Vst3Scanner::new();
     let infos = if extra_only.is_empty() {
         scanner.scan().map_err(|e| e.to_string())?
@@ -263,9 +326,7 @@ fn scan_vst3_instruments(extra_only: &[PathBuf]) -> Result<Vec<CatalogEntry>, St
         .filter(|info| !is_yabridge_path(&info.path))
         .filter_map(|info| {
             let format = PluginFormat::from_rack_format(info.format)?;
-            if !keep_catalog_candidate(format, info.category, info.accepts_midi) {
-                return None;
-            }
+            let category = classify_candidate(format, info.category, info.accepts_midi)?;
             Some(CatalogEntry {
                 name: info.name,
                 vendor: info.vendor,
@@ -274,6 +335,7 @@ fn scan_vst3_instruments(extra_only: &[PathBuf]) -> Result<Vec<CatalogEntry>, St
                 path: info.path,
                 accepts_midi: info.accepts_midi,
                 has_editor: info.has_editor,
+                category,
             })
         })
         .collect())

@@ -2,7 +2,8 @@ use serde::{Deserialize, Serialize};
 
 use super::clip::MidiClip;
 use super::clipboard::{ClipboardClip, ClipboardNote};
-use super::instrument::TrackInstrument;
+use super::instrument::{PluginFormat, TrackInstrument};
+use super::mixer::Device;
 use super::track::{migrate_notes_to_clip, Track};
 use super::Note;
 
@@ -19,10 +20,20 @@ pub struct Project {
     pub bpm: f32,
     pub beats_per_bar: f32,
     pub loop_end_beats: f32,
+    /// Master bus fader in dB (0 = unity).
+    #[serde(default)]
+    pub master_gain_db: f32,
     pub tracks: Vec<Track>,
     next_note_id: u64,
     next_clip_id: u64,
     next_track_id: u64,
+    /// Missing on projects saved before insert FX (Phase 2); starts at 1.
+    #[serde(default = "default_next_device_id")]
+    next_device_id: u64,
+}
+
+fn default_next_device_id() -> u64 {
+    1
 }
 
 /// Legacy on-disk format before tracks/clips.
@@ -41,10 +52,12 @@ impl Default for Project {
             bpm: DEFAULT_BPM,
             beats_per_bar: DEFAULT_BEATS_PER_BAR,
             loop_end_beats: 16.0,
+            master_gain_db: 0.0,
             tracks: Vec::new(),
             next_note_id: 1,
             next_clip_id: 2,
             next_track_id: 2,
+            next_device_id: 1,
         };
         let track_id = project.add_track("Track 1", TrackInstrument::BuiltInPiano);
         project.add_clip_to_track(track_id, 0.0, 4.0);
@@ -85,12 +98,83 @@ impl Project {
         self.next_track_id += 1;
     }
 
+    pub fn next_device_id(&self) -> u64 {
+        self.next_device_id
+    }
+
+    pub fn bump_device_id(&mut self) {
+        self.next_device_id += 1;
+    }
+
+    /// Append a plugin effect to a track's insert chain. Returns the new device id.
+    pub fn add_device(
+        &mut self,
+        track_id: u64,
+        format: PluginFormat,
+        unique_id: &str,
+        name: &str,
+    ) -> Option<u64> {
+        let id = self.next_device_id();
+        self.bump_device_id();
+        let device = Device::new_plugin(id, format, unique_id, name);
+        self.track_mut(track_id)?.devices.push(device);
+        Some(id)
+    }
+
+    /// Remove a device from a track's insert chain. Returns `false` if the
+    /// track or device id is unknown (project unchanged).
+    pub fn remove_device(&mut self, track_id: u64, device_id: u64) -> bool {
+        let Some(track) = self.track_mut(track_id) else {
+            return false;
+        };
+        let before = track.devices.len();
+        track.devices.retain(|device| device.id != device_id);
+        track.devices.len() != before
+    }
+
+    /// Reorder a device within its track's chain. Returns `false` if the
+    /// track is unknown or either index is out of range (project unchanged).
+    pub fn move_device(&mut self, track_id: u64, from_index: usize, to_index: usize) -> bool {
+        let Some(track) = self.track_mut(track_id) else {
+            return false;
+        };
+        if from_index == to_index
+            || from_index >= track.devices.len()
+            || to_index >= track.devices.len()
+        {
+            return false;
+        }
+        let device = track.devices.remove(from_index);
+        track.devices.insert(to_index, device);
+        true
+    }
+
+    /// Set a device's bypass flag. Returns `false` if the track or device id
+    /// is unknown (project unchanged).
+    pub fn set_device_bypass(&mut self, track_id: u64, device_id: u64, bypassed: bool) -> bool {
+        let Some(track) = self.track_mut(track_id) else {
+            return false;
+        };
+        let Some(device) = track.devices.iter_mut().find(|d| d.id == device_id) else {
+            return false;
+        };
+        device.bypassed = bypassed;
+        true
+    }
+
     pub fn add_track(&mut self, name: &str, instrument: TrackInstrument) -> u64 {
         let id = self.next_track_id();
         self.bump_track_id();
         self.tracks.push(Track {
             id,
             name: name.to_string(),
+            muted: false,
+            solo: false,
+            gain_db: 0.0,
+            pan: 0.0,
+            sends: Vec::new(),
+            devices: Vec::new(),
+            macros: Vec::new(),
             instrument,
             plugin_state: None,
             clips: Vec::new(),
@@ -133,8 +217,33 @@ impl Project {
         Some(note)
     }
 
-    pub fn remove_track(&mut self, track_id: u64) {
+    /// At least one track must remain; deleting the last track is a no-op.
+    pub fn can_remove_track(&self) -> bool {
+        self.tracks.len() > 1
+    }
+
+    /// Removes a track and its clips. Returns `false` if this is the last track
+    /// or the id is unknown (project unchanged).
+    pub fn remove_track(&mut self, track_id: u64) -> bool {
+        if !self.can_remove_track() {
+            return false;
+        }
+        let before = self.tracks.len();
         self.tracks.retain(|track| track.id != track_id);
+        self.tracks.len() != before
+    }
+
+    pub fn any_track_soloed(&self) -> bool {
+        self.tracks.iter().any(|track| track.solo)
+    }
+
+    /// Arrangement playback: solo wins when any track is soloed; otherwise respect mute.
+    pub fn track_audible(&self, track: &Track) -> bool {
+        if self.any_track_soloed() {
+            track.solo
+        } else {
+            !track.muted
+        }
     }
 
     pub fn track_mut(&mut self, track_id: u64) -> Option<&mut Track> {
@@ -432,6 +541,13 @@ impl Project {
         let track = Track {
             id: 1,
             name: String::from("Track 1"),
+            muted: false,
+            solo: false,
+            gain_db: 0.0,
+            pan: 0.0,
+            sends: Vec::new(),
+            devices: Vec::new(),
+            macros: Vec::new(),
             instrument: TrackInstrument::BuiltInPiano,
             plugin_state: None,
             clips: vec![clip],
@@ -441,10 +557,12 @@ impl Project {
             bpm: legacy.bpm,
             beats_per_bar: legacy.beats_per_bar,
             loop_end_beats: legacy.loop_end_beats,
+            master_gain_db: 0.0,
             tracks: vec![track],
             next_note_id: legacy.next_note_id,
             next_clip_id: 2,
             next_track_id: 2,
+            next_device_id: 1,
         })
     }
 }
@@ -512,6 +630,56 @@ mod tests {
     }
 
     #[test]
+    fn remove_track_refuses_last_track() {
+        let mut project = Project::default();
+        assert_eq!(project.tracks.len(), 1);
+        assert!(!project.can_remove_track());
+        let id = project.tracks[0].id;
+        assert!(!project.remove_track(id));
+        assert_eq!(project.tracks.len(), 1);
+        assert!(project.track(id).is_some());
+    }
+
+    #[test]
+    fn remove_track_drops_clips() {
+        let mut project = Project::default();
+        let keep = project.tracks[0].id;
+        let remove = project.add_track("Track 2", TrackInstrument::BuiltInPiano);
+        let clip_id = project
+            .add_clip_to_track(remove, 2.0, 4.0)
+            .expect("clip");
+        project
+            .add_note_to_clip(clip_id, 60, 0.0, 1.0)
+            .expect("note");
+        assert!(project.can_remove_track());
+        assert!(project.remove_track(remove));
+        assert_eq!(project.tracks.len(), 1);
+        assert_eq!(project.tracks[0].id, keep);
+        assert!(project.clip(clip_id).is_none());
+        assert!(project.track(remove).is_none());
+    }
+
+    #[test]
+    fn track_audible_solo_overrides_mute() {
+        let mut project = Project::default();
+        let a = project.tracks[0].id;
+        let b = project.add_track("Track 2", TrackInstrument::BuiltInPiano);
+        project.track_mut(a).expect("a").muted = true;
+        project.track_mut(b).expect("b").solo = true;
+        assert!(!project.track_audible(project.track(a).expect("a")));
+        assert!(project.track_audible(project.track(b).expect("b")));
+    }
+
+    #[test]
+    fn track_audible_respects_mute_without_solo() {
+        let mut project = Project::default();
+        let a = project.tracks[0].id;
+        project.track_mut(a).expect("a").muted = true;
+        assert!(!project.any_track_soloed());
+        assert!(!project.track_audible(project.track(a).expect("a")));
+    }
+
+    #[test]
     fn clipboard_note_round_trip_relative_starts() {
         let entry = ClipboardNote {
             pitch: 72,
@@ -526,5 +694,224 @@ mod tests {
         assert_eq!(note.start_beats, 3.25);
         assert_eq!(note.duration_beats, 0.25);
         assert_eq!(note.velocity, 90);
+    }
+
+    #[test]
+    fn old_json_without_mixer_fields_loads_defaults() {
+        // Pre-mixer bare Project (no master_gain_db / track gain/pan/sends/devices/macros).
+        let json = r#"{
+            "bpm": 120.0,
+            "beats_per_bar": 4.0,
+            "loop_end_beats": 16.0,
+            "tracks": [{
+                "id": 1,
+                "name": "Track 1",
+                "muted": false,
+                "solo": false,
+                "instrument": { "type": "built_in_piano" },
+                "clips": [{
+                    "id": 1,
+                    "name": "Clip 1",
+                    "start_beats": 0.0,
+                    "length_beats": 4.0,
+                    "notes": []
+                }]
+            }],
+            "next_note_id": 1,
+            "next_clip_id": 2,
+            "next_track_id": 2
+        }"#;
+        let project = Project::from_json(json).expect("parse");
+        assert_eq!(project.master_gain_db, 0.0);
+        let track = &project.tracks[0];
+        assert_eq!(track.gain_db, 0.0);
+        assert_eq!(track.pan, 0.0);
+        assert!(track.sends.is_empty());
+        assert!(track.devices.is_empty());
+        assert!(track.macros.is_empty());
+        assert!((track.gain_linear() - 1.0).abs() < 1e-5);
+        let (l, r) = track.pan_gains();
+        let center = std::f32::consts::FRAC_1_SQRT_2;
+        assert!((l - center).abs() < 1e-5);
+        assert!((r - center).abs() < 1e-5);
+    }
+
+    #[test]
+    fn mixer_fields_round_trip_in_envelope() {
+        let mut project = Project::default();
+        project.master_gain_db = -3.0;
+        {
+            let track = &mut project.tracks[0];
+            track.gain_db = -6.0;
+            track.pan = 0.5;
+            track.sends.push(crate::model::Send {
+                target_track: None,
+                level_db: -12.0,
+                enabled: true,
+            });
+            track.devices.push(crate::model::Device::new_plugin(
+                1,
+                crate::model::PluginFormat::Clap,
+                "com.example.reverb",
+                "Placeholder",
+            ));
+            track.macros.push(crate::model::Macro {
+                name: String::from("A"),
+                value: 0.25,
+            });
+        }
+        let json = serde_json::to_string(&crate::model::persistence::ProjectEnvelope::new(
+            project.clone(),
+        ))
+        .unwrap();
+        let loaded = Project::from_json(&json).unwrap();
+        assert_eq!(loaded.master_gain_db, -3.0);
+        assert_eq!(loaded.tracks[0].gain_db, -6.0);
+        assert_eq!(loaded.tracks[0].pan, 0.5);
+        assert_eq!(loaded.tracks[0].sends.len(), 1);
+        assert_eq!(loaded.tracks[0].devices[0].name, "Placeholder");
+        assert_eq!(loaded.tracks[0].macros[0].value, 0.25);
+    }
+
+    #[test]
+    fn device_plugin_state_round_trips_through_envelope() {
+        let mut project = Project::default();
+        let track_id = project.tracks[0].id;
+        let device_id = project
+            .add_device(
+                track_id,
+                crate::model::PluginFormat::Vst3,
+                "vendor.eq",
+                "Channel EQ",
+            )
+            .expect("device added");
+        {
+            let track = project.track_mut(track_id).expect("track");
+            let device = track
+                .devices
+                .iter_mut()
+                .find(|d| d.id == device_id)
+                .expect("device");
+            device.bypassed = true;
+            device.plugin_state = Some(vec![1, 2, 3, 4, 5]);
+        }
+
+        let json = serde_json::to_string(&crate::model::persistence::ProjectEnvelope::new(
+            project.clone(),
+        ))
+        .unwrap();
+        let loaded = Project::from_json(&json).unwrap();
+        let device = &loaded.tracks[0].devices[0];
+        assert_eq!(device.id, device_id);
+        assert_eq!(device.format, crate::model::PluginFormat::Vst3);
+        assert_eq!(device.unique_id, "vendor.eq");
+        assert_eq!(device.name, "Channel EQ");
+        assert!(device.bypassed);
+        assert_eq!(device.plugin_state, Some(vec![1, 2, 3, 4, 5]));
+    }
+
+    #[test]
+    fn old_device_json_without_plugin_fields_loads_defaults() {
+        // Pre-Phase-2 placeholder device: only {id, name, bypassed}, no format/
+        // unique_id/plugin_state, and the project predates next_device_id.
+        let json = r#"{
+            "bpm": 120.0,
+            "beats_per_bar": 4.0,
+            "loop_end_beats": 16.0,
+            "tracks": [{
+                "id": 1,
+                "name": "Track 1",
+                "instrument": { "type": "built_in_piano" },
+                "devices": [{
+                    "id": 7,
+                    "name": "Placeholder",
+                    "bypassed": true
+                }],
+                "clips": []
+            }],
+            "next_note_id": 1,
+            "next_clip_id": 2,
+            "next_track_id": 2
+        }"#;
+        let project = Project::from_json(json).expect("parse");
+        let device = &project.tracks[0].devices[0];
+        assert_eq!(device.id, 7);
+        assert_eq!(device.name, "Placeholder");
+        assert!(device.bypassed);
+        assert_eq!(device.format, crate::model::PluginFormat::Clap);
+        assert_eq!(device.unique_id, "");
+        assert_eq!(device.plugin_state, None);
+        // Missing next_device_id defaults to 1, independent of legacy device ids.
+        assert_eq!(project.next_device_id(), 1);
+    }
+
+    #[test]
+    fn next_device_id_increments_and_survives_round_trip() {
+        let mut project = Project::default();
+        let track_id = project.tracks[0].id;
+        assert_eq!(project.next_device_id(), 1);
+        let first = project
+            .add_device(track_id, crate::model::PluginFormat::Clap, "a", "A")
+            .expect("first device");
+        let second = project
+            .add_device(track_id, crate::model::PluginFormat::Clap, "b", "B")
+            .expect("second device");
+        assert_eq!(first, 1);
+        assert_eq!(second, 2);
+        assert_eq!(project.next_device_id(), 3);
+
+        let json = serde_json::to_string(&crate::model::persistence::ProjectEnvelope::new(
+            project.clone(),
+        ))
+        .unwrap();
+        let loaded = Project::from_json(&json).unwrap();
+        assert_eq!(loaded.next_device_id(), 3);
+    }
+
+    #[test]
+    fn device_chain_add_remove_move_bypass() {
+        let mut project = Project::default();
+        let track_id = project.tracks[0].id;
+        let a = project
+            .add_device(track_id, crate::model::PluginFormat::Clap, "a", "A")
+            .expect("a");
+        let b = project
+            .add_device(track_id, crate::model::PluginFormat::Clap, "b", "B")
+            .expect("b");
+        let c = project
+            .add_device(track_id, crate::model::PluginFormat::Clap, "c", "C")
+            .expect("c");
+        assert_eq!(
+            project.track(track_id).unwrap().devices.len(),
+            3
+        );
+
+        assert!(project.set_device_bypass(track_id, b, true));
+        assert!(project.track(track_id).unwrap().devices[1].bypassed);
+
+        // Move C (index 2) to the front.
+        assert!(project.move_device(track_id, 2, 0));
+        let ids: Vec<u64> = project
+            .track(track_id)
+            .unwrap()
+            .devices
+            .iter()
+            .map(|d| d.id)
+            .collect();
+        assert_eq!(ids, vec![c, a, b]);
+
+        assert!(project.remove_device(track_id, a));
+        let ids: Vec<u64> = project
+            .track(track_id)
+            .unwrap()
+            .devices
+            .iter()
+            .map(|d| d.id)
+            .collect();
+        assert_eq!(ids, vec![c, b]);
+
+        assert!(!project.remove_device(track_id, a));
+        assert!(!project.move_device(track_id, 5, 0));
+        assert!(!project.set_device_bypass(999, b, false));
     }
 }

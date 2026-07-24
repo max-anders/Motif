@@ -355,8 +355,9 @@ impl SettingsUi {
 
         ui.horizontal(|ui| {
             ui.label(format!(
-                "Instruments cached: {}",
-                catalog.instrument_count()
+                "Instruments cached: {}  ·  Effects cached: {}",
+                catalog.instrument_count(),
+                catalog.effect_count()
             ));
             if let Some(ts) = catalog.scanned_at_unix {
                 ui.label(format!("Last scan (unix): {ts}"));
@@ -367,8 +368,9 @@ impl SettingsUi {
                 catalog.extra_paths = plugin_extra_paths.clone();
                 catalog.rescan();
                 self.message = format!(
-                    "Scan complete: {} instrument(s)",
-                    catalog.instrument_count()
+                    "Scan complete: {} instrument(s), {} effect(s)",
+                    catalog.instrument_count(),
+                    catalog.effect_count()
                 );
                 result = Some(SettingsAction::PluginsChanged);
             }
@@ -471,7 +473,25 @@ impl SettingsUi {
                 .id_salt("settings_plugin_list")
                 .max_height(180.0)
                 .show(ui, |ui| {
-                    for entry in &catalog.entries {
+                    for entry in catalog.instruments() {
+                        ui.label(format!(
+                            "{} [{}] — {}",
+                            entry.name,
+                            entry.format_badge(),
+                            entry.vendor
+                        ));
+                    }
+                });
+        }
+
+        if catalog.effect_count() > 0 {
+            ui.add_space(8.0);
+            ui.strong("Cached effects");
+            egui::ScrollArea::vertical()
+                .id_salt("settings_effect_list")
+                .max_height(180.0)
+                .show(ui, |ui| {
+                    for entry in catalog.effects() {
                         ui.label(format!(
                             "{} [{}] — {}",
                             entry.name,

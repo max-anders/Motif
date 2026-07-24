@@ -2,9 +2,9 @@ use std::collections::{HashMap, HashSet};
 
 use egui::{Pos2, Rect, Response, Sense, Ui, Vec2};
 
-use crate::engine::{DawEngine, PluginCatalog};
+use crate::engine::{DawEngine, PluginCatalog, PluginRef};
 use crate::model::{
-    EditHistory, MidiClip, Project, TrackInstrument, DEFAULT_CLIP_LENGTH_BEATS, MAX_PITCH,
+    EditHistory, MidiClip, Project, Track, TrackInstrument, DEFAULT_CLIP_LENGTH_BEATS, MAX_PITCH,
     MIN_PITCH, SNAP_BEATS,
 };
 use crate::ui::instrument_menu::{
@@ -18,37 +18,50 @@ use crate::ui::timeline::{
     DEFAULT_BEAT_WIDTH, RULER_HEIGHT, TIMELINE_GUTTER_WIDTH,
 };
 
-const TRACK_HEADER_WIDTH: f32 = TIMELINE_GUTTER_WIDTH;
-const LANE_HEIGHT: f32 = 72.0;
+pub(crate) const TRACK_HEADER_WIDTH: f32 = TIMELINE_GUTTER_WIDTH;
+pub(crate) const LANE_HEIGHT: f32 = 72.0;
 const RESIZE_HANDLE_PX: f32 = 10.0;
+const MS_BUTTON_SIZE: f32 = 18.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ClipDragMode {
+pub(crate) enum ClipDragMode {
     Move,
     ResizeStart,
     ResizeEnd,
 }
 
 #[derive(Debug, Clone)]
-struct ClipOriginal {
+pub(crate) struct ClipOriginal {
     clip_id: u64,
     start_beats: f32,
     length_beats: f32,
 }
 
 #[derive(Debug, Clone)]
-struct ClipDrag {
+pub(crate) struct ClipDrag {
     /// Primary clip under the pointer (resize target / open-on-double-click id).
     clip_id: u64,
+    /// Track owning the primary clip; used to keep track selection in sync.
+    track_id: u64,
     mode: ClipDragMode,
     pointer_start_beats: f32,
     originals: Vec<ClipOriginal>,
 }
 
+/// `device_id: None` means the track's instrument; `Some(id)` means one of
+/// its insert-FX devices (see `crate::engine::PluginRef`, which this maps to
+/// 1:1 — kept as plain fields here so the UI layer stays engine-agnostic).
 #[derive(Debug, Clone)]
 pub enum PluginEditorRequest {
-    Open { track_id: u64, title: String },
-    Close { track_id: u64 },
+    Open {
+        track_id: u64,
+        device_id: Option<u64>,
+        title: String,
+    },
+    Close {
+        track_id: u64,
+        device_id: Option<u64>,
+    },
 }
 
 pub struct PlaylistUi {
@@ -61,6 +74,8 @@ pub struct PlaylistUi {
     open_clip_request: Option<u64>,
     /// Open/close native plugin editor (consumed by app).
     plugin_editor_request: Option<PluginEditorRequest>,
+    /// Delete track (consumed by app for piano-roll / engine cleanup).
+    delete_track_request: Option<u64>,
     /// True if pointer moved enough during drag to count as a drag, not a click.
     drag_moved: bool,
     add_track_search: String,
@@ -79,6 +94,7 @@ impl Default for PlaylistUi {
             scroll_offset: Vec2::ZERO,
             open_clip_request: None,
             plugin_editor_request: None,
+            delete_track_request: None,
             drag_moved: false,
             add_track_search: String::new(),
             change_instrument_search: String::new(),
@@ -100,6 +116,10 @@ impl PlaylistUi {
         self.plugin_editor_request.take()
     }
 
+    pub fn take_delete_track_request(&mut self) -> Option<u64> {
+        self.delete_track_request.take()
+    }
+
     pub fn clear_selection(&mut self) {
         self.selected_clip_ids.clear();
     }
@@ -118,6 +138,7 @@ impl PlaylistUi {
         self.instrument_errors = errors;
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn show(
         &mut self,
         ui: &mut Ui,
@@ -125,6 +146,7 @@ impl PlaylistUi {
         engine: &mut dyn DawEngine,
         catalog: &PluginCatalog,
         history: &mut EditHistory,
+        selected_track: &mut Option<u64>,
         theme: &ThemeColors,
     ) {
         // CentralPanel uses Frame::NONE; paint the full panel so nothing shows through.
@@ -233,6 +255,7 @@ impl PlaylistUi {
                             &mut self.active_drag,
                             &mut self.open_clip_request,
                             &mut self.drag_moved,
+                            selected_track,
                         );
                     }
 
@@ -249,6 +272,7 @@ impl PlaylistUi {
                             Pos2::new(body.left(), lane_top),
                             Pos2::new(body.right(), lane_top + LANE_HEIGHT),
                         );
+                        let audible = project.track_audible(track);
                         draw_lane_timeline(
                             &timeline_painter,
                             lane_rect,
@@ -258,26 +282,26 @@ impl PlaylistUi {
                             project.beats_per_bar,
                             &track.clips,
                             &self.selected_clip_ids,
+                            audible,
                             theme,
                         );
                     }
 
                     // Sticky chrome on top of scrolled content.
-                    let header_painter = painter.with_clip_rect(sticky_headers);
+                    let track_ids: Vec<u64> = project.tracks.iter().map(|t| t.id).collect();
                     for (index, track) in project.tracks.iter().enumerate() {
                         let lane_top = body.top() + index as f32 * LANE_HEIGHT;
                         let header = Rect::from_min_max(
                             Pos2::new(sticky_headers.left(), lane_top),
                             Pos2::new(sticky_headers.right(), lane_top + LANE_HEIGHT),
                         );
-                        let error = self.instrument_errors.get(&track.id).cloned();
                         draw_track_header(
-                            &header_painter,
+                            &painter.with_clip_rect(sticky_headers),
                             header,
                             track.name.as_str(),
                             track.instrument.display_name(),
                             track.instrument.format_badge(),
-                            error.as_deref(),
+                            self.instrument_errors.get(&track.id).map(String::as_str),
                             theme,
                         );
                     }
@@ -308,85 +332,40 @@ impl PlaylistUi {
                         theme,
                     );
 
-                    // Track header context menus (plugin editor + change instrument).
-                    let track_ids: Vec<u64> = project.tracks.iter().map(|t| t.id).collect();
+                    // Track header controls (M/S, context menu).
                     for (index, track_id) in track_ids.into_iter().enumerate() {
                         let lane_top = body.top() + index as f32 * LANE_HEIGHT;
                         let header = Rect::from_min_max(
                             Pos2::new(sticky_headers.left(), lane_top),
                             Pos2::new(sticky_headers.right(), lane_top + LANE_HEIGHT),
                         );
-                        let id = ui.id().with(("track_header", track_id));
-                        let header_response = ui.interact(header, id, Sense::click());
-
-                        let track_name = project
+                        let track_snapshot = project
                             .tracks
                             .iter()
                             .find(|t| t.id == track_id)
-                            .map(|t| t.name.clone())
-                            .unwrap_or_else(|| String::from("Plugin"));
-                        let instrument = project
-                            .tracks
-                            .iter()
-                            .find(|t| t.id == track_id)
-                            .map(|t| t.instrument.clone());
-                        let editor_open = engine.plugin_editor_is_open(track_id);
-                        let slot_ready = engine.plugin_slot_ready(track_id);
-                        let is_plugin = matches!(instrument, Some(TrackInstrument::Plugin { .. }));
-
-                        header_response.context_menu(|ui| {
-                            if is_plugin {
-                                if editor_open {
-                                    if ui.button("Close plugin editor").clicked() {
-                                        self.plugin_editor_request =
-                                            Some(PluginEditorRequest::Close { track_id });
-                                        ui.close_menu();
-                                    }
-                                } else {
-                                    let label = if slot_ready {
-                                        "Open plugin editor"
-                                    } else {
-                                        "Open plugin editor (loading...)"
-                                    };
-                                    if ui
-                                        .add_enabled(slot_ready, egui::Button::new(label))
-                                        .clicked()
-                                    {
-                                        self.plugin_editor_request =
-                                            Some(PluginEditorRequest::Open {
-                                                track_id,
-                                                title: track_name.clone(),
-                                            });
-                                        ui.close_menu();
-                                    }
-                                }
-                                ui.separator();
-                            }
-                            ui.label("Change instrument");
-                            ui.separator();
-                            if let Some(choice) = show_instrument_picker(
-                                ui,
-                                catalog,
-                                &mut self.change_instrument_search,
-                                &format!("chg_{track_id}"),
-                            ) {
-                                let rename = match &choice {
-                                    InstrumentChoice::Plugin(entry) => Some(entry.name.clone()),
-                                    InstrumentChoice::BuiltInPiano => None,
-                                };
-                                let instrument = choice_to_instrument(choice);
-                                if let Some(track) = project.track_mut(track_id) {
-                                    if let Some(name) = rename {
-                                        track.name = name;
-                                    }
-                                    // New instrument identity — drop prior plugin blob.
-                                    track.plugin_state = None;
-                                    track.instrument = instrument;
-                                }
-                                self.change_instrument_search.clear();
-                                ui.close_menu();
-                            }
-                        });
+                            .cloned();
+                        let Some(track_snapshot) = track_snapshot else {
+                            continue;
+                        };
+                        track_header_row(
+                            ui,
+                            header,
+                            sticky_headers,
+                            &track_snapshot,
+                            track_id,
+                            project,
+                            engine,
+                            catalog,
+                            history,
+                            &mut self.change_instrument_search,
+                            self.instrument_errors.get(&track_id).map(String::as_str),
+                            theme,
+                            *selected_track == Some(track_id),
+                            selected_track,
+                            &mut self.plugin_editor_request,
+                            &mut self.delete_track_request,
+                            "playlist",
+                        );
                     }
                 })
         });
@@ -402,6 +381,194 @@ impl PlaylistUi {
     }
 }
 
+pub(crate) fn ms_toggle_button(ui: &mut Ui, label: &str, active: bool, theme: &ThemeColors) -> bool {
+    let fill = if active {
+        theme.accent
+    } else {
+        theme.widget_bg
+    };
+    let stroke = if active {
+        theme.accent
+    } else {
+        theme.separator
+    };
+    let text = if active {
+        theme.panel_bg
+    } else {
+        theme.button_text
+    };
+    let button = egui::Button::new(
+        egui::RichText::new(label)
+            .size(10.0)
+            .color(text)
+            .monospace(),
+    )
+    .fill(fill)
+    .stroke(egui::Stroke::new(1.0_f32, stroke))
+    .min_size(Vec2::new(MS_BUTTON_SIZE, MS_BUTTON_SIZE));
+    ui.add(button).clicked()
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn track_header_row(
+    ui: &mut Ui,
+    header: Rect,
+    paint_clip: Rect,
+    track_snapshot: &Track,
+    track_id: u64,
+    project: &mut Project,
+    engine: &mut dyn DawEngine,
+    catalog: &PluginCatalog,
+    history: &mut EditHistory,
+    change_instrument_search: &mut String,
+    instrument_error: Option<&str>,
+    theme: &ThemeColors,
+    is_selected: bool,
+    select_track_request: &mut Option<u64>,
+    plugin_editor_request: &mut Option<PluginEditorRequest>,
+    delete_track_request: &mut Option<u64>,
+    id_scope: &'static str,
+) {
+    draw_track_header(
+        &ui.painter().with_clip_rect(paint_clip),
+        header,
+        track_snapshot.name.as_str(),
+        track_snapshot.instrument.display_name(),
+        track_snapshot.instrument.format_badge(),
+        instrument_error,
+        theme,
+    );
+    if is_selected {
+        ui.painter().rect_stroke(
+            header.shrink(1.0),
+            0.0,
+            egui::Stroke::new(2.0_f32, theme.accent),
+            egui::StrokeKind::Inside,
+        );
+    }
+
+    let id = ui.id().with((id_scope, "track_header", track_id));
+    let header_response = ui.interact(header, id, Sense::click());
+    if header_response.clicked() {
+        *select_track_request = Some(track_id);
+    }
+
+    let controls = Rect::from_min_max(
+        Pos2::new(header.right() - MS_BUTTON_SIZE * 2.0 - 8.0, header.top() + 8.0),
+        Pos2::new(header.right() - 4.0, header.bottom() - 8.0),
+    );
+    ui.allocate_ui_at_rect(controls, |ui| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            let muted = track_snapshot.muted;
+            let solo = track_snapshot.solo;
+            if ms_toggle_button(ui, "M", muted, theme) {
+                history.push_before(project.clone());
+                if let Some(track) = project.track_mut(track_id) {
+                    track.muted = !track.muted;
+                }
+                engine.all_notes_off();
+            }
+            if ms_toggle_button(ui, "S", solo, theme) {
+                history.push_before(project.clone());
+                if let Some(track) = project.track_mut(track_id) {
+                    track.solo = !track.solo;
+                }
+                engine.all_notes_off();
+            }
+        });
+    });
+
+    let track_name = track_snapshot.name.clone();
+    let instrument = track_snapshot.instrument.clone();
+    let editor_open = engine.plugin_editor_is_open(PluginRef::instrument(track_id));
+    let slot_ready = engine.plugin_slot_ready(PluginRef::instrument(track_id));
+    let is_plugin = matches!(instrument, TrackInstrument::Plugin { .. });
+
+    header_response.context_menu(|ui| {
+        if is_plugin {
+            if editor_open {
+                if ui.button("Close plugin editor").clicked() {
+                    *plugin_editor_request = Some(PluginEditorRequest::Close {
+                        track_id,
+                        device_id: None,
+                    });
+                    ui.close_menu();
+                }
+            } else {
+                let label = if slot_ready {
+                    "Open plugin editor"
+                } else {
+                    "Open plugin editor (loading...)"
+                };
+                if ui
+                    .add_enabled(slot_ready, egui::Button::new(label))
+                    .clicked()
+                {
+                    *plugin_editor_request = Some(PluginEditorRequest::Open {
+                        track_id,
+                        device_id: None,
+                        title: track_name.clone(),
+                    });
+                    ui.close_menu();
+                }
+            }
+            ui.separator();
+        }
+        ui.label("Change instrument");
+        ui.separator();
+        if let Some(choice) = show_instrument_picker(
+            ui,
+            catalog,
+            change_instrument_search,
+            &format!("chg_{track_id}"),
+        ) {
+            let rename = match &choice {
+                InstrumentChoice::Plugin(entry) => Some(entry.name.clone()),
+                InstrumentChoice::BuiltInPiano => None,
+            };
+            let instrument = choice_to_instrument(choice);
+            if let Some(track) = project.track_mut(track_id) {
+                if let Some(name) = rename {
+                    track.name = name;
+                }
+                // New instrument identity -- drop prior plugin blob.
+                track.plugin_state = None;
+                track.instrument = instrument;
+            }
+            change_instrument_search.clear();
+            ui.close_menu();
+        }
+        ui.separator();
+        if ui.button("Mute").clicked() {
+            history.push_before(project.clone());
+            if let Some(track) = project.track_mut(track_id) {
+                track.muted = !track.muted;
+            }
+            engine.all_notes_off();
+            ui.close_menu();
+        }
+        if ui.button("Solo").clicked() {
+            history.push_before(project.clone());
+            if let Some(track) = project.track_mut(track_id) {
+                track.solo = !track.solo;
+            }
+            engine.all_notes_off();
+            ui.close_menu();
+        }
+        ui.separator();
+        let can_delete = project.can_remove_track();
+        if ui
+            .add_enabled(can_delete, egui::Button::new("Delete track"))
+            .on_disabled_hover_text("Cannot delete the last track")
+            .clicked()
+        {
+            *delete_track_request = Some(track_id);
+            ui.close_menu();
+        }
+    });
+}
+
 fn draw_track_header(
     painter: &egui::Painter,
     header: Rect,
@@ -412,19 +579,19 @@ fn draw_track_header(
     theme: &ThemeColors,
 ) {
     painter.rect_filled(header, 0.0, theme.track_header_bg);
-    painter.text(
-        Pos2::new(header.left() + 6.0, header.top() + 14.0),
-        egui::Align2::LEFT_CENTER,
-        track_name,
-        egui::FontId::proportional(12.0),
-        theme.track_header_text,
-    );
     let badge = format_badge.unwrap_or("Piano");
     let sub = format!("{badge} · {instrument_name}");
     painter.text(
+        Pos2::new(header.left() + 6.0, header.top() + 14.0),
+        egui::Align2::LEFT_CENTER,
+        truncate_label(track_name, 12),
+        egui::FontId::proportional(12.0),
+        theme.track_header_text,
+    );
+    painter.text(
         Pos2::new(header.left() + 6.0, header.top() + 30.0),
         egui::Align2::LEFT_CENTER,
-        truncate_label(&sub, 22),
+        truncate_label(&sub, 16),
         egui::FontId::proportional(10.0),
         theme.text_muted,
     );
@@ -446,7 +613,7 @@ fn draw_track_header(
     );
 }
 
-fn draw_lane_timeline(
+pub(crate) fn draw_lane_timeline(
     painter: &egui::Painter,
     lane: Rect,
     timeline: Rect,
@@ -455,13 +622,19 @@ fn draw_lane_timeline(
     beats_per_bar: f32,
     clips: &[MidiClip],
     selected: &HashSet<u64>,
+    audible: bool,
     theme: &ThemeColors,
 ) {
     let timeline_lane = Rect::from_min_max(
         Pos2::new(lane.left() + TRACK_HEADER_WIDTH, lane.top()),
         lane.max,
     );
-    painter.rect_filled(timeline_lane, 0.0, theme.lane_bg);
+    let lane_fill = if audible {
+        theme.lane_bg
+    } else {
+        theme.lane_bg.gamma_multiply(0.55)
+    };
+    painter.rect_filled(timeline_lane, 0.0, lane_fill);
     // Use `lane` (same left as body/ruler), not `timeline_lane`: timeline_x already
     // offsets by TIMELINE_GUTTER_WIDTH / TRACK_HEADER_WIDTH.
     draw_timeline_grid_lines(painter, lane, metrics, total_beats, beats_per_bar, theme);
@@ -519,7 +692,12 @@ fn truncate_label(text: &str, max_chars: usize) -> String {
     }
 }
 
-fn clip_block_rect(timeline: Rect, lane: Rect, clip: &MidiClip, metrics: TimelineMetrics) -> Rect {
+pub(crate) fn clip_block_rect(
+    timeline: Rect,
+    lane: Rect,
+    clip: &MidiClip,
+    metrics: TimelineMetrics,
+) -> Rect {
     let left = timeline_x(timeline, clip.start_beats, metrics);
     let right = timeline_x(timeline, clip.end_beats(), metrics);
     Rect::from_min_max(
@@ -562,7 +740,7 @@ fn draw_clip_note_preview(
     }
 }
 
-fn hit_test_clip<'a>(
+pub(crate) fn hit_test_clip<'a>(
     timeline: Rect,
     lane: Rect,
     clips: &'a [MidiClip],
@@ -575,7 +753,7 @@ fn hit_test_clip<'a>(
         .find(|clip| clip_block_rect(timeline, lane, clip, metrics).contains(pos))
 }
 
-fn clip_resize_mode(bounds: Rect, pointer_x: f32) -> Option<ClipDragMode> {
+pub(crate) fn clip_resize_mode(bounds: Rect, pointer_x: f32) -> Option<ClipDragMode> {
     let local_x = pointer_x - bounds.left();
     let width = bounds.width();
     let handle = RESIZE_HANDLE_PX.min(width * 0.35);
@@ -631,6 +809,7 @@ fn lane_rect_for_track(body: Rect, track_index: usize) -> Rect {
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_clip_pointer(
     response: &Response,
     body: Rect,
@@ -642,8 +821,232 @@ fn handle_clip_pointer(
     active_drag: &mut Option<ClipDrag>,
     open_clip_request: &mut Option<u64>,
     drag_moved: &mut bool,
+    selected_track: &mut Option<u64>,
 ) {
     update_clip_resize_hover_cursor(response, body, sticky_headers, project, metrics);
+
+    let Some(pointer) = response.interact_pointer_pos() else {
+        if response.drag_stopped() {
+            if let Some(drag) = active_drag.take() {
+                history.commit(project);
+                if !*drag_moved {
+                    selected.clear();
+                    selected.insert(drag.clip_id);
+                }
+                *selected_track = Some(drag.track_id);
+            }
+            *drag_moved = false;
+        }
+        return;
+    };
+
+    let press_pos = response
+        .ctx
+        .input(|input| input.pointer.press_origin())
+        .unwrap_or(pointer);
+    let (shift_held, ctrl_or_cmd) = response.ctx.input(|input| {
+        (
+            input.modifiers.shift,
+            input.modifiers.ctrl || input.modifiers.command || input.modifiers.mac_cmd,
+        )
+    });
+
+    if let Some(drag) = active_drag.clone() {
+        if response.dragged() {
+            *drag_moved = true;
+            let current_beats = x_to_beat(body, pointer.x, metrics);
+            if matches!(
+                drag.mode,
+                ClipDragMode::ResizeStart | ClipDragMode::ResizeEnd
+            ) {
+                response
+                    .ctx
+                    .set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+            }
+            apply_clip_drag(project, &drag, current_beats);
+        }
+        if response.drag_stopped() {
+            history.commit(project);
+            if !*drag_moved {
+                selected.clear();
+                selected.insert(drag.clip_id);
+            }
+            *selected_track = Some(drag.track_id);
+            *active_drag = None;
+            *drag_moved = false;
+        }
+        return;
+    }
+
+    // Sticky track headers own this column; do not treat it as empty-lane / clip hits.
+    if sticky_headers.contains(press_pos) || sticky_headers.contains(pointer) {
+        return;
+    }
+
+    if !body.contains(pointer) {
+        return;
+    }
+
+    // Find which track/lane was hit
+    let track_index = ((press_pos.y - body.top()) / LANE_HEIGHT).floor() as usize;
+    if track_index >= project.tracks.len() {
+        return;
+    }
+    let track_id = project.tracks[track_index].id;
+    let lane = lane_rect_for_track(body, track_index);
+
+    if response.drag_started_by(egui::PointerButton::Primary)
+        && is_timeline_pointer(lane, press_pos)
+    {
+        if let Some(clip) = hit_test_clip(
+            body,
+            lane,
+            &project.tracks[track_index].clips,
+            press_pos,
+            metrics,
+        )
+        .cloned()
+        {
+            let bounds = clip_block_rect(body, lane, &clip, metrics);
+            let mode = clip_resize_mode(bounds, press_pos.x).unwrap_or(ClipDragMode::Move);
+
+            let already_selected = selected.contains(&clip.id);
+            if !already_selected {
+                selected.clear();
+                selected.insert(clip.id);
+            }
+            *selected_track = Some(track_id);
+
+            // Snapshot before Shift-duplicate so one undo covers dup+move.
+            history.begin(project);
+
+            let mut primary_id = clip.id;
+            // Shift+Move: leave originals, drag duplicates (same as piano-roll notes).
+            if matches!(mode, ClipDragMode::Move) && shift_held {
+                let source_ids: Vec<u64> = selected.iter().copied().collect();
+                let new_ids = project.duplicate_clips(&source_ids, 0.0);
+                if let Some(mapped_primary) = source_ids
+                    .iter()
+                    .position(|id| *id == clip.id)
+                    .and_then(|index| new_ids.get(index).copied())
+                {
+                    primary_id = mapped_primary;
+                } else if let Some(first) = new_ids.first().copied() {
+                    primary_id = first;
+                }
+                selected.clear();
+                selected.extend(new_ids);
+            }
+
+            let originals = match mode {
+                ClipDragMode::Move => selected
+                    .iter()
+                    .filter_map(|id| {
+                        project.clip(*id).map(|c| ClipOriginal {
+                            clip_id: c.id,
+                            start_beats: c.start_beats,
+                            length_beats: c.length_beats,
+                        })
+                    })
+                    .collect(),
+                ClipDragMode::ResizeStart | ClipDragMode::ResizeEnd => project
+                    .clip(primary_id)
+                    .map(|c| {
+                        vec![ClipOriginal {
+                            clip_id: c.id,
+                            start_beats: c.start_beats,
+                            length_beats: c.length_beats,
+                        }]
+                    })
+                    .unwrap_or_default(),
+            };
+
+            *active_drag = Some(ClipDrag {
+                clip_id: primary_id,
+                track_id,
+                mode,
+                pointer_start_beats: x_to_beat(body, press_pos.x, metrics),
+                originals,
+            });
+            return;
+        }
+
+        // Empty lane: create clip
+        if is_timeline_pointer(lane, press_pos) {
+            let start = Project::snap_beats(x_to_beat(body, press_pos.x, metrics).max(0.0));
+            let before = project.clone();
+            if let Some(clip_id) =
+                project.add_clip_to_track(track_id, start, DEFAULT_CLIP_LENGTH_BEATS)
+            {
+                history.push_before(before);
+                selected.clear();
+                selected.insert(clip_id);
+                *selected_track = Some(track_id);
+            }
+        }
+    }
+
+    if response.clicked_by(egui::PointerButton::Primary)
+        && !response.dragged()
+        && is_timeline_pointer(lane, pointer)
+    {
+        if let Some(clip) = hit_test_clip(
+            body,
+            lane,
+            &project.tracks[track_index].clips,
+            pointer,
+            metrics,
+        ) {
+            if ctrl_or_cmd {
+                // Toggle multi-select without opening (parity with selection editing).
+                if !selected.remove(&clip.id) {
+                    selected.insert(clip.id);
+                }
+            } else {
+                selected.clear();
+                selected.insert(clip.id);
+            }
+            *selected_track = Some(track_id);
+        }
+    }
+
+    if response.double_clicked_by(egui::PointerButton::Primary) && body.contains(pointer) {
+        if let Some(clip_id) = hit_test_clip_id(body, project, pointer, metrics) {
+            selected.clear();
+            selected.insert(clip_id);
+            *selected_track = Some(track_id);
+            *open_clip_request = Some(clip_id);
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn handle_single_track_clip_pointer(
+    response: &Response,
+    body: Rect,
+    lane: Rect,
+    track_id: u64,
+    clips: &[MidiClip],
+    metrics: TimelineMetrics,
+    project: &mut Project,
+    history: &mut EditHistory,
+    selected: &mut HashSet<u64>,
+    active_drag: &mut Option<ClipDrag>,
+    open_clip_request: &mut Option<u64>,
+    drag_moved: &mut bool,
+) {
+    if let Some(hover) = response.hover_pos() {
+        if body.contains(hover) {
+            if let Some(clip) = hit_test_clip(body, lane, clips, hover, metrics) {
+                let bounds = clip_block_rect(body, lane, clip, metrics);
+                if clip_resize_mode(bounds, hover.x).is_some() {
+                    response
+                        .ctx
+                        .set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                }
+            }
+        }
+    }
 
     let Some(pointer) = response.interact_pointer_pos() else {
         if response.drag_stopped() {
@@ -696,35 +1099,14 @@ fn handle_clip_pointer(
         return;
     }
 
-    // Sticky track headers own this column; do not treat it as empty-lane / clip hits.
-    if sticky_headers.contains(press_pos) || sticky_headers.contains(pointer) {
-        return;
-    }
-
     if !body.contains(pointer) {
         return;
     }
 
-    // Find which track/lane was hit
-    let track_index = ((press_pos.y - body.top()) / LANE_HEIGHT).floor() as usize;
-    if track_index >= project.tracks.len() {
-        return;
-    }
-    let track_id = project.tracks[track_index].id;
-    let lane = lane_rect_for_track(body, track_index);
-
     if response.drag_started_by(egui::PointerButton::Primary)
         && is_timeline_pointer(lane, press_pos)
     {
-        if let Some(clip) = hit_test_clip(
-            body,
-            lane,
-            &project.tracks[track_index].clips,
-            press_pos,
-            metrics,
-        )
-        .cloned()
-        {
+        if let Some(clip) = hit_test_clip(body, lane, clips, press_pos, metrics).cloned() {
             let bounds = clip_block_rect(body, lane, &clip, metrics);
             let mode = clip_resize_mode(bounds, press_pos.x).unwrap_or(ClipDragMode::Move);
 
@@ -734,11 +1116,9 @@ fn handle_clip_pointer(
                 selected.insert(clip.id);
             }
 
-            // Snapshot before Shift-duplicate so one undo covers dup+move.
             history.begin(project);
 
             let mut primary_id = clip.id;
-            // Shift+Move: leave originals, drag duplicates (same as piano-roll notes).
             if matches!(mode, ClipDragMode::Move) && shift_held {
                 let source_ids: Vec<u64> = selected.iter().copied().collect();
                 let new_ids = project.duplicate_clips(&source_ids, 0.0);
@@ -780,6 +1160,7 @@ fn handle_clip_pointer(
 
             *active_drag = Some(ClipDrag {
                 clip_id: primary_id,
+                track_id,
                 mode,
                 pointer_start_beats: x_to_beat(body, press_pos.x, metrics),
                 originals,
@@ -787,13 +1168,10 @@ fn handle_clip_pointer(
             return;
         }
 
-        // Empty lane: create clip
         if is_timeline_pointer(lane, press_pos) {
             let start = Project::snap_beats(x_to_beat(body, press_pos.x, metrics).max(0.0));
             let before = project.clone();
-            if let Some(clip_id) =
-                project.add_clip_to_track(track_id, start, DEFAULT_CLIP_LENGTH_BEATS)
-            {
+            if let Some(clip_id) = project.add_clip_to_track(track_id, start, DEFAULT_CLIP_LENGTH_BEATS) {
                 history.push_before(before);
                 selected.clear();
                 selected.insert(clip_id);
@@ -805,15 +1183,8 @@ fn handle_clip_pointer(
         && !response.dragged()
         && is_timeline_pointer(lane, pointer)
     {
-        if let Some(clip) = hit_test_clip(
-            body,
-            lane,
-            &project.tracks[track_index].clips,
-            pointer,
-            metrics,
-        ) {
+        if let Some(clip) = hit_test_clip(body, lane, clips, pointer, metrics) {
             if ctrl_or_cmd {
-                // Toggle multi-select without opening (parity with selection editing).
                 if !selected.remove(&clip.id) {
                     selected.insert(clip.id);
                 }
@@ -825,10 +1196,10 @@ fn handle_clip_pointer(
     }
 
     if response.double_clicked_by(egui::PointerButton::Primary) && body.contains(pointer) {
-        if let Some(clip_id) = hit_test_clip_id(body, project, pointer, metrics) {
+        if let Some(clip) = hit_test_clip(body, lane, clips, pointer, metrics) {
             selected.clear();
-            selected.insert(clip_id);
-            *open_clip_request = Some(clip_id);
+            selected.insert(clip.id);
+            *open_clip_request = Some(clip.id);
         }
     }
 }
@@ -847,7 +1218,7 @@ fn hit_test_clip_id(
     hit_test_clip(body, lane, &project.tracks[track_index].clips, pos, metrics).map(|clip| clip.id)
 }
 
-fn apply_clip_drag(project: &mut Project, drag: &ClipDrag, current_beats: f32) {
+pub(crate) fn apply_clip_drag(project: &mut Project, drag: &ClipDrag, current_beats: f32) {
     match drag.mode {
         ClipDragMode::Move => {
             let Some(primary) = drag

@@ -31,6 +31,8 @@ struct SettingsFile {
     autosave_enabled: bool,
     #[serde(default = "default_autosave_interval")]
     autosave_interval_secs: u32,
+    #[serde(default = "default_metronome_enabled")]
+    metronome_enabled: bool,
     #[serde(default)]
     recent_projects: Vec<PathBuf>,
 }
@@ -53,6 +55,10 @@ fn default_autosave_enabled() -> bool {
 
 fn default_autosave_interval() -> u32 {
     DEFAULT_AUTOSAVE_INTERVAL_SECS
+}
+
+fn default_metronome_enabled() -> bool {
+    true
 }
 
 /// Keyboard routing between plugin editor windows and Motif.
@@ -108,6 +114,7 @@ pub struct AppSettings {
     pub plugin_keys: PluginKeySettings,
     pub autosave_enabled: bool,
     pub autosave_interval_secs: u32,
+    pub metronome_enabled: bool,
     pub recent_projects: Vec<PathBuf>,
 }
 
@@ -121,6 +128,7 @@ impl Default for AppSettings {
             plugin_keys: PluginKeySettings::default(),
             autosave_enabled: true,
             autosave_interval_secs: DEFAULT_AUTOSAVE_INTERVAL_SECS,
+            metronome_enabled: true,
             recent_projects: Vec::new(),
         }
     }
@@ -154,6 +162,7 @@ impl AppSettings {
             plugin_keys: file.plugin_keys,
             autosave_enabled: file.autosave_enabled,
             autosave_interval_secs: file.autosave_interval_secs.max(30),
+            metronome_enabled: file.metronome_enabled,
             recent_projects: file.recent_projects,
         })
     }
@@ -169,6 +178,7 @@ impl AppSettings {
             plugin_keys: self.plugin_keys.clone(),
             autosave_enabled: self.autosave_enabled,
             autosave_interval_secs: self.autosave_interval_secs.max(30),
+            metronome_enabled: self.metronome_enabled,
             recent_projects: self.recent_projects.clone(),
         };
         let json = serde_json::to_string_pretty(&file).map_err(|error| error.to_string())?;

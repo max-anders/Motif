@@ -31,6 +31,10 @@ pub enum Action {
     /// Open the in-app Recent Projects loader.
     OpenProjectBrowser,
     BackToPlaylist,
+    /// Toggle the Mixer view (or return to playlist when already there).
+    ToggleMixer,
+    /// Toggle the Devices view (or return to playlist when already there).
+    ToggleDevices,
 }
 
 impl<'de> Deserialize<'de> for Action {
@@ -54,6 +58,8 @@ impl<'de> Deserialize<'de> for Action {
             "new_project" => Ok(Self::NewProject),
             "open_project_browser" => Ok(Self::OpenProjectBrowser),
             "back_to_playlist" => Ok(Self::BackToPlaylist),
+            "toggle_mixer" => Ok(Self::ToggleMixer),
+            "toggle_devices" => Ok(Self::ToggleDevices),
             other => Err(serde::de::Error::unknown_variant(
                 other,
                 &[
@@ -71,6 +77,8 @@ impl<'de> Deserialize<'de> for Action {
                     "new_project",
                     "open_project_browser",
                     "back_to_playlist",
+                    "toggle_mixer",
+                    "toggle_devices",
                 ],
             )),
         }
@@ -79,7 +87,7 @@ impl<'de> Deserialize<'de> for Action {
 
 impl Action {
     /// All actions in Settings / docs order (includes actions with no factory binding).
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 16] = [
         Self::TogglePlayback,
         Self::DeleteSelection,
         Self::CopySelection,
@@ -94,6 +102,8 @@ impl Action {
         Self::SaveProjectAs,
         Self::OpenProjectBrowser,
         Self::BackToPlaylist,
+        Self::ToggleMixer,
+        Self::ToggleDevices,
     ];
 
     pub fn label(self) -> &'static str {
@@ -112,6 +122,8 @@ impl Action {
             Self::NewProject => "New project",
             Self::OpenProjectBrowser => "Projects...",
             Self::BackToPlaylist => "Back / close",
+            Self::ToggleMixer => "Mixer",
+            Self::ToggleDevices => "Devices",
         }
     }
 }
@@ -310,6 +322,11 @@ impl ShortcutRegistry {
                 (
                     Action::BackToPlaylist,
                     Binding::Key(Chord::new(Key::Escape)),
+                ),
+                (Action::ToggleMixer, Binding::Key(Chord::ctrl_or_cmd(Key::M))),
+                (
+                    Action::ToggleDevices,
+                    Binding::Key(Chord::ctrl_or_cmd_shift(Key::M)),
                 ),
             ],
         }

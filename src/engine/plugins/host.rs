@@ -16,7 +16,7 @@ use truce_rack::vst3::Vst3Scanner;
 
 use crate::model::PluginFormat;
 
-use super::catalog::CatalogEntry;
+use super::catalog::{CatalogEntry, EntryCategory};
 
 /// Max frames we prepare plugin buffers for (cpal blocks are usually smaller).
 pub const MAX_BLOCK_FRAMES: usize = 8192;
@@ -100,6 +100,75 @@ impl HostedPlugin {
             mix_l[i] += out_l[i];
             mix_r[i] += out_r[i];
         }
+    }
+
+    /// Insert-effect processing: feeds `buf_l`/`buf_r` as the plugin's input
+    /// and **replaces** them with the plugin's output in place (unlike
+    /// [`Self::process_block`], which is additive for instrument voices).
+    /// On a processing error, or when frames are out of range, `buf_l`/`buf_r`
+    /// are left untouched (passthrough) rather than silenced.
+    pub fn process_effect(
+        &mut self,
+        frames: usize,
+        transport: Option<TransportInfo>,
+        buf_l: &mut [f32],
+        buf_r: &mut [f32],
+    ) {
+        if frames == 0 || frames > MAX_BLOCK_FRAMES {
+            return;
+        }
+        let n = frames.min(buf_l.len()).min(buf_r.len());
+        if n == 0 {
+            return;
+        }
+
+        let HostedPlugin {
+            instance,
+            in_l,
+            in_r,
+            out_l,
+            out_r,
+            events,
+            out_events,
+            sample_rate,
+            held_notes: _,
+        } = self;
+
+        in_l[..frames].fill(0.0);
+        in_r[..frames].fill(0.0);
+        in_l[..n].copy_from_slice(&buf_l[..n]);
+        in_r[..n].copy_from_slice(&buf_r[..n]);
+        out_l[..frames].fill(0.0);
+        out_r[..frames].fill(0.0);
+        out_events.clear();
+
+        let bus_in = [BusRange::new(0, 2)];
+        let bus_out = [BusRange::new(0, 2)];
+        let input_refs: [&[f32]; 2] = [&in_l[..frames], &in_r[..frames]];
+        let mut output_refs: [&mut [f32]; 2] = [&mut out_l[..frames], &mut out_r[..frames]];
+
+        let result = {
+            let mut buffer =
+                AudioBuffer::new(&input_refs, &mut output_refs, frames, &bus_in, &bus_out);
+            let mut context = ProcessContext {
+                sample_rate: *sample_rate,
+                max_block_size: MAX_BLOCK_FRAMES,
+                transport,
+                output_events: out_events,
+            };
+            match instance {
+                PluginInstance::Clap(plugin) => plugin.process(&mut buffer, events, &mut context),
+                PluginInstance::Vst3(plugin) => plugin.process(&mut buffer, events, &mut context),
+            }
+        };
+
+        events.clear();
+        if result.is_err() {
+            return;
+        }
+
+        buf_l[..n].copy_from_slice(&out_l[..n]);
+        buf_r[..n].copy_from_slice(&out_r[..n]);
     }
 
     pub fn push_note_on(&mut self, pitch: u8, velocity: u8) {
@@ -266,11 +335,15 @@ pub fn load_and_activate(
         ));
     }
 
+    let category = match entry.category {
+        EntryCategory::Instrument => PluginCategory::Instrument,
+        EntryCategory::Effect => PluginCategory::Effect,
+    };
     let info = PluginInfo {
         name: entry.name.clone(),
         vendor: entry.vendor.clone(),
         version: 0,
-        category: PluginCategory::Instrument,
+        category,
         path: entry.path.clone(),
         unique_id: entry.unique_id.clone(),
         format: entry.format.as_str(),

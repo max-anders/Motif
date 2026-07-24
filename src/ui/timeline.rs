@@ -47,7 +47,7 @@ pub fn daw_editor_scroll_area(id_salt: impl Hash) -> ScrollArea {
         .scroll_bar_visibility(ScrollBarVisibility::AlwaysVisible)
 }
 
-pub const TIMELINE_GUTTER_WIDTH: f32 = 56.0;
+pub const TIMELINE_GUTTER_WIDTH: f32 = 72.0;
 pub const RULER_HEIGHT: f32 = 26.0;
 
 pub const DEFAULT_BEAT_WIDTH: f32 = 88.0;

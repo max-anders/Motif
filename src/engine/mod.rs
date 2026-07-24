@@ -1,6 +1,7 @@
 mod audio;
 #[allow(dead_code)]
 mod mock;
+mod metronome;
 mod piano;
 pub mod plugins;
 
@@ -8,7 +9,10 @@ pub use audio::AudioEngine;
 // Kept for silent fallback / tests; not wired in the app UI path.
 #[allow(unused_imports)]
 pub use mock::MockEngine;
-pub use plugins::{CatalogEntry, EditorPoll, HostX11, PluginCatalog, PLUGIN_CACHE_FILE};
+#[allow(unused_imports)] // EntryCategory: public catalog surface, consumed once the effect picker lands
+pub use plugins::{
+    CatalogEntry, EditorPoll, EntryCategory, HostX11, PluginCatalog, PluginRef, PLUGIN_CACHE_FILE,
+};
 
 use crate::model::Project;
 
@@ -39,50 +43,81 @@ pub trait DawEngine {
         let _ = project;
     }
 
+    /// Load/unload each track's insert-FX device chain to match `project`.
+    /// Returns `(track_id, device_id, error)` triples for failed loads.
+    fn sync_devices(&mut self, project: &Project, catalog: &Catalog) -> Vec<(u64, u64, String)> {
+        let _ = (project, catalog);
+        Vec::new()
+    }
+
+    /// Copy live CLAP/VST3 state into each device's `plugin_state` before project save.
+    fn capture_device_states(&mut self, project: &mut Project) {
+        let _ = project;
+    }
+
     /// Drop cached voice identities so the next sync reloads everything.
     fn invalidate_instruments(&mut self);
 
     fn schedule_project(&mut self, project: &Project);
 
-    /// True when an activated plugin instance is ready for this track.
-    fn plugin_slot_ready(&self, track_id: u64) -> bool {
-        let _ = track_id;
+    fn set_metronome_enabled(&mut self, enabled: bool);
+    fn metronome_enabled(&self) -> bool;
+
+    /// Push per-track gain/pan (and master gain) from `project` to the audio thread.
+    fn sync_channels(&mut self, project: &Project) {
+        let _ = project;
+    }
+
+    /// Latest per-track peak meters as `(track_id, peak_l, peak_r)`. Cosmetic/UI only.
+    fn meter_levels(&self) -> Vec<(u64, f32, f32)> {
+        Vec::new()
+    }
+
+    /// Latest master-bus peak `(peak_l, peak_r)`.
+    fn master_meter(&self) -> (f32, f32) {
+        (0.0, 0.0)
+    }
+
+    /// True when an activated plugin instance is ready for this slot
+    /// (a track's instrument, or one of its insert-FX devices).
+    fn plugin_slot_ready(&self, target: PluginRef) -> bool {
+        let _ = target;
         false
     }
 
-    /// Open the native plugin editor for a track (UI thread).
+    /// Open the native plugin editor for a slot (UI thread).
     /// `host_x11` should be Motif's Display + window so the editor parent shares the
     /// same X11 connection as winit (required for clickable GUIs under XWayland).
     /// `forward_transport` grabs Space so it drives Motif transport while the
     /// editor is focused, instead of going to the plugin.
     fn open_plugin_editor(
         &mut self,
-        track_id: u64,
+        target: PluginRef,
         title: &str,
         host_x11: Option<crate::engine::plugins::HostX11>,
         forward_transport: bool,
     ) -> Result<(), String> {
-        let _ = (track_id, title, host_x11, forward_transport);
+        let _ = (target, title, host_x11, forward_transport);
         Err(String::from("Plugin editors not available"))
     }
 
-    fn close_plugin_editor(&mut self, track_id: u64) {
-        let _ = track_id;
+    fn close_plugin_editor(&mut self, target: PluginRef) {
+        let _ = target;
     }
 
-    fn plugin_editor_is_open(&self, track_id: u64) -> bool {
-        let _ = track_id;
+    fn plugin_editor_is_open(&self, target: PluginRef) -> bool {
+        let _ = target;
         false
     }
 
-    /// Track ids + titles of currently open plugin editors.
-    fn open_plugin_editors(&self) -> Vec<(u64, String)> {
+    /// Plugin refs + titles of currently open plugin editors.
+    fn open_plugin_editors(&self) -> Vec<(PluginRef, String)> {
         Vec::new()
     }
 
     /// Live-toggle Space transport forwarding for one open editor.
-    fn set_plugin_editor_transport(&mut self, track_id: u64, forward: bool) {
-        let _ = (track_id, forward);
+    fn set_plugin_editor_transport(&mut self, target: PluginRef, forward: bool) {
+        let _ = (target, forward);
     }
 
     /// Poll editor windows / idle callbacks. Returns aggregated outcome.

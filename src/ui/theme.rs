@@ -131,6 +131,14 @@ pub struct ThemeColors {
     pub marquee_fill: Color32,
     #[serde(with = "color32_serde")]
     pub marquee_stroke: Color32,
+
+    // Mixer meters
+    #[serde(default = "default_meter_bg", with = "color32_serde")]
+    pub meter_bg: Color32,
+    #[serde(default = "default_meter_low", with = "color32_serde")]
+    pub meter_low: Color32,
+    #[serde(default = "default_meter_high", with = "color32_serde")]
+    pub meter_high: Color32,
 }
 
 impl ThemeColors {
@@ -194,6 +202,10 @@ impl ThemeColors {
             note_velocity: Color32::from_rgba_unmultiplied(255, 255, 255, 70),
             marquee_fill: Color32::from_rgba_unmultiplied(120, 180, 255, 40),
             marquee_stroke: Color32::from_rgb(160, 210, 255),
+
+            meter_bg: default_meter_bg(),
+            meter_low: default_meter_low(),
+            meter_high: default_meter_high(),
         }
     }
 
@@ -320,6 +332,9 @@ impl ThemeColors {
             ("Piano roll", "Note velocity", &mut self.note_velocity),
             ("Piano roll", "Marquee fill", &mut self.marquee_fill),
             ("Piano roll", "Marquee stroke", &mut self.marquee_stroke),
+            ("Mixer", "Meter background", &mut self.meter_bg),
+            ("Mixer", "Meter low", &mut self.meter_low),
+            ("Mixer", "Meter high / clip", &mut self.meter_high),
         ]
     }
 }
@@ -477,6 +492,18 @@ impl ThemeCatalog {
 
 fn default_note_stroke_active() -> Color32 {
     Color32::from_rgb(255, 180, 70)
+}
+
+fn default_meter_bg() -> Color32 {
+    Color32::from_rgb(28, 28, 36)
+}
+
+fn default_meter_low() -> Color32 {
+    Color32::from_rgb(70, 180, 100)
+}
+
+fn default_meter_high() -> Color32 {
+    Color32::from_rgb(230, 80, 70)
 }
 
 fn default_scrollbar_track() -> Color32 {

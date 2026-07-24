@@ -10,6 +10,15 @@ pub enum PluginFormat {
     Vst3,
 }
 
+impl Default for PluginFormat {
+    /// Arbitrary but stable default so `#[serde(default)]` can restore legacy
+    /// device placeholders that predate plugin identity (never hosted, so the
+    /// exact format is inert until a real plugin is assigned).
+    fn default() -> Self {
+        Self::Clap
+    }
+}
+
 impl PluginFormat {
     pub fn as_str(self) -> &'static str {
         match self {

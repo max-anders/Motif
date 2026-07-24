@@ -199,6 +199,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn track_mute_solo_persist_in_motif_json() {
+        let mut project = Project::default();
+        project.tracks[0].muted = true;
+        project.tracks[0].solo = true;
+        let json = serde_json::to_string(&crate::model::persistence::ProjectEnvelope::new(
+            project.clone(),
+        ))
+        .unwrap();
+        let loaded = Project::from_json(&json).unwrap();
+        assert!(loaded.tracks[0].muted);
+        assert!(loaded.tracks[0].solo);
+    }
+
+    #[test]
     fn envelope_round_trip() {
         let project = Project::default();
         let json = serde_json::to_string_pretty(&ProjectEnvelope::new(project.clone())).unwrap();

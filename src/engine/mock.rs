@@ -1,6 +1,6 @@
 use crate::model::Project;
 
-use super::plugins::PluginCatalog;
+use super::plugins::{PluginCatalog, PluginRef};
 use super::DawEngine;
 
 pub struct MockEngine {
@@ -8,6 +8,7 @@ pub struct MockEngine {
     current_beats: f32,
     playback_anchor_beats: f32,
     beats_per_second: f32,
+    metronome_enabled: bool,
 }
 
 impl MockEngine {
@@ -17,6 +18,7 @@ impl MockEngine {
             current_beats: 0.0,
             playback_anchor_beats: 0.0,
             beats_per_second,
+            metronome_enabled: true,
         }
     }
 
@@ -94,9 +96,17 @@ impl DawEngine for MockEngine {
 
     fn schedule_project(&mut self, _project: &Project) {}
 
+    fn set_metronome_enabled(&mut self, enabled: bool) {
+        self.metronome_enabled = enabled;
+    }
+
+    fn metronome_enabled(&self) -> bool {
+        self.metronome_enabled
+    }
+
     fn open_plugin_editor(
         &mut self,
-        _track_id: u64,
+        _target: PluginRef,
         _title: &str,
         _host_x11: Option<super::plugins::HostX11>,
         _forward_transport: bool,

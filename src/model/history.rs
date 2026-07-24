@@ -160,6 +160,47 @@ mod tests {
     }
 
     #[test]
+    fn undo_restores_deleted_track_clips_and_mute_solo() {
+        let mut history = EditHistory::new(10);
+        let mut project = Project::default();
+        let keep_id = project.tracks[0].id;
+        let remove_id = project.add_track("Track 2", TrackInstrument::BuiltInPiano);
+        {
+            let track = project.track_mut(remove_id).expect("track 2");
+            track.muted = true;
+            track.solo = true;
+        }
+        let clip_id = project
+            .add_clip_to_track(remove_id, 4.0, 4.0)
+            .expect("clip");
+        project
+            .add_note_to_clip(clip_id, 67, 0.5, 1.0)
+            .expect("note");
+
+        history.push_before(project.clone());
+        assert!(project.remove_track(remove_id));
+        assert_eq!(project.tracks.len(), 1);
+        assert_eq!(project.tracks[0].id, keep_id);
+        assert!(project.clip(clip_id).is_none());
+
+        assert!(history.undo(&mut project));
+        assert_eq!(project.tracks.len(), 2);
+        let restored = project.track(remove_id).expect("restored track");
+        assert_eq!(restored.name, "Track 2");
+        assert!(restored.muted);
+        assert!(restored.solo);
+        assert_eq!(restored.clips.len(), 1);
+        let clip = project.clip(clip_id).expect("restored clip");
+        assert_eq!(clip.start_beats, 4.0);
+        assert_eq!(clip.notes.len(), 1);
+        assert_eq!(clip.notes[0].pitch, 67);
+
+        assert!(history.redo(&mut project));
+        assert_eq!(project.tracks.len(), 1);
+        assert!(project.track(remove_id).is_none());
+    }
+
+    #[test]
     fn push_clears_redo() {
         let mut history = EditHistory::new(10);
         let mut project = tiny_project(0);
