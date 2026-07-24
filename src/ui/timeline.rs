@@ -1,7 +1,8 @@
-use egui::{Color32, Pos2, Rect, Response, Ui, Vec2};
+use egui::{Pos2, Rect, Response, Ui, Vec2};
 
 use crate::engine::DawEngine;
 use crate::model::{Project, SNAP_BEATS};
+use crate::ui::theme::ThemeColors;
 
 pub const TIMELINE_GUTTER_WIDTH: f32 = 56.0;
 pub const RULER_HEIGHT: f32 = 26.0;
@@ -174,8 +175,9 @@ pub fn draw_ruler(
     metrics: TimelineMetrics,
     total_beats: f32,
     beats_per_bar: f32,
+    theme: &ThemeColors,
 ) {
-    painter.rect_filled(ruler, 0.0, Color32::from_rgb(28, 28, 34));
+    painter.rect_filled(ruler, 0.0, theme.ruler_bg);
 
     painter.rect_filled(
         Rect::from_min_max(
@@ -183,7 +185,7 @@ pub fn draw_ruler(
             Pos2::new(ruler.left() + TIMELINE_GUTTER_WIDTH, ruler.bottom()),
         ),
         0.0,
-        Color32::from_rgb(22, 22, 28),
+        theme.gutter_bg,
     );
 
     let beat_count = total_beats.ceil() as i32;
@@ -196,9 +198,9 @@ pub fn draw_ruler(
             ruler.bottom() - 8.0
         };
         let color = if is_bar {
-            Color32::from_rgb(130, 130, 150)
+            theme.tick_major
         } else {
-            Color32::from_rgb(70, 70, 88)
+            theme.tick_minor
         };
         painter.line_segment(
             [Pos2::new(x, ruler.bottom()), Pos2::new(x, tick_bottom)],
@@ -212,7 +214,7 @@ pub fn draw_ruler(
                 egui::Align2::LEFT_TOP,
                 format!("{bar_number}"),
                 egui::FontId::monospace(11.0),
-                Color32::from_rgb(190, 190, 205),
+                theme.ruler_text,
             );
         }
     }
@@ -228,7 +230,7 @@ pub fn draw_ruler(
                 Pos2::new(x, ruler.bottom()),
                 Pos2::new(x, ruler.bottom() - 5.0),
             ],
-            egui::Stroke::new(1.0_f32, Color32::from_rgb(52, 52, 64)),
+            egui::Stroke::new(1.0_f32, theme.tick_sub),
         );
     }
 
@@ -237,7 +239,7 @@ pub fn draw_ruler(
             Pos2::new(timeline.left() + TIMELINE_GUTTER_WIDTH, ruler.bottom()),
             Pos2::new(ruler.right(), ruler.bottom()),
         ],
-        egui::Stroke::new(1.0_f32, Color32::from_rgb(55, 55, 68)),
+        egui::Stroke::new(1.0_f32, theme.separator),
     );
 }
 
@@ -248,6 +250,7 @@ pub fn draw_playhead(
     metrics: TimelineMetrics,
     local_beat: f32,
     visible: bool,
+    theme: &ThemeColors,
 ) {
     if !visible || local_beat < 0.0 {
         return;
@@ -258,13 +261,9 @@ pub fn draw_playhead(
             Pos2::new(x, ruler.top()),
             Pos2::new(x, body.bottom()),
         ],
-        egui::Stroke::new(2.0_f32, Color32::from_rgb(255, 90, 90)),
+        egui::Stroke::new(2.0_f32, theme.playhead),
     );
-    painter.circle_filled(
-        Pos2::new(x, ruler.center().y),
-        4.0,
-        Color32::from_rgb(255, 90, 90),
-    );
+    painter.circle_filled(Pos2::new(x, ruler.center().y), 4.0, theme.playhead);
 }
 
 pub fn draw_timeline_grid_lines(
@@ -273,6 +272,7 @@ pub fn draw_timeline_grid_lines(
     metrics: TimelineMetrics,
     total_beats: f32,
     beats_per_bar: f32,
+    theme: &ThemeColors,
 ) {
     let timeline_left = body.left() + TIMELINE_GUTTER_WIDTH;
     let beat_count = total_beats.ceil() as i32;
@@ -280,9 +280,9 @@ pub fn draw_timeline_grid_lines(
         let x = timeline_x(body, beat as f32, metrics);
         let is_bar = (beat as f32).rem_euclid(beats_per_bar) == 0.0;
         let color = if is_bar {
-            Color32::from_rgb(90, 90, 110)
+            theme.grid_bar
         } else {
-            Color32::from_rgb(45, 45, 58)
+            theme.grid_beat
         };
         painter.line_segment(
             [Pos2::new(x, body.top()), Pos2::new(x, body.bottom())],
@@ -298,7 +298,7 @@ pub fn draw_timeline_grid_lines(
         let x = timeline_x(body, beat, metrics);
         painter.line_segment(
             [Pos2::new(x, body.top()), Pos2::new(x, body.bottom())],
-            egui::Stroke::new(1.0_f32, Color32::from_rgb(34, 34, 44)),
+            egui::Stroke::new(1.0_f32, theme.grid_subbeat),
         );
     }
 

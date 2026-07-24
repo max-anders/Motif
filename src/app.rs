@@ -6,7 +6,7 @@ use eframe::egui;
 use crate::engine::{AudioEngine, DawEngine};
 use crate::model::Project;
 use crate::ui::{
-    Action, PianoRollUi, PlaylistUi, PollFilter, SettingsAction, SettingsUi, ShortcutRegistry,
+    Action, AppSettings, PianoRollUi, PlaylistUi, PollFilter, SettingsAction, SettingsUi,
     TransportUi, SETTINGS_FILE,
 };
 
@@ -28,7 +28,7 @@ pub struct DawApp {
     center_view: CenterView,
     /// View to restore when leaving Settings (playlist or piano roll).
     settings_return: CenterView,
-    shortcuts: ShortcutRegistry,
+    settings: AppSettings,
     status_message: String,
 }
 
@@ -36,7 +36,7 @@ impl DawApp {
     pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
         let project = load_project().unwrap_or_default();
         let engine = AudioEngine::new(project.beats_per_second());
-        let shortcuts = ShortcutRegistry::load_or_defaults(&Self::settings_path());
+        let settings = AppSettings::load_or_defaults(&Self::settings_path());
         let status_message = if engine.audio_available() {
             String::from(
                 "Playlist: click empty lane to add clip, click clip to open piano roll. Wheel=scroll, Ctrl+Wheel=zoom H.",
@@ -54,7 +54,7 @@ impl DawApp {
             settings_ui: SettingsUi::default(),
             center_view: CenterView::Playlist,
             settings_return: CenterView::Playlist,
-            shortcuts,
+            settings,
             status_message,
         }
     }
@@ -68,7 +68,7 @@ impl DawApp {
     }
 
     fn save_settings(&mut self) {
-        match self.shortcuts.save_to_path(&Self::settings_path()) {
+        match self.settings.save_to_path(&Self::settings_path()) {
             Ok(()) => {
                 self.status_message = format!("Settings saved to {SETTINGS_FILE}");
             }
@@ -253,9 +253,11 @@ impl eframe::App for DawApp {
         } else {
             PollFilter::All
         };
-        for action in self.shortcuts.poll(ctx, poll_filter) {
+        for action in self.settings.shortcuts.poll(ctx, poll_filter) {
             self.dispatch_action(action);
         }
+
+        self.settings.themes.colors().apply_to_context(ctx);
 
         egui::TopBottomPanel::top("transport_panel").show(ctx, |ui| {
             ui.heading("Motif");
@@ -304,16 +306,37 @@ impl eframe::App for DawApp {
             .show(ctx, |ui| {
                 match self.center_view {
                     CenterView::Playlist => {
-                        self.playlist
-                            .show(ui, &mut self.project, &mut self.engine);
-                        if let Some(clip_id) = self.playlist.take_open_clip_request() {
+                        let open_clip = {
+                            let DawApp {
+                                playlist,
+                                project,
+                                engine,
+                                settings,
+                                ..
+                            } = self;
+                            playlist.show(ui, project, engine, settings.themes.colors());
+                            playlist.take_open_clip_request()
+                        };
+                        if let Some(clip_id) = open_clip {
                             self.open_clip(clip_id);
                         }
                     }
                     CenterView::PianoRoll { clip_id } => {
                         if self.project.clip(clip_id).is_some() {
-                            self.piano_roll
-                                .show(ui, clip_id, &mut self.project, &mut self.engine);
+                            let DawApp {
+                                piano_roll,
+                                project,
+                                engine,
+                                settings,
+                                ..
+                            } = self;
+                            piano_roll.show(
+                                ui,
+                                clip_id,
+                                project,
+                                engine,
+                                settings.themes.colors(),
+                            );
                         } else {
                             self.back_to_playlist();
                         }
@@ -321,9 +344,14 @@ impl eframe::App for DawApp {
                     CenterView::Settings => {
                         ui.add_space(8.0);
                         egui::Frame::central_panel(ui.style()).show(ui, |ui| {
-                            match self.settings_ui.show(ui, &mut self.shortcuts) {
+                            match self.settings_ui.show(
+                                ui,
+                                &mut self.settings.shortcuts,
+                                &mut self.settings.themes,
+                            ) {
                                 Some(SettingsAction::Back) => self.close_settings(),
-                                Some(SettingsAction::ShortcutsChanged) => self.save_settings(),
+                                Some(SettingsAction::ShortcutsChanged)
+                                | Some(SettingsAction::ThemeChanged) => self.save_settings(),
                                 None => {}
                             }
                         });

@@ -4,7 +4,7 @@ Open-source music sketchpad: piano roll, playlist, and a soft-synth piano over a
 
 ## Status
 
-**Early but usable sketchpad** (2026-07-24): playlist + piano roll editing, transport, cpal soft-piano playback, `project.json` save/load, and Settings shortcut remapping. Not a full DAW.
+**Early but usable sketchpad** (2026-07-24): playlist + piano roll editing, transport, cpal soft-piano playback, `project.json` save/load, and Settings for shortcut remapping plus editable/saveable themes. Not a full DAW.
 
 | Area | State |
 |---|---|
@@ -13,7 +13,7 @@ Open-source music sketchpad: piano roll, playlist, and a soft-synth piano over a
 | Transport + loop + BPM | Working |
 | Soft piano audio (`cpal`) | Working (UI continues if device open fails) |
 | Project save/load | Working (`project.json` in CWD) |
-| Settings (shortcut remapping) | Working (`settings.json` in CWD) |
+| Settings (shortcuts + themes) | Working (`settings.json` in CWD) |
 | Tests / undo / samples / mixer / export | Not started |
 
 It is **free and open source from minute zero**: public from the first commit, not opened up later after something polished existed behind closed doors.
@@ -127,7 +127,7 @@ cargo run --release
 - **Ctrl/Cmd+S** - save `project.json` (factory default; remappable)
 - **Ctrl/Cmd+O** - load `project.json` (factory default; remappable)
 - **Save / Load** buttons - same as the shortcuts above
-- **Settings** - open Settings; remap shortcuts (saved to `settings.json`)
+- **Settings** - open Settings; remap shortcuts and edit/save color themes (saved to `settings.json`)
 - **Escape** - leave piano roll or Settings (factory default; remappable)
 
 ## Architecture

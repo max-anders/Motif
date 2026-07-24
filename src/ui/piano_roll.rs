@@ -1,11 +1,12 @@
 use std::collections::HashSet;
 
-use egui::{Color32, Pos2, Rect, Response, Sense, Ui, Vec2};
+use egui::{Pos2, Rect, Response, Sense, Ui, Vec2};
 
 use crate::engine::DawEngine;
 use crate::model::{
     Note, Project, DEFAULT_NOTE_DURATION_BEATS, MAX_PITCH, MIN_PITCH, SNAP_BEATS,
 };
+use crate::ui::theme::ThemeColors;
 use crate::ui::timeline::{
     apply_piano_roll_wheel_controls, draw_playhead, draw_ruler, handle_timeline_playhead_pointer,
     is_timeline_pointer, timeline_body_rect, timeline_x, x_to_beat, TimelineMetrics,
@@ -133,6 +134,7 @@ impl PianoRollUi {
         clip_id: u64,
         project: &mut Project,
         engine: &mut dyn DawEngine,
+        theme: &ThemeColors,
     ) {
         let (clip_start, total_beats, beats_per_bar) = {
             let Some(clip) = project.clip(clip_id) else {
@@ -278,6 +280,7 @@ impl PianoRollUi {
                     metrics,
                     total_beats,
                     beats_per_bar,
+                    theme,
                 );
                 draw_notes(
                     &timeline_painter,
@@ -286,9 +289,10 @@ impl PianoRollUi {
                     &clip_notes,
                     &self.selected_note_ids,
                     if playhead_visible { local_playhead } else { -1.0 },
+                    theme,
                 );
                 if let Some(marquee) = &self.marquee {
-                    draw_marquee(&timeline_painter, marquee.rect());
+                    draw_marquee(&timeline_painter, marquee.rect(), theme);
                 }
 
                 // Sticky chrome on top of scrolled content.
@@ -299,6 +303,7 @@ impl PianoRollUi {
                     &clip_notes,
                     if playhead_visible { local_playhead } else { -1.0 },
                     self.audition_pitch,
+                    theme,
                 );
                 draw_ruler(
                     &painter.with_clip_rect(sticky_ruler),
@@ -307,6 +312,7 @@ impl PianoRollUi {
                     metrics.timeline(),
                     total_beats,
                     beats_per_bar,
+                    theme,
                 );
                 // Playhead last, clipped to the right of the piano keys so it stays
                 // above notes/ruler and never draws behind the pinned keyboard.
@@ -321,6 +327,7 @@ impl PianoRollUi {
                     metrics.timeline(),
                     local_playhead,
                     playhead_visible,
+                    theme,
                 );
             });
 
@@ -385,20 +392,21 @@ fn draw_grid(
     metrics: ViewMetrics,
     total_beats: f32,
     beats_per_bar: f32,
+    theme: &ThemeColors,
 ) {
     let timeline_left = grid.left() + TIMELINE_GUTTER_WIDTH;
     painter.rect_filled(
         Rect::from_min_max(Pos2::new(timeline_left, grid.top()), grid.max),
         0.0,
-        Color32::from_rgb(18, 18, 22),
+        theme.panel_bg,
     );
 
     for pitch in MIN_PITCH..=MAX_PITCH {
         let y = pitch_to_y(grid, pitch, metrics);
         let row_color = if is_black_key(pitch) {
-            Color32::from_rgb(26, 26, 32)
+            theme.key_row_black
         } else {
-            Color32::from_rgb(32, 32, 40)
+            theme.key_row_white
         };
         painter.rect_filled(
             Rect::from_min_max(
@@ -415,9 +423,9 @@ fn draw_grid(
         let x = timeline_x(grid, beat as f32, metrics.timeline());
         let is_bar = (beat as f32).rem_euclid(beats_per_bar) == 0.0;
         let color = if is_bar {
-            Color32::from_rgb(90, 90, 110)
+            theme.grid_bar
         } else {
-            Color32::from_rgb(45, 45, 58)
+            theme.grid_beat
         };
         painter.line_segment(
             [Pos2::new(x, grid.top()), Pos2::new(x, grid.bottom())],
@@ -433,7 +441,7 @@ fn draw_grid(
         let x = timeline_x(grid, beat as f32, metrics.timeline());
         painter.line_segment(
             [Pos2::new(x, grid.top()), Pos2::new(x, grid.bottom())],
-            egui::Stroke::new(1.0_f32, Color32::from_rgb(34, 34, 44)),
+            egui::Stroke::new(1.0_f32, theme.grid_subbeat),
         );
     }
 }
@@ -445,12 +453,13 @@ fn draw_keyboard(
     notes: &[Note],
     playhead_beats: f32,
     audition_pitch: Option<u8>,
+    theme: &ThemeColors,
 ) {
     let keys = Rect::from_min_max(
         grid.min,
         Pos2::new(grid.left() + TIMELINE_GUTTER_WIDTH, grid.bottom()),
     );
-    painter.rect_filled(keys, 0.0, Color32::from_rgb(48, 48, 56));
+    painter.rect_filled(keys, 0.0, theme.keys_bg);
 
     let is_pitch_active = |pitch: u8| {
         audition_pitch == Some(pitch)
@@ -472,9 +481,9 @@ fn draw_keyboard(
         );
         let is_active = is_pitch_active(pitch);
         let fill = if is_active {
-            Color32::from_rgb(255, 200, 120)
+            theme.white_key_active
         } else {
-            Color32::from_rgb(232, 232, 238)
+            theme.white_key
         };
         painter.rect_filled(key_rect, 0.0, fill);
         painter.line_segment(
@@ -482,7 +491,7 @@ fn draw_keyboard(
                 Pos2::new(keys.left(), key_rect.bottom()),
                 Pos2::new(keys.right(), key_rect.bottom()),
             ],
-            egui::Stroke::new(1.0_f32, Color32::from_rgb(150, 150, 160)),
+            egui::Stroke::new(1.0_f32, theme.white_key_border),
         );
 
         if pitch % 12 == 0 {
@@ -491,7 +500,7 @@ fn draw_keyboard(
                 egui::Align2::RIGHT_CENTER,
                 pitch_name(pitch),
                 egui::FontId::monospace(11.0),
-                Color32::from_rgb(40, 40, 55),
+                theme.white_key_label,
             );
         }
     }
@@ -509,15 +518,15 @@ fn draw_keyboard(
         );
         let is_active = is_pitch_active(pitch);
         let fill = if is_active {
-            Color32::from_rgb(255, 160, 70)
+            theme.black_key_active
         } else {
-            Color32::from_rgb(28, 28, 34)
+            theme.black_key
         };
         painter.rect(
             key_rect,
             1.5,
             fill,
-            egui::Stroke::new(1.0_f32, Color32::from_rgb(12, 12, 16)),
+            egui::Stroke::new(1.0_f32, theme.black_key_border),
             egui::StrokeKind::Inside,
         );
     }
@@ -527,7 +536,7 @@ fn draw_keyboard(
             Pos2::new(keys.right(), keys.top()),
             Pos2::new(keys.right(), keys.bottom()),
         ],
-        egui::Stroke::new(1.5_f32, Color32::from_rgb(70, 70, 85)),
+        egui::Stroke::new(1.5_f32, theme.key_divider),
     );
 }
 
@@ -687,6 +696,7 @@ fn draw_notes(
     notes: &[Note],
     selected_ids: &HashSet<u64>,
     playhead_beats: f32,
+    theme: &ThemeColors,
 ) {
     for note in notes {
         let note_rect = note_rect(rect, note, metrics);
@@ -694,11 +704,11 @@ fn draw_notes(
         let is_active = playhead_beats >= 0.0 && note.contains_beat(playhead_beats);
 
         let fill = if is_active {
-            Color32::from_rgb(255, 180, 70)
+            theme.note_fill_active
         } else if is_selected {
-            Color32::from_rgb(120, 190, 255)
+            theme.note_fill_selected
         } else {
-            Color32::from_rgb(70, 130, 220)
+            theme.note_fill
         };
 
         painter.rect(
@@ -708,9 +718,9 @@ fn draw_notes(
             egui::Stroke::new(
                 1.0_f32,
                 if is_selected {
-                    Color32::WHITE
+                    theme.note_stroke_selected
                 } else {
-                    Color32::from_rgb(180, 210, 255)
+                    theme.note_stroke
                 },
             ),
             egui::StrokeKind::Inside,
@@ -723,17 +733,17 @@ fn draw_notes(
                 Pos2::new(note_rect.right() - 2.0, note_rect.bottom() - 1.0),
             ),
             1.0,
-            Color32::from_rgba_unmultiplied(255, 255, 255, 70),
+            theme.note_velocity,
         );
     }
 }
 
-fn draw_marquee(painter: &egui::Painter, selection: Rect) {
+fn draw_marquee(painter: &egui::Painter, selection: Rect, theme: &ThemeColors) {
     painter.rect(
         selection,
         0.0,
-        Color32::from_rgba_unmultiplied(120, 180, 255, 40),
-        egui::Stroke::new(1.0_f32, Color32::from_rgb(160, 210, 255)),
+        theme.marquee_fill,
+        egui::Stroke::new(1.0_f32, theme.marquee_stroke),
         egui::StrokeKind::Inside,
     );
 }

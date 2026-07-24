@@ -1,9 +1,10 @@
 use std::collections::HashSet;
 
-use egui::{Color32, Pos2, Rect, Response, Sense, Ui, Vec2};
+use egui::{Pos2, Rect, Response, Sense, Ui, Vec2};
 
 use crate::engine::DawEngine;
 use crate::model::{MidiClip, Project, SNAP_BEATS, DEFAULT_CLIP_LENGTH_BEATS, MAX_PITCH, MIN_PITCH};
+use crate::ui::theme::ThemeColors;
 use crate::ui::timeline::{
     apply_horizontal_wheel_controls, draw_playhead, draw_ruler, draw_timeline_grid_lines,
     handle_timeline_playhead_pointer, is_timeline_pointer, ruler_rect, timeline_body_rect,
@@ -14,7 +15,6 @@ use crate::ui::timeline::{
 const TRACK_HEADER_WIDTH: f32 = TIMELINE_GUTTER_WIDTH;
 const LANE_HEIGHT: f32 = 72.0;
 const RESIZE_HANDLE_PX: f32 = 10.0;
-const PLAYLIST_BG: Color32 = Color32::from_rgb(18, 18, 22);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ClipDragMode {
@@ -88,10 +88,11 @@ impl PlaylistUi {
         ui: &mut Ui,
         project: &mut Project,
         engine: &mut dyn DawEngine,
+        theme: &ThemeColors,
     ) {
         // CentralPanel uses Frame::NONE; paint the full panel so nothing shows through.
         ui.painter()
-            .rect_filled(ui.max_rect(), 0.0, PLAYLIST_BG);
+            .rect_filled(ui.max_rect(), 0.0, theme.panel_bg);
 
         ui.horizontal(|ui| {
             if ui.button("Add track").clicked() {
@@ -102,7 +103,7 @@ impl PlaylistUi {
         ui.add_space(4.0);
 
         let viewport_rect = ui.available_rect_before_wrap();
-        ui.painter().rect_filled(viewport_rect, 0.0, PLAYLIST_BG);
+        ui.painter().rect_filled(viewport_rect, 0.0, theme.panel_bg);
         apply_horizontal_wheel_controls(
             ui,
             viewport_rect,
@@ -132,7 +133,7 @@ impl PlaylistUi {
                 let (response, painter) =
                     ui.allocate_painter(canvas_size, Sense::click_and_drag());
                 let rect = response.rect;
-                painter.rect_filled(rect, 0.0, PLAYLIST_BG);
+                painter.rect_filled(rect, 0.0, theme.panel_bg);
                 let ruler = ruler_rect(rect);
                 let body = timeline_body_rect(rect);
 
@@ -167,6 +168,7 @@ impl PlaylistUi {
                     metrics,
                     total_beats,
                     project.beats_per_bar,
+                    theme,
                 );
 
                 for (index, track) in project.tracks.iter().enumerate() {
@@ -185,6 +187,7 @@ impl PlaylistUi {
                         track.name.as_str(),
                         &track.clips,
                         &self.selected_clip_ids,
+                        theme,
                     );
                 }
 
@@ -197,6 +200,7 @@ impl PlaylistUi {
                     metrics,
                     playhead,
                     true,
+                    theme,
                 );
             });
 
@@ -221,25 +225,26 @@ fn draw_lane(
     track_name: &str,
     clips: &[MidiClip],
     selected: &HashSet<u64>,
+    theme: &ThemeColors,
 ) {
     let header = Rect::from_min_max(
         lane.min,
         Pos2::new(lane.left() + TRACK_HEADER_WIDTH, lane.bottom()),
     );
-    painter.rect_filled(header, 0.0, Color32::from_rgb(40, 40, 50));
+    painter.rect_filled(header, 0.0, theme.track_header_bg);
     painter.text(
         Pos2::new(header.left() + 6.0, header.center().y),
         egui::Align2::LEFT_CENTER,
         track_name,
         egui::FontId::proportional(12.0),
-        Color32::from_rgb(210, 210, 220),
+        theme.track_header_text,
     );
 
     let timeline_lane = Rect::from_min_max(
         Pos2::new(lane.left() + TRACK_HEADER_WIDTH, lane.top()),
         lane.max,
     );
-    painter.rect_filled(timeline_lane, 0.0, Color32::from_rgb(22, 22, 28));
+    painter.rect_filled(timeline_lane, 0.0, theme.lane_bg);
     // Use `lane` (same left as body/ruler), not `timeline_lane`: timeline_x already
     // offsets by TIMELINE_GUTTER_WIDTH / TRACK_HEADER_WIDTH.
     draw_timeline_grid_lines(
@@ -248,15 +253,16 @@ fn draw_lane(
         metrics,
         total_beats,
         beats_per_bar,
+        theme,
     );
 
     for clip in clips {
         let clip_rect = clip_block_rect(timeline, lane, clip, metrics);
         let is_selected = selected.contains(&clip.id);
         let fill = if is_selected {
-            Color32::from_rgb(100, 170, 255)
+            theme.clip_fill_selected
         } else {
-            Color32::from_rgb(60, 110, 180)
+            theme.clip_fill
         };
         painter.rect(
             clip_rect,
@@ -265,9 +271,9 @@ fn draw_lane(
             egui::Stroke::new(
                 1.5_f32,
                 if is_selected {
-                    Color32::WHITE
+                    theme.clip_stroke_selected
                 } else {
-                    Color32::from_rgb(140, 180, 230)
+                    theme.clip_stroke
                 },
             ),
             egui::StrokeKind::Inside,
@@ -278,15 +284,15 @@ fn draw_lane(
             egui::Align2::LEFT_TOP,
             &clip.name,
             egui::FontId::proportional(11.0),
-            Color32::from_rgb(240, 240, 250),
+            theme.clip_label,
         );
 
-        draw_clip_note_preview(painter, clip_rect, clip);
+        draw_clip_note_preview(painter, clip_rect, clip, theme);
     }
 
     painter.line_segment(
         [Pos2::new(lane.left(), lane.bottom()), Pos2::new(lane.right(), lane.bottom())],
-        egui::Stroke::new(1.0_f32, Color32::from_rgb(55, 55, 68)),
+        egui::Stroke::new(1.0_f32, theme.separator),
     );
 }
 
@@ -299,7 +305,12 @@ fn clip_block_rect(timeline: Rect, lane: Rect, clip: &MidiClip, metrics: Timelin
     )
 }
 
-fn draw_clip_note_preview(painter: &egui::Painter, clip_rect: Rect, clip: &MidiClip) {
+fn draw_clip_note_preview(
+    painter: &egui::Painter,
+    clip_rect: Rect,
+    clip: &MidiClip,
+    theme: &ThemeColors,
+) {
     if clip.notes.is_empty() {
         return;
     }
@@ -326,7 +337,7 @@ fn draw_clip_note_preview(painter: &egui::Painter, clip_rect: Rect, clip: &MidiC
                 Pos2::new(x1.max(x0 + 2.0), y + 3.0),
             ),
             1.0,
-            Color32::from_rgba_unmultiplied(255, 255, 255, 120),
+            theme.clip_note_preview,
         );
     }
 }

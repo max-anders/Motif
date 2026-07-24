@@ -3,9 +3,6 @@
 //! App commands are named [`Action`]s with [`Binding`]s. Poll once per frame
 //! from `DawApp` — do not match chords inside feature widgets.
 
-use std::fs;
-use std::path::Path;
-
 use egui::{Context, Key, Modifiers};
 use serde::{Deserialize, Serialize};
 
@@ -141,12 +138,7 @@ pub enum CaptureOutcome {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct SettingsFile {
-    bindings: Vec<StoredBinding>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct StoredBinding {
+pub struct StoredBinding {
     action: Action,
     #[serde(flatten)]
     kind: StoredBindingKind,
@@ -154,7 +146,7 @@ struct StoredBinding {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-enum StoredBindingKind {
+pub enum StoredBindingKind {
     Key {
         key: String,
         ctrl_or_cmd: bool,
@@ -185,7 +177,11 @@ impl ShortcutRegistry {
                 ),
                 (Action::DeleteSelection, Binding::CutEvent),
                 (
- 
+                    Action::DuplicateSelection,
+                    Binding::Key(Chord::ctrl_or_cmd(Key::D)),
+                ),
+                (
+                    Action::SaveProject,
                     Binding::Key(Chord::ctrl_or_cmd(Key::S)),
                 ),
                 (
@@ -200,47 +196,17 @@ impl ShortcutRegistry {
         }
     }
 
-    pub fn load_or_defaults(path: &Path) -> Self {
-        match fs::read_to_string(path) {
-            Ok(json) => match Self::from_settings_json(&json) {
-                Ok(mut registry) => {
-                    registry.ensure_default_actions();
-                    registry
-                }
-                Err(_) => Self::defaults(),
-            },
-            Err(_) => Self::defaults(),
-        }
+    /// Parse bindings from a JSON object that may also contain theme fields.
+    pub fn from_settings_value(value: &serde_json::Value) -> Result<Self, String> {
+        let bindings = value
+            .get("bindings")
+            .ok_or_else(|| "missing bindings".to_string())?;
+        let stored: Vec<StoredBinding> =
+            serde_json::from_value(bindings.clone()).map_err(|error| error.to_string())?;
+        Self::from_stored(stored)
     }
 
-    /// Append factory bindings for any [`Action`] missing from a loaded settings file.
-    fn ensure_default_actions(&mut self) {
-        for (action, binding) in Self::defaults().bindings {
-            let has_action = self.bindings.iter().any(|(existing, _)| *existing == action);
-            if !has_action {
-                self.bindings.push((action, binding));
-            }
-        }
-    }
-
-    pub fn from_settings_json(json: &str) -> Result<Self, String> {
-        let file: SettingsFile =
-            serde_json::from_str(json).map_err(|error| error.to_string())?;
-        if file.bindings.is_empty() {
-            return Err("empty bindings".into());
-        }
-        let mut bindings = Vec::with_capacity(file.bindings.len());
-        for stored in file.bindings {
-            let binding = stored
-                .kind
-                .to_binding()
-                .ok_or_else(|| "unknown key in settings".to_string())?;
-            bindings.push((stored.action, binding));
-        }
-        Ok(Self { bindings })
-    }
-
-    pub fn to_settings_json(&self) -> Result<String, String> {
+    pub fn to_stored(&self) -> Result<Vec<StoredBinding>, String> {
         let mut stored = Vec::with_capacity(self.bindings.len());
         for (action, binding) in &self.bindings {
             let kind = StoredBindingKind::from_binding(*binding)
@@ -250,13 +216,32 @@ impl ShortcutRegistry {
                 kind,
             });
         }
-        let file = SettingsFile { bindings: stored };
-        serde_json::to_string_pretty(&file).map_err(|error| error.to_string())
+        Ok(stored)
     }
 
-    pub fn save_to_path(&self, path: &Path) -> Result<(), String> {
-        let json = self.to_settings_json()?;
-        fs::write(path, json).map_err(|error| error.to_string())
+    pub fn from_stored(stored: Vec<StoredBinding>) -> Result<Self, String> {
+        if stored.is_empty() {
+            return Err("empty bindings".into());
+        }
+        let mut bindings = Vec::with_capacity(stored.len());
+        for entry in stored {
+            let binding = entry
+                .kind
+                .to_binding()
+                .ok_or_else(|| "unknown key in settings".to_string())?;
+            bindings.push((entry.action, binding));
+        }
+        Ok(Self { bindings })
+    }
+
+    /// Append factory bindings for any [`Action`] missing from a loaded settings file.
+    pub fn ensure_default_actions(&mut self) {
+        for (action, binding) in Self::defaults().bindings {
+            let has_action = self.bindings.iter().any(|(existing, _)| *existing == action);
+            if !has_action {
+                self.bindings.push((action, binding));
+            }
+        }
     }
 
     pub fn reset_defaults(&mut self) {
