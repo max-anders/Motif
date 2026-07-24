@@ -60,7 +60,22 @@ pub struct EditorPoll {
 #[derive(Default)]
 pub struct PluginEditorHost {
     sessions: HashMap<PluginRef, EditorSession>,
+    #[cfg(target_os = "linux")]
+    close_binding: EditorCloseBinding,
 }
+
+#[cfg(not(target_os = "linux"))]
+pub struct EditorCloseBinding;
+
+#[cfg(not(target_os = "linux"))]
+impl Default for EditorCloseBinding {
+    fn default() -> Self {
+        Self
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub use super::editor_window::EditorCloseBinding;
 
 /// Outcome of polling a single editor window.
 #[derive(Default)]
@@ -70,6 +85,20 @@ struct PollOne {
 }
 
 impl PluginEditorHost {
+    #[cfg(target_os = "linux")]
+    pub fn set_close_binding(&mut self, close_binding: EditorCloseBinding) {
+        if close_binding == self.close_binding {
+            return;
+        }
+        self.close_binding = close_binding.clone();
+        for session in self.sessions.values_mut() {
+            let _ = session.window.set_close_binding(close_binding.clone());
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub fn set_close_binding(&mut self, _close_binding: EditorCloseBinding) {}
+
     pub fn is_open(&self, target: PluginRef) -> bool {
         self.sessions.contains_key(&target)
     }
@@ -100,7 +129,12 @@ impl PluginEditorHost {
 
         #[cfg(target_os = "linux")]
         {
-            let window = EditorParentWindow::create(title, host_x11, forward_transport)?;
+            let window = EditorParentWindow::create(
+                title,
+                host_x11,
+                forward_transport,
+                self.close_binding.clone(),
+            )?;
             let parent = WindowHandle::X11(window.x11_window_id());
 
             // JUCE/Vital under XWayland: egui's pixels_per_point as clap set_scale

@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use super::audio_clip::AudioClip;
 use super::{Note, Project, SNAP_BEATS};
 
 pub const DEFAULT_CLIP_LENGTH_BEATS: f32 = 4.0;
@@ -13,6 +14,13 @@ pub struct MidiClip {
     /// Visible length on the playlist timeline.
     pub length_beats: f32,
     pub notes: Vec<Note>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Clip {
+    Midi(MidiClip),
+    Audio(AudioClip),
 }
 
 impl MidiClip {
@@ -56,5 +64,83 @@ impl MidiClip {
 
     pub fn set_length_beats(&mut self, length: f32) {
         self.length_beats = Project::snap_beats(length.max(SNAP_BEATS));
+    }
+}
+
+impl Clip {
+    pub fn id(&self) -> u64 {
+        match self {
+            Self::Midi(clip) => clip.id,
+            Self::Audio(clip) => clip.id,
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Midi(clip) => clip.name.as_str(),
+            Self::Audio(clip) => clip.name.as_str(),
+        }
+    }
+
+    pub fn start_beats(&self) -> f32 {
+        match self {
+            Self::Midi(clip) => clip.start_beats,
+            Self::Audio(clip) => clip.start_beats,
+        }
+    }
+
+    pub fn set_start_beats(&mut self, start: f32) {
+        let start = Project::snap_beats(start.max(0.0));
+        match self {
+            Self::Midi(clip) => clip.start_beats = start,
+            Self::Audio(clip) => clip.start_beats = start,
+        }
+    }
+
+    pub fn length_beats(&self) -> f32 {
+        match self {
+            Self::Midi(clip) => clip.length_beats,
+            Self::Audio(clip) => clip.length_beats,
+        }
+    }
+
+    pub fn set_length_beats(&mut self, length: f32) {
+        let length = Project::snap_beats(length.max(SNAP_BEATS));
+        match self {
+            Self::Midi(clip) => clip.length_beats = length,
+            Self::Audio(clip) => clip.length_beats = length,
+        }
+    }
+
+    pub fn end_beats(&self) -> f32 {
+        self.start_beats() + self.length_beats()
+    }
+
+    pub fn as_midi(&self) -> Option<&MidiClip> {
+        match self {
+            Self::Midi(clip) => Some(clip),
+            Self::Audio(_) => None,
+        }
+    }
+
+    pub fn as_midi_mut(&mut self) -> Option<&mut MidiClip> {
+        match self {
+            Self::Midi(clip) => Some(clip),
+            Self::Audio(_) => None,
+        }
+    }
+
+    pub fn as_audio(&self) -> Option<&AudioClip> {
+        match self {
+            Self::Audio(clip) => Some(clip),
+            Self::Midi(_) => None,
+        }
+    }
+
+    pub fn as_audio_mut(&mut self) -> Option<&mut AudioClip> {
+        match self {
+            Self::Audio(clip) => Some(clip),
+            Self::Midi(_) => None,
+        }
     }
 }

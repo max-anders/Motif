@@ -4,6 +4,11 @@ mod mock;
 mod metronome;
 mod piano;
 pub mod plugins;
+mod sample;
+
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
 
 pub use audio::AudioEngine;
 // Kept for silent fallback / tests; not wired in the app UI path.
@@ -11,8 +16,10 @@ pub use audio::AudioEngine;
 pub use mock::MockEngine;
 #[allow(unused_imports)] // EntryCategory: public catalog surface, consumed once the effect picker lands
 pub use plugins::{
-    CatalogEntry, EditorPoll, EntryCategory, HostX11, PluginCatalog, PluginRef, PLUGIN_CACHE_FILE,
+    CatalogEntry, EditorCloseBinding, EditorPoll, EntryCategory, HostX11, PluginCatalog,
+    PluginRef, PLUGIN_CACHE_FILE,
 };
+pub use sample::{decode_audio_file, DecodedAudio};
 
 use crate::model::Project;
 
@@ -79,6 +86,11 @@ pub trait DawEngine {
         let _ = project;
     }
 
+    /// Push decoded audio clips per track to the audio thread.
+    fn sync_samples(&mut self, project: &Project, decoded_audio: &HashMap<PathBuf, Arc<DecodedAudio>>) {
+        let _ = (project, decoded_audio);
+    }
+
     /// Latest per-track peak meters as `(track_id, peak_l, peak_r)`. Cosmetic/UI only.
     fn meter_levels(&self) -> Vec<(u64, f32, f32)> {
         Vec::new()
@@ -129,6 +141,12 @@ pub trait DawEngine {
     /// Live-toggle Space transport forwarding for one open editor.
     fn set_plugin_editor_transport(&mut self, target: PluginRef, forward: bool) {
         let _ = (target, forward);
+    }
+
+    fn set_plugin_editor_close_binding(
+        &mut self,
+        _close_binding: crate::engine::plugins::EditorCloseBinding,
+    ) {
     }
 
     /// Poll editor windows / idle callbacks. Returns aggregated outcome.

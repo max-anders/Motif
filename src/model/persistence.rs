@@ -10,7 +10,7 @@ use super::Project;
 
 pub const PROJECT_EXTENSION: &str = "motif";
 pub const PROJECT_FORMAT: &str = "motif";
-pub const PROJECT_FORMAT_VERSION: u32 = 1;
+pub const PROJECT_FORMAT_VERSION: u32 = 2;
 pub const MAX_RECENT_PROJECTS: usize = 12;
 pub const DEFAULT_AUTOSAVE_INTERVAL_SECS: u32 = 180;
 

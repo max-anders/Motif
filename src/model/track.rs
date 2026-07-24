@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use super::clip::{MidiClip, DEFAULT_CLIP_LENGTH_BEATS};
+use super::clip::{Clip, MidiClip, DEFAULT_CLIP_LENGTH_BEATS};
 use super::instrument::TrackInstrument;
 use super::mixer::{db_to_linear, pan_gains, Device, Macro, Send};
 use super::serde_b64;
@@ -38,7 +38,7 @@ pub struct Track {
     /// Kept off `TrackInstrument` so identity sync does not reload on every save.
     #[serde(default, skip_serializing_if = "Option::is_none", with = "serde_b64")]
     pub plugin_state: Option<Vec<u8>>,
-    pub clips: Vec<MidiClip>,
+    pub clips: Vec<Clip>,
 }
 
 impl Track {
@@ -51,15 +51,23 @@ impl Track {
     }
 
     pub fn remove_clip(&mut self, clip_id: u64) {
-        self.clips.retain(|clip| clip.id != clip_id);
+        self.clips.retain(|clip| clip.id() != clip_id);
     }
 
-    pub fn clip_mut(&mut self, clip_id: u64) -> Option<&mut MidiClip> {
-        self.clips.iter_mut().find(|clip| clip.id == clip_id)
+    pub fn clip_mut(&mut self, clip_id: u64) -> Option<&mut Clip> {
+        self.clips.iter_mut().find(|clip| clip.id() == clip_id)
     }
 
-    pub fn clip(&self, clip_id: u64) -> Option<&MidiClip> {
-        self.clips.iter().find(|clip| clip.id == clip_id)
+    pub fn clip(&self, clip_id: u64) -> Option<&Clip> {
+        self.clips.iter().find(|clip| clip.id() == clip_id)
+    }
+
+    pub fn midi_clip_mut(&mut self, clip_id: u64) -> Option<&mut MidiClip> {
+        self.clip_mut(clip_id).and_then(Clip::as_midi_mut)
+    }
+
+    pub fn midi_clip(&self, clip_id: u64) -> Option<&MidiClip> {
+        self.clip(clip_id).and_then(Clip::as_midi)
     }
 }
 

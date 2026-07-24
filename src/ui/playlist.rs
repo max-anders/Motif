@@ -1,11 +1,13 @@
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+use std::sync::Arc;
 
 use egui::{Pos2, Rect, Response, Sense, Ui, Vec2};
 
-use crate::engine::{DawEngine, PluginCatalog, PluginRef};
+use crate::engine::{DawEngine, DecodedAudio, PluginCatalog, PluginRef};
 use crate::model::{
-    EditHistory, MidiClip, Project, Track, TrackInstrument, DEFAULT_CLIP_LENGTH_BEATS, MAX_PITCH,
-    MIN_PITCH, SNAP_BEATS,
+    AudioClip, Clip, EditHistory, Project, Track, TrackInstrument, DEFAULT_CLIP_LENGTH_BEATS,
+    MAX_PITCH, MIN_PITCH, SNAP_BEATS,
 };
 use crate::ui::instrument_menu::{
     choice_to_instrument, show_instrument_picker, track_name_for_choice, InstrumentChoice,
@@ -38,6 +40,18 @@ pub(crate) struct ClipOriginal {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct MarqueeDrag {
+    start: Pos2,
+    current: Pos2,
+}
+
+impl MarqueeDrag {
+    pub(crate) fn rect(&self) -> Rect {
+        Rect::from_two_pos(self.start, self.current)
+    }
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct ClipDrag {
     /// Primary clip under the pointer (resize target / open-on-double-click id).
     clip_id: u64,
@@ -64,9 +78,16 @@ pub enum PluginEditorRequest {
     },
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct AudioImportRequest {
+    pub track_id: u64,
+    pub start_beats: f32,
+}
+
 pub struct PlaylistUi {
     selected_clip_ids: HashSet<u64>,
     active_drag: Option<ClipDrag>,
+    marquee: Option<MarqueeDrag>,
     dragging_playhead: bool,
     beat_width: f32,
     scroll_offset: Vec2,
@@ -76,6 +97,8 @@ pub struct PlaylistUi {
     plugin_editor_request: Option<PluginEditorRequest>,
     /// Delete track (consumed by app for piano-roll / engine cleanup).
     delete_track_request: Option<u64>,
+    /// Import audio clip request (consumed by app).
+    audio_import_request: Option<AudioImportRequest>,
     /// True if pointer moved enough during drag to count as a drag, not a click.
     drag_moved: bool,
     add_track_search: String,
@@ -89,12 +112,14 @@ impl Default for PlaylistUi {
         Self {
             selected_clip_ids: HashSet::new(),
             active_drag: None,
+            marquee: None,
             dragging_playhead: false,
             beat_width: DEFAULT_BEAT_WIDTH,
             scroll_offset: Vec2::ZERO,
             open_clip_request: None,
             plugin_editor_request: None,
             delete_track_request: None,
+            audio_import_request: None,
             drag_moved: false,
             add_track_search: String::new(),
             change_instrument_search: String::new(),
@@ -118,6 +143,10 @@ impl PlaylistUi {
 
     pub fn take_delete_track_request(&mut self) -> Option<u64> {
         self.delete_track_request.take()
+    }
+
+    pub fn take_audio_import_request(&mut self) -> Option<AudioImportRequest> {
+        self.audio_import_request.take()
     }
 
     pub fn clear_selection(&mut self) {
@@ -147,6 +176,7 @@ impl PlaylistUi {
         catalog: &PluginCatalog,
         history: &mut EditHistory,
         selected_track: &mut Option<u64>,
+        decoded_audio: &HashMap<PathBuf, Arc<DecodedAudio>>,
         theme: &ThemeColors,
     ) {
         // CentralPanel uses Frame::NONE; paint the full panel so nothing shows through.
@@ -166,6 +196,18 @@ impl PlaylistUi {
                     ui.close_menu();
                 }
             });
+            if ui.button("Import sample...").clicked() {
+                let track_id = selected_track
+                    .or_else(|| project.tracks.first().map(|track| track.id))
+                    .unwrap_or(0);
+                if track_id != 0 {
+                    self.audio_import_request = Some(AudioImportRequest {
+                        track_id,
+                        start_beats: Project::snap_beats(engine.current_beats().max(0.0)),
+                    });
+                    *selected_track = Some(track_id);
+                }
+            }
         });
         ui.add_space(4.0);
 
@@ -229,7 +271,10 @@ impl PlaylistUi {
                     let on_sticky_headers = response
                         .interact_pointer_pos()
                         .is_some_and(|pos| sticky_headers.contains(pos));
-                    let allow_playhead = self.dragging_playhead || !on_sticky_headers;
+                    let gesture_active =
+                        self.active_drag.is_some() || self.marquee.is_some();
+                    let allow_playhead =
+                        (self.dragging_playhead || !on_sticky_headers) && !gesture_active;
 
                     if allow_playhead
                         && handle_timeline_playhead_pointer(
@@ -254,6 +299,7 @@ impl PlaylistUi {
                             history,
                             &mut self.selected_clip_ids,
                             &mut self.active_drag,
+                            &mut self.marquee,
                             &mut self.open_clip_request,
                             &mut self.drag_moved,
                             selected_track,
@@ -284,8 +330,14 @@ impl PlaylistUi {
                             &track.clips,
                             &self.selected_clip_ids,
                             audible,
+                            project.bpm,
+                            decoded_audio,
                             theme,
                         );
+                    }
+
+                    if let Some(marquee) = &self.marquee {
+                        draw_marquee(&timeline_painter, marquee.rect(), theme);
                     }
 
                     // Sticky chrome on top of scrolled content.
@@ -625,6 +677,7 @@ fn draw_track_header(
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_lane_timeline(
     painter: &egui::Painter,
     lane: Rect,
@@ -632,9 +685,11 @@ pub(crate) fn draw_lane_timeline(
     metrics: TimelineMetrics,
     total_beats: f32,
     beats_per_bar: f32,
-    clips: &[MidiClip],
+    clips: &[Clip],
     selected: &HashSet<u64>,
     audible: bool,
+    bpm: f32,
+    decoded_audio: &HashMap<PathBuf, Arc<DecodedAudio>>,
     theme: &ThemeColors,
 ) {
     let timeline_lane = Rect::from_min_max(
@@ -653,11 +708,20 @@ pub(crate) fn draw_lane_timeline(
 
     for clip in clips {
         let clip_rect = clip_block_rect(timeline, lane, clip, metrics);
-        let is_selected = selected.contains(&clip.id);
+        let is_selected = selected.contains(&clip.id());
+        let is_audio = clip.as_audio().is_some();
         let fill = if is_selected {
-            theme.clip_fill_selected
+            if is_audio {
+                theme.clip_fill_selected.gamma_multiply(0.85)
+            } else {
+                theme.clip_fill_selected
+            }
         } else {
-            theme.clip_fill
+            if is_audio {
+                theme.clip_fill.gamma_multiply(0.75)
+            } else {
+                theme.clip_fill
+            }
         };
         painter.rect(
             clip_rect,
@@ -674,15 +738,30 @@ pub(crate) fn draw_lane_timeline(
             egui::StrokeKind::Inside,
         );
 
-        painter.text(
+        let label = if let Some(audio) = clip.as_audio() {
+            if audio.missing {
+                format!("[A] {} (missing)", clip.name())
+            } else {
+                format!("[A] {}", clip.name())
+            }
+        } else {
+            format!("[M] {}", clip.name())
+        };
+        // Clip the label to the block so long filenames don't bleed into the
+        // next clip - the previous version drew unclipped, untruncated text.
+        painter.with_clip_rect(clip_rect).text(
             Pos2::new(clip_rect.left() + 6.0, clip_rect.top() + 4.0),
             egui::Align2::LEFT_TOP,
-            &clip.name,
+            truncate_label_for_width(&label, clip_rect.width() - 8.0),
             egui::FontId::proportional(11.0),
             theme.clip_label,
         );
 
-        draw_clip_note_preview(painter, clip_rect, clip, theme);
+        if let Some(audio) = clip.as_audio() {
+            draw_clip_waveform(painter, clip_rect, audio, bpm, decoded_audio, theme);
+        } else {
+            draw_clip_note_preview(painter, clip_rect, clip, theme);
+        }
     }
 
     painter.line_segment(
@@ -692,6 +771,20 @@ pub(crate) fn draw_lane_timeline(
         ],
         egui::Stroke::new(1.0_f32, theme.separator),
     );
+}
+
+/// Approximate character budget for the 11px proportional clip label font.
+/// Combined with the `with_clip_rect` call at the label draw site, this is a
+/// belt-and-suspenders guard: even if the estimate is slightly off, the hard
+/// clip rect stops text from bleeding into a neighboring clip.
+const CLIP_LABEL_AVG_CHAR_WIDTH: f32 = 6.0;
+
+fn truncate_label_for_width(text: &str, available_width: f32) -> String {
+    if available_width <= 0.0 {
+        return String::new();
+    }
+    let max_chars = (available_width / CLIP_LABEL_AVG_CHAR_WIDTH).floor().max(1.0) as usize;
+    truncate_label(text, max_chars)
 }
 
 fn truncate_label(text: &str, max_chars: usize) -> String {
@@ -707,10 +800,10 @@ fn truncate_label(text: &str, max_chars: usize) -> String {
 pub(crate) fn clip_block_rect(
     timeline: Rect,
     lane: Rect,
-    clip: &MidiClip,
+    clip: &Clip,
     metrics: TimelineMetrics,
 ) -> Rect {
-    let left = timeline_x(timeline, clip.start_beats, metrics);
+    let left = timeline_x(timeline, clip.start_beats(), metrics);
     let right = timeline_x(timeline, clip.end_beats(), metrics);
     Rect::from_min_max(
         Pos2::new(left + 1.0, lane.top() + 4.0),
@@ -718,12 +811,95 @@ pub(crate) fn clip_block_rect(
     )
 }
 
+/// Cap on peak samples scanned per pixel column, and on columns drawn per
+/// clip, so a very long/wide audio clip can't blow up per-frame paint cost
+/// (this runs every repaint since egui is immediate-mode).
+const WAVEFORM_MAX_SAMPLES_PER_COLUMN: usize = 256;
+const WAVEFORM_MAX_COLUMNS: usize = 3000;
+
+/// Draws a min/max peak waveform for an audio clip, using whatever PCM is
+/// already decoded and cached for playback (`decoded_audio`, keyed by
+/// source path - see `App::decoded_audio` / `engine::sample::decode_audio_file`).
+/// If the source hasn't been decoded yet (still loading, or missing), this
+/// draws nothing - same as a clip with no preview data.
+fn draw_clip_waveform(
+    painter: &egui::Painter,
+    clip_rect: Rect,
+    audio: &AudioClip,
+    bpm: f32,
+    decoded_audio: &HashMap<PathBuf, Arc<DecodedAudio>>,
+    theme: &ThemeColors,
+) {
+    let Some(decoded) = decoded_audio.get(&audio.source) else {
+        return;
+    };
+    if decoded.frames == 0 || audio.length_beats <= 0.0 {
+        return;
+    }
+    let bps = (bpm / 60.0).max(0.0001);
+    // Frames the clip's visible length would span if the source were long
+    // enough to fill it; matches the time mapping used for playback in
+    // `AudioEngine` (start/length_beats converted via bpm, not resampled).
+    let frames_for_length = (audio.length_beats / bps) * decoded.device_sample_rate as f32;
+    if frames_for_length < 1.0 {
+        return;
+    }
+    let visible_frames = frames_for_length.min(decoded.frames as f32);
+    // Fraction of the clip block that actually has audio under it - the rest
+    // (when length_beats outlasts the source) stays blank, matching playback
+    // (silence once the buffer runs out).
+    let width_fraction = (visible_frames / frames_for_length).clamp(0.0, 1.0);
+
+    let preview_top = clip_rect.top() + 20.0;
+    let preview_height = (clip_rect.height() - 24.0).max(8.0);
+    let mid_y = preview_top + preview_height / 2.0;
+    let half_height = preview_height / 2.0;
+
+    let content_width = (clip_rect.width() - 8.0).max(1.0);
+    let waveform_width = content_width * width_fraction;
+    let columns = (waveform_width.round() as usize)
+        .clamp(1, WAVEFORM_MAX_COLUMNS);
+    let x0 = clip_rect.left() + 4.0;
+    let clipped = painter.with_clip_rect(clip_rect);
+
+    for col in 0..columns {
+        let start = ((col as f32 / columns as f32) * visible_frames) as usize;
+        let end = (((col + 1) as f32 / columns as f32) * visible_frames).ceil() as usize;
+        let end = end.max(start + 1).min(decoded.frames);
+        let start = start.min(end.saturating_sub(1));
+        let step = ((end - start) / WAVEFORM_MAX_SAMPLES_PER_COLUMN).max(1);
+
+        let mut min_v = 0.0_f32;
+        let mut max_v = 0.0_f32;
+        let mut i = start;
+        while i < end {
+            let l = decoded.left.get(i).copied().unwrap_or(0.0);
+            let r = decoded.right.get(i).copied().unwrap_or(0.0);
+            let sample = (l + r) * 0.5;
+            min_v = min_v.min(sample);
+            max_v = max_v.max(sample);
+            i += step;
+        }
+
+        let x = x0 + col as f32 * (waveform_width / columns as f32);
+        let y_top = mid_y - max_v.clamp(-1.0, 1.0) * half_height;
+        let y_bottom = mid_y - min_v.clamp(-1.0, 1.0) * half_height;
+        clipped.line_segment(
+            [Pos2::new(x, y_top), Pos2::new(x, y_bottom.max(y_top + 1.0))],
+            egui::Stroke::new(1.0_f32, theme.clip_note_preview),
+        );
+    }
+}
+
 fn draw_clip_note_preview(
     painter: &egui::Painter,
     clip_rect: Rect,
-    clip: &MidiClip,
+    clip: &Clip,
     theme: &ThemeColors,
 ) {
+    let Some(clip) = clip.as_midi() else {
+        return;
+    };
     if clip.notes.is_empty() {
         return;
     }
@@ -755,10 +931,10 @@ fn draw_clip_note_preview(
 pub(crate) fn hit_test_clip<'a>(
     timeline: Rect,
     lane: Rect,
-    clips: &'a [MidiClip],
+    clips: &'a [Clip],
     pos: Pos2,
     metrics: TimelineMetrics,
-) -> Option<&'a MidiClip> {
+) -> Option<&'a Clip> {
     clips
         .iter()
         .rev()
@@ -821,6 +997,64 @@ fn lane_rect_for_track(body: Rect, track_index: usize) -> Rect {
     )
 }
 
+fn select_clips_in_rect(
+    body: Rect,
+    project: &Project,
+    selection: Rect,
+    metrics: TimelineMetrics,
+) -> HashSet<u64> {
+    project
+        .tracks
+        .iter()
+        .enumerate()
+        .flat_map(|(index, track)| {
+            let lane = lane_rect_for_track(body, index);
+            track.clips.iter().filter_map(move |clip| {
+                let clip_rect = clip_block_rect(body, lane, clip, metrics);
+                clip_rect.intersects(selection).then_some(clip.id())
+            })
+        })
+        .collect()
+}
+
+fn select_clips_in_rect_single_track(
+    body: Rect,
+    lane: Rect,
+    clips: &[Clip],
+    selection: Rect,
+    metrics: TimelineMetrics,
+) -> HashSet<u64> {
+    clips
+        .iter()
+        .filter(|clip| {
+            clip_block_rect(body, lane, clip, metrics).intersects(selection)
+        })
+        .map(|clip| clip.id())
+        .collect()
+}
+
+pub(crate) fn draw_marquee(painter: &egui::Painter, selection: Rect, theme: &ThemeColors) {
+    painter.rect(
+        selection,
+        0.0,
+        theme.marquee_fill,
+        egui::Stroke::new(1.0_f32, theme.marquee_stroke),
+        egui::StrokeKind::Inside,
+    );
+}
+
+fn sync_selected_track_from_clips(
+    project: &Project,
+    selected: &HashSet<u64>,
+    selected_track: &mut Option<u64>,
+) {
+    if let Some(&first_id) = selected.iter().next() {
+        if let Some(track_id) = project.track_id_for_clip(first_id) {
+            *selected_track = Some(track_id);
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn handle_clip_pointer(
     response: &Response,
@@ -831,24 +1065,38 @@ fn handle_clip_pointer(
     history: &mut EditHistory,
     selected: &mut HashSet<u64>,
     active_drag: &mut Option<ClipDrag>,
+    marquee: &mut Option<MarqueeDrag>,
     open_clip_request: &mut Option<u64>,
     drag_moved: &mut bool,
     selected_track: &mut Option<u64>,
 ) {
     update_clip_resize_hover_cursor(response, body, sticky_headers, project, metrics);
 
-    let Some(pointer) = response.interact_pointer_pos() else {
-        if response.drag_stopped() {
-            if let Some(drag) = active_drag.take() {
-                history.commit(project);
-                if !*drag_moved {
-                    selected.clear();
-                    selected.insert(drag.clip_id);
-                }
-                *selected_track = Some(drag.track_id);
+    let primary_down = response
+        .ctx
+        .input(|input| input.pointer.button_down(egui::PointerButton::Primary));
+
+    // End clip/marquee drags even when the pointer left the sense area.
+    let end_drag = response.drag_stopped()
+        || (!primary_down && (active_drag.is_some() || marquee.is_some()));
+    if end_drag {
+        if let Some(drag) = active_drag.take() {
+            history.commit(project);
+            if !*drag_moved {
+                selected.clear();
+                selected.insert(drag.clip_id);
             }
-            *drag_moved = false;
+            *selected_track = Some(drag.track_id);
         }
+        *marquee = None;
+        *drag_moved = false;
+    }
+
+    let Some(pointer) = response
+        .interact_pointer_pos()
+        .or_else(|| response.hover_pos())
+        .or_else(|| response.ctx.pointer_interact_pos())
+    else {
         return;
     };
 
@@ -864,7 +1112,7 @@ fn handle_clip_pointer(
     });
 
     if let Some(drag) = active_drag.clone() {
-        if response.dragged() {
+        if primary_down && (response.dragged() || response.drag_started()) {
             *drag_moved = true;
             let current_beats = x_to_beat(body, pointer.x, metrics);
             if matches!(
@@ -877,15 +1125,15 @@ fn handle_clip_pointer(
             }
             apply_clip_drag(project, &drag, current_beats);
         }
-        if response.drag_stopped() {
-            history.commit(project);
-            if !*drag_moved {
-                selected.clear();
-                selected.insert(drag.clip_id);
-            }
-            *selected_track = Some(drag.track_id);
-            *active_drag = None;
-            *drag_moved = false;
+        return;
+    }
+
+    // Keep marquee alive / updating even outside body bounds.
+    if let Some(active_marquee) = marquee.as_mut() {
+        if primary_down {
+            active_marquee.current = pointer;
+            *selected = select_clips_in_rect(body, project, active_marquee.rect(), metrics);
+            sync_selected_track_from_clips(project, selected, selected_track);
         }
         return;
     }
@@ -895,7 +1143,7 @@ fn handle_clip_pointer(
         return;
     }
 
-    if !body.contains(pointer) {
+    if !body.contains(pointer) && !body.contains(press_pos) {
         return;
     }
 
@@ -919,27 +1167,29 @@ fn handle_clip_pointer(
         )
         .cloned()
         {
+            *marquee = None;
+
             let bounds = clip_block_rect(body, lane, &clip, metrics);
             let mode = clip_resize_mode(bounds, press_pos.x).unwrap_or(ClipDragMode::Move);
 
-            let already_selected = selected.contains(&clip.id);
+            let already_selected = selected.contains(&clip.id());
             if !already_selected {
                 selected.clear();
-                selected.insert(clip.id);
+                selected.insert(clip.id());
             }
             *selected_track = Some(track_id);
 
             // Snapshot before Shift-duplicate so one undo covers dup+move.
             history.begin(project);
 
-            let mut primary_id = clip.id;
+            let mut primary_id = clip.id();
             // Shift+Move: leave originals, drag duplicates (same as piano-roll notes).
             if matches!(mode, ClipDragMode::Move) && shift_held {
                 let source_ids: Vec<u64> = selected.iter().copied().collect();
                 let new_ids = project.duplicate_clips(&source_ids, 0.0);
                 if let Some(mapped_primary) = source_ids
                     .iter()
-                    .position(|id| *id == clip.id)
+                    .position(|id| *id == clip.id())
                     .and_then(|index| new_ids.get(index).copied())
                 {
                     primary_id = mapped_primary;
@@ -955,9 +1205,9 @@ fn handle_clip_pointer(
                     .iter()
                     .filter_map(|id| {
                         project.clip(*id).map(|c| ClipOriginal {
-                            clip_id: c.id,
-                            start_beats: c.start_beats,
-                            length_beats: c.length_beats,
+                            clip_id: c.id(),
+                            start_beats: c.start_beats(),
+                            length_beats: c.length_beats(),
                         })
                     })
                     .collect(),
@@ -965,9 +1215,9 @@ fn handle_clip_pointer(
                     .clip(primary_id)
                     .map(|c| {
                         vec![ClipOriginal {
-                            clip_id: c.id,
-                            start_beats: c.start_beats,
-                            length_beats: c.length_beats,
+                            clip_id: c.id(),
+                            start_beats: c.start_beats(),
+                            length_beats: c.length_beats(),
                         }]
                     })
                     .unwrap_or_default(),
@@ -983,18 +1233,21 @@ fn handle_clip_pointer(
             return;
         }
 
-        // Empty lane: create clip
+        // Empty lane: marquee multi-select
         if is_timeline_pointer(lane, press_pos) {
-            let start = Project::snap_beats(x_to_beat(body, press_pos.x, metrics).max(0.0));
-            let before = project.clone();
-            if let Some(clip_id) =
-                project.add_clip_to_track(track_id, start, DEFAULT_CLIP_LENGTH_BEATS)
-            {
-                history.push_before(before);
-                selected.clear();
-                selected.insert(clip_id);
-                *selected_track = Some(track_id);
-            }
+            *active_drag = None;
+            selected.clear();
+            *marquee = Some(MarqueeDrag {
+                start: press_pos,
+                current: pointer,
+            });
+            *selected = select_clips_in_rect(
+                body,
+                project,
+                Rect::from_two_pos(press_pos, pointer),
+                metrics,
+            );
+            sync_selected_track_from_clips(project, selected, selected_track);
         }
     }
 
@@ -1011,14 +1264,25 @@ fn handle_clip_pointer(
         ) {
             if ctrl_or_cmd {
                 // Toggle multi-select without opening (parity with selection editing).
-                if !selected.remove(&clip.id) {
-                    selected.insert(clip.id);
+                if !selected.remove(&clip.id()) {
+                    selected.insert(clip.id());
                 }
             } else {
                 selected.clear();
-                selected.insert(clip.id);
+                selected.insert(clip.id());
             }
             *selected_track = Some(track_id);
+        } else {
+            let start = Project::snap_beats(x_to_beat(body, pointer.x, metrics).max(0.0));
+            let before = project.clone();
+            if let Some(clip_id) =
+                project.add_clip_to_track(track_id, start, DEFAULT_CLIP_LENGTH_BEATS)
+            {
+                history.push_before(before);
+                selected.clear();
+                selected.insert(clip_id);
+                *selected_track = Some(track_id);
+            }
         }
     }
 
@@ -1038,12 +1302,13 @@ pub(crate) fn handle_single_track_clip_pointer(
     body: Rect,
     lane: Rect,
     track_id: u64,
-    clips: &[MidiClip],
+    clips: &[Clip],
     metrics: TimelineMetrics,
     project: &mut Project,
     history: &mut EditHistory,
     selected: &mut HashSet<u64>,
     active_drag: &mut Option<ClipDrag>,
+    marquee: &mut Option<MarqueeDrag>,
     open_clip_request: &mut Option<u64>,
     drag_moved: &mut bool,
 ) {
@@ -1060,17 +1325,29 @@ pub(crate) fn handle_single_track_clip_pointer(
         }
     }
 
-    let Some(pointer) = response.interact_pointer_pos() else {
-        if response.drag_stopped() {
-            if let Some(drag) = active_drag.take() {
-                history.commit(project);
-                if !*drag_moved {
-                    selected.clear();
-                    selected.insert(drag.clip_id);
-                }
+    let primary_down = response
+        .ctx
+        .input(|input| input.pointer.button_down(egui::PointerButton::Primary));
+
+    let end_drag = response.drag_stopped()
+        || (!primary_down && (active_drag.is_some() || marquee.is_some()));
+    if end_drag {
+        if let Some(drag) = active_drag.take() {
+            history.commit(project);
+            if !*drag_moved {
+                selected.clear();
+                selected.insert(drag.clip_id);
             }
-            *drag_moved = false;
         }
+        *marquee = None;
+        *drag_moved = false;
+    }
+
+    let Some(pointer) = response
+        .interact_pointer_pos()
+        .or_else(|| response.hover_pos())
+        .or_else(|| response.ctx.pointer_interact_pos())
+    else {
         return;
     };
 
@@ -1086,7 +1363,7 @@ pub(crate) fn handle_single_track_clip_pointer(
     });
 
     if let Some(drag) = active_drag.clone() {
-        if response.dragged() {
+        if primary_down && (response.dragged() || response.drag_started()) {
             *drag_moved = true;
             let current_beats = x_to_beat(body, pointer.x, metrics);
             if matches!(
@@ -1099,19 +1376,24 @@ pub(crate) fn handle_single_track_clip_pointer(
             }
             apply_clip_drag(project, &drag, current_beats);
         }
-        if response.drag_stopped() {
-            history.commit(project);
-            if !*drag_moved {
-                selected.clear();
-                selected.insert(drag.clip_id);
-            }
-            *active_drag = None;
-            *drag_moved = false;
+        return;
+    }
+
+    if let Some(active_marquee) = marquee.as_mut() {
+        if primary_down {
+            active_marquee.current = pointer;
+            *selected = select_clips_in_rect_single_track(
+                body,
+                lane,
+                clips,
+                active_marquee.rect(),
+                metrics,
+            );
         }
         return;
     }
 
-    if !body.contains(pointer) {
+    if !body.contains(pointer) && !body.contains(press_pos) {
         return;
     }
 
@@ -1119,24 +1401,26 @@ pub(crate) fn handle_single_track_clip_pointer(
         && is_timeline_pointer(lane, press_pos)
     {
         if let Some(clip) = hit_test_clip(body, lane, clips, press_pos, metrics).cloned() {
+            *marquee = None;
+
             let bounds = clip_block_rect(body, lane, &clip, metrics);
             let mode = clip_resize_mode(bounds, press_pos.x).unwrap_or(ClipDragMode::Move);
 
-            let already_selected = selected.contains(&clip.id);
+            let already_selected = selected.contains(&clip.id());
             if !already_selected {
                 selected.clear();
-                selected.insert(clip.id);
+                selected.insert(clip.id());
             }
 
             history.begin(project);
 
-            let mut primary_id = clip.id;
+            let mut primary_id = clip.id();
             if matches!(mode, ClipDragMode::Move) && shift_held {
                 let source_ids: Vec<u64> = selected.iter().copied().collect();
                 let new_ids = project.duplicate_clips(&source_ids, 0.0);
                 if let Some(mapped_primary) = source_ids
                     .iter()
-                    .position(|id| *id == clip.id)
+                    .position(|id| *id == clip.id())
                     .and_then(|index| new_ids.get(index).copied())
                 {
                     primary_id = mapped_primary;
@@ -1152,9 +1436,9 @@ pub(crate) fn handle_single_track_clip_pointer(
                     .iter()
                     .filter_map(|id| {
                         project.clip(*id).map(|c| ClipOriginal {
-                            clip_id: c.id,
-                            start_beats: c.start_beats,
-                            length_beats: c.length_beats,
+                            clip_id: c.id(),
+                            start_beats: c.start_beats(),
+                            length_beats: c.length_beats(),
                         })
                     })
                     .collect(),
@@ -1162,9 +1446,9 @@ pub(crate) fn handle_single_track_clip_pointer(
                     .clip(primary_id)
                     .map(|c| {
                         vec![ClipOriginal {
-                            clip_id: c.id,
-                            start_beats: c.start_beats,
-                            length_beats: c.length_beats,
+                            clip_id: c.id(),
+                            start_beats: c.start_beats(),
+                            length_beats: c.length_beats(),
                         }]
                     })
                     .unwrap_or_default(),
@@ -1181,13 +1465,19 @@ pub(crate) fn handle_single_track_clip_pointer(
         }
 
         if is_timeline_pointer(lane, press_pos) {
-            let start = Project::snap_beats(x_to_beat(body, press_pos.x, metrics).max(0.0));
-            let before = project.clone();
-            if let Some(clip_id) = project.add_clip_to_track(track_id, start, DEFAULT_CLIP_LENGTH_BEATS) {
-                history.push_before(before);
-                selected.clear();
-                selected.insert(clip_id);
-            }
+            *active_drag = None;
+            selected.clear();
+            *marquee = Some(MarqueeDrag {
+                start: press_pos,
+                current: pointer,
+            });
+            *selected = select_clips_in_rect_single_track(
+                body,
+                lane,
+                clips,
+                Rect::from_two_pos(press_pos, pointer),
+                metrics,
+            );
         }
     }
 
@@ -1197,12 +1487,22 @@ pub(crate) fn handle_single_track_clip_pointer(
     {
         if let Some(clip) = hit_test_clip(body, lane, clips, pointer, metrics) {
             if ctrl_or_cmd {
-                if !selected.remove(&clip.id) {
-                    selected.insert(clip.id);
+                if !selected.remove(&clip.id()) {
+                    selected.insert(clip.id());
                 }
             } else {
                 selected.clear();
-                selected.insert(clip.id);
+                selected.insert(clip.id());
+            }
+        } else {
+            let start = Project::snap_beats(x_to_beat(body, pointer.x, metrics).max(0.0));
+            let before = project.clone();
+            if let Some(clip_id) =
+                project.add_clip_to_track(track_id, start, DEFAULT_CLIP_LENGTH_BEATS)
+            {
+                history.push_before(before);
+                selected.clear();
+                selected.insert(clip_id);
             }
         }
     }
@@ -1210,8 +1510,8 @@ pub(crate) fn handle_single_track_clip_pointer(
     if response.double_clicked_by(egui::PointerButton::Primary) && body.contains(pointer) {
         if let Some(clip) = hit_test_clip(body, lane, clips, pointer, metrics) {
             selected.clear();
-            selected.insert(clip.id);
-            *open_clip_request = Some(clip.id);
+            selected.insert(clip.id());
+            *open_clip_request = clip.as_midi().map(|_| clip.id());
         }
     }
 }
@@ -1227,7 +1527,13 @@ fn hit_test_clip_id(
         return None;
     }
     let lane = lane_rect_for_track(body, track_index);
-    hit_test_clip(body, lane, &project.tracks[track_index].clips, pos, metrics).map(|clip| clip.id)
+    hit_test_clip(body, lane, &project.tracks[track_index].clips, pos, metrics).and_then(|clip| {
+        if clip.as_midi().is_some() {
+            Some(clip.id())
+        } else {
+            None
+        }
+    })
 }
 
 pub(crate) fn apply_clip_drag(project: &mut Project, drag: &ClipDrag, current_beats: f32) {

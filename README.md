@@ -4,11 +4,11 @@ Open-source music sketchpad: piano roll, playlist, soft-synth piano, and CLAP/VS
 
 ## Status
 
-**Early but usable sketchpad** (2026-07-24): playlist + piano roll editing with undo/redo, transport, cpal playback (built-in piano and/or CLAP/VST3), plugin manager + editor windows (Linux X11/XWayland), multi-project `.motif` save/open with recent list + recovery autosave, and Settings for shortcuts, themes, plugins, editing, and project prefs. Not a full DAW.
+**Early but usable sketchpad** (2026-07-24): playlist + piano roll editing with undo/redo, transport, cpal playback (built-in piano, CLAP/VST3, and imported audio sample clips), plugin manager + editor windows (Linux X11/XWayland), multi-project `.motif` save/open with recent list + recovery autosave, and Settings for shortcuts, themes, plugins, editing, and project prefs. Not a full DAW.
 
 | Area | State |
 |---|---|
-| Playlist (tracks / MIDI clips) | Working |
+| Playlist (tracks / MIDI + audio clips) | Working |
 | Per-track instruments (piano / CLAP / VST3) | Working (load off UI thread) |
 | Plugin manager (scan / cache) | Working (`plugin_cache.json` in CWD) |
 | Plugin editor GUI | Working on Linux (X11 / XWayland); not Wayland-native |
@@ -18,7 +18,7 @@ Open-source music sketchpad: piano roll, playlist, soft-synth piano, and CLAP/VS
 | Soft piano + plugin mix (`cpal`) | Working (UI continues if device open fails) |
 | Project save/load | Working (`.motif` files; recent projects; recovery autosave) |
 | Settings (shortcuts + themes + plugins + editing + project) | Working (`settings.json` in CWD) |
-| VST2 / mixer / export / samples | Not started |
+| VST2 / export | Not started |
 | Platform support | **Linux** (developed & tested); Windows/macOS untested |
 
 It is **free and open source from minute zero**: public from the first commit, not opened up later after something polished existed behind closed doors.
@@ -99,8 +99,10 @@ cargo run --release
 ### Playlist (default view)
 
 - **Left-click empty lane** - create a MIDI clip (4 beats)
+- **Drag empty lane** - marquee multi-select
 - **Left-click clip** - select clip
 - **Double-click clip** - open piano roll for that clip
+- **Audio clips** - do not open piano roll (arrangement-only clips)
 - **Ctrl/Cmd + left-click clip** - toggle multi-select
 - **Drag clip body** - move selected clip(s) on timeline
 - **Shift + drag clip body** - duplicate selection, then move the copies
@@ -113,9 +115,12 @@ cargo run --release
 - **Ctrl/Cmd+Z** - undo last clip/note edit (remappable)
 - **Ctrl/Cmd+Shift+Z** - redo (remappable)
 - **Add track** - menu: Built-in Piano or a scanned CLAP/VST3 instrument
+- **Import sample...** - import an audio clip (`wav/mp3/flac/ogg/m4a/aac`) onto the selected track at the playhead
 - **M / S** on track header (or right-click **Mute** / **Solo**) - mute or solo a track; when any track is soloed, only soloed tracks play; otherwise muted tracks are silent
 - **Right-click track header → Delete track** - remove the track and its clips (last track cannot be deleted; Ctrl/Cmd+Z restores a deleted track)
 - **Right-click track header** - open/close plugin editor (plugin tracks) or change instrument (searchable list)
+- **Ctrl/Cmd+Shift+E** - open/close plugin editor for the selected track (remappable)
+- **Shift+Q** - close a focused plugin editor window (remappable; default)
 - **Left-click / drag ruler** - move playhead (snapped to 1/16)
 - **Shift + left-click** or **right-click empty timeline** - move playhead
 - **Wheel** - scroll; **Shift+Wheel** - horizontal scroll; **Ctrl/Cmd+Wheel** - zoom time

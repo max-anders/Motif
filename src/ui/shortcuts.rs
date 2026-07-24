@@ -35,6 +35,10 @@ pub enum Action {
     ToggleMixer,
     /// Toggle the Devices view (or return to playlist when already there).
     ToggleDevices,
+    /// Open or close the native plugin editor for the selected track's instrument.
+    TogglePluginEditor,
+    /// Close the focused native plugin editor window (grabbed on the editor parent).
+    ClosePluginEditor,
 }
 
 impl<'de> Deserialize<'de> for Action {
@@ -60,6 +64,8 @@ impl<'de> Deserialize<'de> for Action {
             "back_to_playlist" => Ok(Self::BackToPlaylist),
             "toggle_mixer" => Ok(Self::ToggleMixer),
             "toggle_devices" => Ok(Self::ToggleDevices),
+            "toggle_plugin_editor" | "open_plugin_editor" => Ok(Self::TogglePluginEditor),
+            "close_plugin_editor" => Ok(Self::ClosePluginEditor),
             other => Err(serde::de::Error::unknown_variant(
                 other,
                 &[
@@ -79,6 +85,8 @@ impl<'de> Deserialize<'de> for Action {
                     "back_to_playlist",
                     "toggle_mixer",
                     "toggle_devices",
+                    "toggle_plugin_editor",
+                    "close_plugin_editor",
                 ],
             )),
         }
@@ -87,7 +95,7 @@ impl<'de> Deserialize<'de> for Action {
 
 impl Action {
     /// All actions in Settings / docs order (includes actions with no factory binding).
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 18] = [
         Self::TogglePlayback,
         Self::DeleteSelection,
         Self::CopySelection,
@@ -104,6 +112,8 @@ impl Action {
         Self::BackToPlaylist,
         Self::ToggleMixer,
         Self::ToggleDevices,
+        Self::TogglePluginEditor,
+        Self::ClosePluginEditor,
     ];
 
     pub fn label(self) -> &'static str {
@@ -124,6 +134,8 @@ impl Action {
             Self::BackToPlaylist => "Back / close",
             Self::ToggleMixer => "Mixer",
             Self::ToggleDevices => "Devices",
+            Self::TogglePluginEditor => "Plugin editor",
+            Self::ClosePluginEditor => "Close plugin editor",
         }
     }
 }
@@ -198,6 +210,10 @@ impl Chord {
         }
         parts.push(key_display_name(self.key));
         parts.join("+")
+    }
+
+    pub fn storage_key_name(&self) -> Option<&'static str> {
+        key_to_name(self.key)
     }
 }
 
@@ -328,8 +344,33 @@ impl ShortcutRegistry {
                     Action::ToggleDevices,
                     Binding::Key(Chord::ctrl_or_cmd_shift(Key::M)),
                 ),
+                (
+                    Action::TogglePluginEditor,
+                    Binding::Key(Chord::ctrl_or_cmd_shift(Key::E)),
+                ),
+                (
+                    Action::ClosePluginEditor,
+                    Binding::Key(Chord {
+                        key: Key::Q,
+                        ctrl_or_cmd: false,
+                        shift: true,
+                        alt: false,
+                    }),
+                ),
             ],
         }
+    }
+
+    /// First key chord bound to `action`, if any.
+    pub fn primary_key_chord(&self, action: Action) -> Option<Chord> {
+        self.bindings.iter().find_map(|(existing, binding)| {
+            if *existing == action {
+                if let Binding::Key(chord) = binding {
+                    return Some(*chord);
+                }
+            }
+            None
+        })
     }
 
     pub fn to_stored(&self) -> Result<Vec<StoredBinding>, String> {

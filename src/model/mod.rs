@@ -1,3 +1,4 @@
+mod audio_clip;
 mod clip;
 mod clipboard;
 mod history;
@@ -9,7 +10,10 @@ mod project;
 mod serde_b64;
 mod track;
 
-pub use clip::{MidiClip, DEFAULT_CLIP_LENGTH_BEATS};
+#[allow(unused_imports)] // public audio clip surface for engine / app
+pub use audio_clip::AudioClip;
+#[allow(unused_imports)] // public clip surfaces for app / tests
+pub use clip::{Clip, MidiClip, DEFAULT_CLIP_LENGTH_BEATS};
 #[allow(unused_imports)] // public clipboard surface for app / tests
 pub use clipboard::{ClipboardClip, ClipboardNote, EditClipboard};
 pub use history::{

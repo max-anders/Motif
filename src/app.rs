@@ -1,10 +1,13 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::sync::Arc;
 
 use eframe::egui;
 
 use crate::engine::{
-    AudioEngine, DawEngine, LoopPlayback, PluginCatalog, PluginRef, PLUGIN_CACHE_FILE,
+    decode_audio_file, AudioEngine, DawEngine, DecodedAudio, EditorCloseBinding, LoopPlayback,
+    PluginCatalog, PluginRef, PLUGIN_CACHE_FILE,
 };
 use crate::model::{
     clear_recovery, ensure_motif_extension, format_unix_time, legacy_project_path,
@@ -13,9 +16,9 @@ use crate::model::{
     Project, PROJECT_EXTENSION, RecoveryMeta,
 };
 use crate::ui::{
-    show_inspector, Action, AppSettings, DevicesUi, MixerUi, PianoRollUi, PlaylistUi,
-    PluginEditorRequest, PollFilter, ProjectBrowserAction, ProjectBrowserUi, SettingsAction,
-    SettingsUi, TransportUi, SETTINGS_FILE,
+    show_inspector, Action, AppSettings, AudioImportRequest, Chord, DevicesUi, MixerUi,
+    PianoRollUi, PlaylistUi, PluginEditorRequest, PollFilter, ProjectBrowserAction,
+    ProjectBrowserUi, SettingsAction, SettingsUi, TransportUi, SETTINGS_FILE,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,6 +28,11 @@ enum CenterView {
     Mixer,
     Devices,
     Settings,
+}
+
+struct AudioDecodeResult {
+    path: PathBuf,
+    result: Result<Arc<DecodedAudio>, String>,
 }
 
 pub struct DawApp {
@@ -65,6 +73,11 @@ pub struct DawApp {
     confirm_new_discard: bool,
     /// Force dirty (e.g. after restoring a recovery backup that has no clean disk match).
     dirty_forced: bool,
+    decoded_audio: HashMap<PathBuf, Arc<DecodedAudio>>,
+    pending_audio_decodes: HashSet<PathBuf>,
+    audio_decode_errors: HashMap<PathBuf, String>,
+    audio_decode_tx: Sender<AudioDecodeResult>,
+    audio_decode_rx: Receiver<AudioDecodeResult>,
 }
 
 impl DawApp {
@@ -95,6 +108,7 @@ impl DawApp {
         let saved_snapshot = project.clone();
         let undo_limit = settings.undo_limit;
         let selected_track = project.tracks.first().map(|t| t.id);
+        let (audio_decode_tx, audio_decode_rx) = mpsc::channel();
 
         let mut app = Self {
             project,
@@ -124,9 +138,37 @@ impl DawApp {
             show_project_browser: show_browser,
             confirm_new_discard: false,
             dirty_forced: false,
+            decoded_audio: HashMap::new(),
+            pending_audio_decodes: HashSet::new(),
+            audio_decode_errors: HashMap::new(),
+            audio_decode_tx,
+            audio_decode_rx,
         };
         app.sync_instruments();
+        app.queue_missing_audio_decodes();
+        app.sync_plugin_editor_close_binding();
         app
+    }
+
+    fn plugin_editor_close_binding(&self) -> EditorCloseBinding {
+        self.settings
+            .shortcuts
+            .primary_key_chord(Action::ClosePluginEditor)
+            .and_then(|chord| chord_to_editor_close_binding(chord))
+            .unwrap_or_default()
+    }
+
+    fn plugin_editor_close_display(&self) -> String {
+        self.settings
+            .shortcuts
+            .primary_key_chord(Action::ClosePluginEditor)
+            .map(|chord| chord.display())
+            .unwrap_or_else(|| EditorCloseBinding::default().display())
+    }
+
+    fn sync_plugin_editor_close_binding(&mut self) {
+        let binding = self.plugin_editor_close_binding();
+        self.engine.set_plugin_editor_close_binding(binding);
     }
 
     /// Choose initial project: recovery deferral, recent, legacy CWD, or empty + browser.
@@ -251,6 +293,135 @@ impl DawApp {
         });
     }
 
+    fn queue_decode(&mut self, path: PathBuf) {
+        if self.decoded_audio.contains_key(&path)
+            || self.pending_audio_decodes.contains(&path)
+            || self.audio_decode_errors.contains_key(&path)
+        {
+            return;
+        }
+        let tx = self.audio_decode_tx.clone();
+        let decode_path = path.clone();
+        let sample_rate = self.engine.sample_rate_hz();
+        self.pending_audio_decodes.insert(path.clone());
+        self.status_message = format!("Decoding sample: {}", path.display());
+        std::thread::spawn(move || {
+            let result = decode_audio_file(&decode_path, sample_rate).map(Arc::new);
+            let _ = tx.send(AudioDecodeResult {
+                path: decode_path,
+                result,
+            });
+        });
+    }
+
+    fn queue_missing_audio_decodes(&mut self) {
+        let mut pending = Vec::new();
+        for track in &self.project.tracks {
+            for clip in &track.clips {
+                if let Some(audio) = clip.as_audio() {
+                    pending.push(audio.source.clone());
+                }
+            }
+        }
+        for path in pending {
+            self.queue_decode(path);
+        }
+    }
+
+    fn sync_audio_clip_decode_state(&mut self) {
+        for track in &mut self.project.tracks {
+            for clip in &mut track.clips {
+                if let Some(audio) = clip.as_audio_mut() {
+                    audio.missing = self.audio_decode_errors.contains_key(&audio.source);
+                }
+            }
+        }
+    }
+
+    fn apply_decoded_audio(&mut self, path: &Path, decoded: Arc<DecodedAudio>) {
+        let duration_beats = decoded.duration_seconds() * self.project.beats_per_second();
+        let length_beats = Project::snap_beats(duration_beats.max(crate::model::SNAP_BEATS));
+        self.decoded_audio.insert(path.to_path_buf(), Arc::clone(&decoded));
+        for track in &mut self.project.tracks {
+            for clip in &mut track.clips {
+                let Some(audio) = clip.as_audio_mut() else {
+                    continue;
+                };
+                if audio.source == path {
+                    if audio.length_beats <= crate::model::DEFAULT_CLIP_LENGTH_BEATS {
+                        audio.length_beats = length_beats;
+                    }
+                    audio.missing = false;
+                }
+            }
+        }
+    }
+
+    fn poll_audio_decodes(&mut self) {
+        loop {
+            match self.audio_decode_rx.try_recv() {
+                Ok(result) => {
+                    self.pending_audio_decodes.remove(&result.path);
+                    match result.result {
+                        Ok(decoded) => {
+                            self.audio_decode_errors.remove(&result.path);
+                            self.apply_decoded_audio(&result.path, decoded);
+                            self.status_message =
+                                format!("Decoded sample: {}", result.path.display());
+                        }
+                        Err(error) => {
+                            self.audio_decode_errors.insert(result.path.clone(), error.clone());
+                            self.status_message =
+                                format!("Sample decode failed ({}): {error}", result.path.display());
+                        }
+                    }
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => break,
+            }
+        }
+        self.sync_audio_clip_decode_state();
+    }
+
+    fn import_audio_clip(&mut self, request: AudioImportRequest) {
+        let mut dialog = rfd::FileDialog::new()
+            .add_filter("Audio", &["wav", "mp3", "flac", "ogg", "m4a", "aac"]);
+        if let Some(dir) = projects_dir().ok() {
+            dialog = dialog.set_directory(dir);
+        }
+        let Some(path) = dialog.pick_file() else {
+            self.status_message = String::from("Import sample cancelled");
+            return;
+        };
+        let name = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("Sample")
+            .to_string();
+        let mut length_beats = crate::model::DEFAULT_CLIP_LENGTH_BEATS;
+        if let Some(decoded) = self.decoded_audio.get(&path) {
+            length_beats = Project::snap_beats(
+                (decoded.duration_seconds() * self.project.beats_per_second())
+                    .max(crate::model::SNAP_BEATS),
+            );
+        } else {
+            self.queue_decode(path.clone());
+        }
+        self.history.push_before(self.project.clone());
+        if let Some(clip_id) = self.project.add_audio_clip_to_track(
+            request.track_id,
+            path.clone(),
+            name,
+            request.start_beats,
+            length_beats,
+        ) {
+            self.playlist.set_selection([clip_id]);
+            self.status_message = format!("Imported sample: {}", path.display());
+        } else {
+            self.status_message = String::from("Import failed: track not found");
+        }
+    }
+
     fn save_plugin_cache(&mut self) {
         if let Err(error) = self.catalog.save_to_path(&Self::plugin_cache_path()) {
             self.status_message = format!("Plugin cache save failed: {error}");
@@ -302,7 +473,11 @@ impl DawApp {
             .unwrap_or_else(|| String::from("Untitled"));
         self.autosave_accum = 0.0;
         self.confirm_new_discard = false;
+        self.decoded_audio.clear();
+        self.pending_audio_decodes.clear();
+        self.audio_decode_errors.clear();
         self.sync_instruments();
+        self.queue_missing_audio_decodes();
     }
 
     fn save(&mut self) {
@@ -613,6 +788,7 @@ impl DawApp {
             self.settings_return = CenterView::Playlist;
         }
         self.sync_instruments();
+        self.engine.sync_samples(&self.project, &self.decoded_audio);
         self.engine.sync_channels(&self.project);
     }
 
@@ -659,7 +835,7 @@ impl DawApp {
     }
 
     fn remove_notes_from_clip(&mut self, clip_id: u64, ids: &[u64]) {
-        if let Some(clip) = self.project.clip_mut(clip_id) {
+        if let Some(clip) = self.project.midi_clip_mut(clip_id) {
             for id in ids {
                 clip.remove_note(*id);
             }
@@ -696,7 +872,7 @@ impl DawApp {
         let clip_ids: Vec<u64> = self
             .project
             .track(track_id)
-            .map(|track| track.clips.iter().map(|clip| clip.id).collect())
+            .map(|track| track.clips.iter().map(|clip| clip.id()).collect())
             .unwrap_or_default();
 
         self.history.push_before(self.project.clone());
@@ -723,6 +899,7 @@ impl DawApp {
         self.instrument_errors.remove(&track_id);
         self.device_errors.retain(|(tid, _), _| *tid != track_id);
         self.sync_instruments();
+        self.engine.sync_samples(&self.project, &self.decoded_audio);
         self.engine.sync_channels(&self.project);
     }
 
@@ -740,7 +917,7 @@ impl DawApp {
             return;
         }
         let span = {
-            let Some(clip) = self.project.clip(clip_id) else {
+            let Some(clip) = self.project.midi_clip(clip_id) else {
                 return;
             };
             Project::selection_span_beats(ids.iter().filter_map(|id| {
@@ -763,7 +940,7 @@ impl DawApp {
         let span = Project::selection_span_beats(ids.iter().filter_map(|id| {
             self.project
                 .clip(*id)
-                .map(|clip| (clip.start_beats, clip.end_beats()))
+                .map(|clip| (clip.start_beats(), clip.end_beats()))
         }));
         self.history.push_before(self.project.clone());
         let new_ids = self.project.duplicate_clips(&ids, span);
@@ -819,7 +996,7 @@ impl DawApp {
         let clip_start = self
             .project
             .clip(clip_id)
-            .map(|clip| clip.start_beats)
+            .map(|clip| clip.start_beats())
             .unwrap_or(0.0);
         let origin = (self.engine.current_beats() - clip_start).max(0.0);
         let before = self.project.clone();
@@ -899,9 +1076,75 @@ impl DawApp {
     }
 
     fn open_clip(&mut self, clip_id: u64) {
-        if self.project.clip(clip_id).is_some() {
+        if self.project.midi_clip(clip_id).is_some() {
             self.piano_roll.clear_selection();
             self.center_view = CenterView::PianoRoll { clip_id };
+        }
+    }
+
+    fn toggle_selected_track_plugin_editor(
+        &mut self,
+        ctx: &egui::Context,
+        frame: &eframe::Frame,
+    ) {
+        let Some(track_id) = self.selected_track else {
+            self.status_message = String::from("No track selected");
+            return;
+        };
+        let Some(track) = self.project.track(track_id) else {
+            self.status_message = String::from("Selected track no longer exists");
+            return;
+        };
+        let target = PluginRef::instrument(track_id);
+        if !matches!(
+            track.instrument,
+            crate::model::TrackInstrument::Plugin { .. }
+        ) {
+            self.status_message = String::from("Selected track has no plugin instrument");
+            return;
+        }
+        if self.engine.plugin_editor_is_open(target) {
+            self.handle_plugin_editor_request(
+                ctx,
+                frame,
+                PluginEditorRequest::Close {
+                    track_id,
+                    device_id: None,
+                },
+            );
+        } else if !self.engine.plugin_slot_ready(target) {
+            self.status_message = String::from("Plugin editor not ready (still loading)");
+        } else {
+            self.handle_plugin_editor_request(
+                ctx,
+                frame,
+                PluginEditorRequest::Open {
+                    track_id,
+                    device_id: None,
+                    title: track.name.clone(),
+                },
+            );
+        }
+    }
+
+    fn close_selected_track_plugin_editor(
+        &mut self,
+        ctx: &egui::Context,
+        frame: &eframe::Frame,
+    ) {
+        let Some(track_id) = self.selected_track else {
+            return;
+        };
+        let target = PluginRef::instrument(track_id);
+        if self.engine.plugin_editor_is_open(target) {
+            self.handle_plugin_editor_request(
+                ctx,
+                frame,
+                PluginEditorRequest::Close {
+                    track_id,
+                    device_id: None,
+                },
+            );
         }
     }
 
@@ -998,17 +1241,21 @@ impl DawApp {
                     let mut forward = self.plugin_forward_transport(target);
                     if ui
                         .checkbox(&mut forward, "Space -> Motif")
-                        .on_hover_text(
+                        .on_hover_text(format!(
                             "On: Space drives Motif play/pause while this editor is focused.\n\
-                             Off: Space goes to the plugin. (Ctrl+W always closes the editor.)",
-                        )
+                             Off: Space goes to the plugin. ({} always closes the editor.)",
+                            self.plugin_editor_close_display(),
+                        ))
                         .changed()
                     {
                         self.set_plugin_forward_transport(target, forward);
                     }
                     if ui
                         .button("Close")
-                        .on_hover_text("Close this plugin editor (or press Ctrl+W in it)")
+                        .on_hover_text(format!(
+                            "Close this plugin editor (or press {} in it)",
+                            self.plugin_editor_close_display(),
+                        ))
                         .clicked()
                     {
                         self.engine.close_plugin_editor(target);
@@ -1133,6 +1380,12 @@ impl DawApp {
                 CenterView::Settings => {}
                 _ => self.open_devices(),
             },
+            Action::TogglePluginEditor => {
+                // Handled in `update` (needs egui Context + Frame for native editor).
+            }
+            Action::ClosePluginEditor => {
+                // Handled in `update` when closing from the main Motif window.
+            }
         }
     }
 }
@@ -1146,7 +1399,10 @@ impl eframe::App for DawApp {
             end_beats: self.project.loop_end_beats,
             content_end_beats: self.project.content_end_beats(),
         };
+        self.poll_audio_decodes();
+        self.queue_missing_audio_decodes();
         self.sync_instruments();
+        self.engine.sync_samples(&self.project, &self.decoded_audio);
         self.engine.sync_channels(&self.project);
         self.engine.advance(delta_seconds, playback);
         self.engine.schedule_project(&self.project);
@@ -1172,7 +1428,13 @@ impl eframe::App for DawApp {
             PollFilter::All
         };
         for action in self.settings.shortcuts.poll(ctx, poll_filter) {
-            self.dispatch_action(action);
+            if action == Action::TogglePluginEditor {
+                self.toggle_selected_track_plugin_editor(ctx, frame);
+            } else if action == Action::ClosePluginEditor {
+                self.close_selected_track_plugin_editor(ctx, frame);
+            } else {
+                self.dispatch_action(action);
+            }
         }
 
         self.settings.themes.colors().apply_to_context(ctx);
@@ -1244,7 +1506,7 @@ impl eframe::App for DawApp {
 
                 if let CenterView::PianoRoll { clip_id } = self.center_view {
                     if let Some(clip) = self.project.clip(clip_id) {
-                        ui.label(format!("Editing: {}", clip.name));
+                        ui.label(format!("Editing: {}", clip.name()));
                     }
                 }
                 if matches!(self.center_view, CenterView::Mixer) {
@@ -1281,7 +1543,7 @@ impl eframe::App for DawApp {
             .frame(egui::Frame::NONE)
             .show(ctx, |ui| match self.center_view {
                 CenterView::Playlist => {
-                    let (open_clip, editor_request, delete_track) = {
+                    let (open_clip, editor_request, delete_track, import_audio) = {
                         let DawApp {
                             playlist,
                             project,
@@ -1290,6 +1552,7 @@ impl eframe::App for DawApp {
                             catalog,
                             history,
                             selected_track,
+                            decoded_audio,
                             ..
                         } = self;
                         playlist.show(
@@ -1299,12 +1562,14 @@ impl eframe::App for DawApp {
                             catalog,
                             history,
                             selected_track,
+                            decoded_audio,
                             settings.themes.colors(),
                         );
                         (
                             playlist.take_open_clip_request(),
                             playlist.take_plugin_editor_request(),
                             playlist.take_delete_track_request(),
+                            playlist.take_audio_import_request(),
                         )
                     };
                     if let Some(clip_id) = open_clip {
@@ -1315,6 +1580,9 @@ impl eframe::App for DawApp {
                     }
                     if let Some(track_id) = delete_track {
                         self.delete_track(track_id);
+                    }
+                    if let Some(request) = import_audio {
+                        self.import_audio_clip(request);
                     }
                 }
                 CenterView::Mixer => {
@@ -1347,6 +1615,7 @@ impl eframe::App for DawApp {
                             device_errors,
                             settings,
                             selected_track,
+                            decoded_audio,
                             ..
                         } = self;
                         devices.show(
@@ -1357,6 +1626,7 @@ impl eframe::App for DawApp {
                             history,
                             device_errors,
                             selected_track,
+                            decoded_audio,
                             settings.themes.colors(),
                         );
                         (
@@ -1413,8 +1683,11 @@ impl eframe::App for DawApp {
                             &mut self.settings.recent_projects,
                         ) {
                             Some(SettingsAction::Back) => self.close_settings(),
-                            Some(SettingsAction::ShortcutsChanged)
-                            | Some(SettingsAction::ThemeChanged)
+                            Some(SettingsAction::ShortcutsChanged) => {
+                                self.sync_plugin_editor_close_binding();
+                                self.save_settings();
+                            }
+                            Some(SettingsAction::ThemeChanged)
                             | Some(SettingsAction::PluginKeysChanged)
                             | Some(SettingsAction::ProjectChanged) => self.save_settings(),
                             Some(SettingsAction::EditingChanged) => {
@@ -1486,4 +1759,14 @@ fn host_x11_from_frame(frame: &eframe::Frame) -> Option<crate::engine::HostX11> 
 #[cfg(not(target_os = "linux"))]
 fn host_x11_from_frame(_frame: &eframe::Frame) -> Option<crate::engine::HostX11> {
     None
+}
+
+fn chord_to_editor_close_binding(chord: Chord) -> Option<EditorCloseBinding> {
+    let key_name = chord.storage_key_name()?.to_string();
+    Some(EditorCloseBinding {
+        key_name,
+        ctrl_or_cmd: chord.ctrl_or_cmd,
+        shift: chord.shift,
+        alt: chord.alt,
+    })
 }

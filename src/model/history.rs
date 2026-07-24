@@ -190,7 +190,7 @@ mod tests {
         assert!(restored.muted);
         assert!(restored.solo);
         assert_eq!(restored.clips.len(), 1);
-        let clip = project.clip(clip_id).expect("restored clip");
+        let clip = project.midi_clip(clip_id).expect("restored clip");
         assert_eq!(clip.start_beats, 4.0);
         assert_eq!(clip.notes.len(), 1);
         assert_eq!(clip.notes[0].pitch, 67);

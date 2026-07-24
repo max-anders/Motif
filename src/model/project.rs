@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
-use super::clip::MidiClip;
+use super::audio_clip::AudioClip;
+use super::clip::{Clip, MidiClip};
 use super::clipboard::{ClipboardClip, ClipboardNote};
 use super::instrument::{PluginFormat, TrackInstrument};
 use super::mixer::Device;
@@ -82,6 +83,46 @@ impl Default for Project {
 }
 
 impl Project {
+    fn migrate_clip_kinds(value: &mut serde_json::Value) {
+        let Some(tracks) = value
+            .get_mut("tracks")
+            .and_then(serde_json::Value::as_array_mut)
+        else {
+            return;
+        };
+        for track in tracks {
+            let Some(clips) = track
+                .get_mut("clips")
+                .and_then(serde_json::Value::as_array_mut)
+            else {
+                continue;
+            };
+            for clip in clips {
+                let is_tagged = clip.get("kind").is_some();
+                let is_midi = clip.get("notes").is_some();
+                let is_audio = clip.get("source").is_some();
+                if is_tagged {
+                    continue;
+                }
+                if is_audio {
+                    if let Some(obj) = clip.as_object_mut() {
+                        obj.insert(
+                            "kind".to_string(),
+                            serde_json::Value::String("audio".to_string()),
+                        );
+                    }
+                } else if is_midi {
+                    if let Some(obj) = clip.as_object_mut() {
+                        obj.insert(
+                            "kind".to_string(),
+                            serde_json::Value::String("midi".to_string()),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     pub fn snap_beats(value: f32) -> f32 {
         (value / SNAP_BEATS).round() * SNAP_BEATS
     }
@@ -214,7 +255,30 @@ impl Project {
             length_beats: Self::snap_beats(length_beats.max(SNAP_BEATS)),
             notes: Vec::new(),
         };
-        self.track_mut(track_id)?.clips.push(clip);
+        self.track_mut(track_id)?.clips.push(Clip::Midi(clip));
+        Some(clip_id)
+    }
+
+    pub fn add_audio_clip_to_track(
+        &mut self,
+        track_id: u64,
+        source: std::path::PathBuf,
+        name: String,
+        start_beats: f32,
+        length_beats: f32,
+    ) -> Option<u64> {
+        let clip_id = self.next_clip_id();
+        self.bump_clip_id();
+        let clip = AudioClip {
+            id: clip_id,
+            name,
+            start_beats: Self::snap_beats(start_beats.max(0.0)),
+            length_beats: Self::snap_beats(length_beats.max(SNAP_BEATS)),
+            source,
+            gain_db: 0.0,
+            missing: false,
+        };
+        self.track_mut(track_id)?.clips.push(Clip::Audio(clip));
         Some(clip_id)
     }
 
@@ -228,7 +292,7 @@ impl Project {
         let id = self.next_note_id();
         self.bump_note_id();
         let note = self
-            .clip_mut(clip_id)?
+            .midi_clip_mut(clip_id)?
             .add_note_with_id(id, pitch, start_beats, duration_beats);
         Some(note)
     }
@@ -270,7 +334,7 @@ impl Project {
         self.tracks.iter().find(|track| track.id == track_id)
     }
 
-    pub fn clip_mut(&mut self, clip_id: u64) -> Option<&mut MidiClip> {
+    pub fn clip_mut(&mut self, clip_id: u64) -> Option<&mut Clip> {
         for track in &mut self.tracks {
             if let Some(clip) = track.clip_mut(clip_id) {
                 return Some(clip);
@@ -279,13 +343,21 @@ impl Project {
         None
     }
 
-    pub fn clip(&self, clip_id: u64) -> Option<&MidiClip> {
+    pub fn clip(&self, clip_id: u64) -> Option<&Clip> {
         for track in &self.tracks {
             if let Some(clip) = track.clip(clip_id) {
                 return Some(clip);
             }
         }
         None
+    }
+
+    pub fn midi_clip_mut(&mut self, clip_id: u64) -> Option<&mut MidiClip> {
+        self.clip_mut(clip_id).and_then(Clip::as_midi_mut)
+    }
+
+    pub fn midi_clip(&self, clip_id: u64) -> Option<&MidiClip> {
+        self.clip(clip_id).and_then(Clip::as_midi)
     }
 
     pub fn remove_clip(&mut self, clip_id: u64) {
@@ -303,7 +375,7 @@ impl Project {
         delta_beats: f32,
         delta_pitch: i32,
     ) -> Vec<u64> {
-        let Some(clip) = self.clip(clip_id) else {
+        let Some(clip) = self.midi_clip(clip_id) else {
             return Vec::new();
         };
         let templates: Vec<Note> = note_ids
@@ -320,7 +392,7 @@ impl Project {
             self.bump_note_id();
             let pitch = Self::clamp_pitch(template.pitch as i32 + delta_pitch);
             let start = (template.start_beats + delta_beats).max(0.0);
-            if let Some(clip) = self.clip_mut(clip_id) {
+            if let Some(clip) = self.midi_clip_mut(clip_id) {
                 clip.add_note_with_id(id, pitch, start, template.duration_beats);
                 if let Some(note) = clip.note_mut(id) {
                     note.velocity = template.velocity;
@@ -333,7 +405,7 @@ impl Project {
 
     /// Collect notes by id for clipboard (order follows `note_ids`, skipping missing).
     pub fn notes_for_clipboard(&self, clip_id: u64, note_ids: &[u64]) -> Vec<Note> {
-        let Some(clip) = self.clip(clip_id) else {
+        let Some(clip) = self.midi_clip(clip_id) else {
             return Vec::new();
         };
         note_ids
@@ -350,7 +422,7 @@ impl Project {
         notes: &[ClipboardNote],
         origin_beats: f32,
     ) -> Vec<u64> {
-        if notes.is_empty() || self.clip(clip_id).is_none() {
+        if notes.is_empty() || self.midi_clip(clip_id).is_none() {
             return Vec::new();
         }
         let origin = Self::snap_beats(origin_beats.max(0.0));
@@ -359,7 +431,7 @@ impl Project {
             let id = self.next_note_id();
             self.bump_note_id();
             let start = (origin + template.start_beats).max(0.0);
-            if let Some(clip) = self.clip_mut(clip_id) {
+            if let Some(clip) = self.midi_clip_mut(clip_id) {
                 clip.add_note_with_id(id, template.pitch, start, template.duration_beats);
                 if let Some(note) = clip.note_mut(id) {
                     note.velocity = template.velocity;
@@ -377,7 +449,7 @@ impl Project {
             let Some(track_id) = self.track_id_for_clip(*clip_id) else {
                 continue;
             };
-            let Some(clip) = self.clip(*clip_id) else {
+            let Some(clip) = self.midi_clip(*clip_id) else {
                 continue;
             };
             templates.push(ClipboardClip {
@@ -436,13 +508,13 @@ impl Project {
                     velocity: note.velocity,
                 });
             }
-            let clip = MidiClip {
+            let clip = Clip::Midi(MidiClip {
                 id: clip_id,
                 name: format!("{} copy", template.name),
                 start_beats: Self::snap_beats((origin + template.start_beats).max(0.0)),
                 length_beats: template.length_beats,
                 notes,
-            };
+            });
             if let Some(track) = self.track_mut(template.track_id) {
                 track.clips.push(clip);
                 new_ids.push(clip_id);
@@ -460,7 +532,7 @@ impl Project {
             name: String,
             start_beats: f32,
             length_beats: f32,
-            notes: Vec<Note>,
+            clip: Clip,
         }
 
         let mut templates = Vec::with_capacity(clip_ids.len());
@@ -473,10 +545,10 @@ impl Project {
             };
             templates.push(ClipTemplate {
                 track_id,
-                name: clip.name.clone(),
-                start_beats: clip.start_beats,
-                length_beats: clip.length_beats,
-                notes: clip.notes.clone(),
+                name: clip.name().to_string(),
+                start_beats: clip.start_beats(),
+                length_beats: clip.length_beats(),
+                clip: clip.clone(),
             });
         }
 
@@ -484,25 +556,24 @@ impl Project {
         for template in templates {
             let clip_id = self.next_clip_id();
             self.bump_clip_id();
-            let mut notes = Vec::with_capacity(template.notes.len());
-            for note in template.notes {
-                let id = self.next_note_id();
-                self.bump_note_id();
-                notes.push(Note {
-                    id,
-                    pitch: note.pitch,
-                    start_beats: note.start_beats,
-                    duration_beats: note.duration_beats,
-                    velocity: note.velocity,
-                });
+            let mut clip = template.clip;
+            clip.set_start_beats((template.start_beats + delta_beats).max(0.0));
+            clip.set_length_beats(template.length_beats);
+            match &mut clip {
+                Clip::Midi(midi) => {
+                    midi.id = clip_id;
+                    midi.name = format!("{} copy", template.name);
+                    for note in &mut midi.notes {
+                        let id = self.next_note_id();
+                        self.bump_note_id();
+                        note.id = id;
+                    }
+                }
+                Clip::Audio(audio) => {
+                    audio.id = clip_id;
+                    audio.name = format!("{} copy", template.name);
+                }
             }
-            let clip = MidiClip {
-                id: clip_id,
-                name: format!("{} copy", template.name),
-                start_beats: Self::snap_beats((template.start_beats + delta_beats).max(0.0)),
-                length_beats: template.length_beats,
-                notes,
-            };
             if let Some(track) = self.track_mut(template.track_id) {
                 track.clips.push(clip);
                 new_ids.push(clip_id);
@@ -545,7 +616,7 @@ impl Project {
         self.tracks
             .iter()
             .flat_map(|track| track.clips.iter())
-            .map(|clip| clip.start_beats + clip.length_beats)
+            .map(Clip::end_beats)
             .fold(0.0_f32, f32::max)
     }
 
@@ -574,13 +645,21 @@ impl Project {
 
     pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
         // Versioned envelope (current on-disk format for .motif files).
-        if let Ok(envelope) = serde_json::from_str::<super::persistence::ProjectEnvelope>(json) {
-            return Ok(envelope.project);
+        if let Ok(mut envelope_json) = serde_json::from_str::<serde_json::Value>(json) {
+            if let Some(project_json) = envelope_json.get_mut("project") {
+                Self::migrate_clip_kinds(project_json);
+                if let Ok(project) = serde_json::from_value::<Self>(project_json.clone()) {
+                    return Ok(project);
+                }
+            }
         }
 
         // Bare Project (pre-envelope project.json / early saves).
-        if let Ok(project) = serde_json::from_str::<Self>(json) {
-            return Ok(project);
+        if let Ok(mut project_json) = serde_json::from_str::<serde_json::Value>(json) {
+            Self::migrate_clip_kinds(&mut project_json);
+            if let Ok(project) = serde_json::from_value::<Self>(project_json) {
+                return Ok(project);
+            }
         }
 
         // Flat-notes legacy before tracks/clips.
@@ -598,7 +677,7 @@ impl Project {
             macros: Vec::new(),
             instrument: TrackInstrument::BuiltInPiano,
             plugin_state: None,
-            clips: vec![clip],
+            clips: vec![Clip::Midi(clip)],
         };
 
         Ok(Self {
@@ -621,12 +700,13 @@ impl Project {
 mod tests {
     use super::*;
     use crate::model::{ClipboardNote, EditClipboard};
+    use std::path::PathBuf;
 
     #[test]
     fn paste_notes_into_another_clip_at_origin() {
         let mut project = Project::default();
         let track_id = project.tracks[0].id;
-        let src = project.tracks[0].clips[0].id;
+        let src = project.tracks[0].clips[0].id();
         let dst = project
             .add_clip_to_track(track_id, 4.0, 4.0)
             .expect("dst clip");
@@ -637,7 +717,7 @@ mod tests {
         let b = project
             .add_note_to_clip(src, 64, 2.0, 0.5)
             .expect("note b");
-        if let Some(note) = project.clip_mut(src).and_then(|c| c.note_mut(b.id)) {
+        if let Some(note) = project.midi_clip_mut(src).and_then(|c| c.note_mut(b.id)) {
             note.velocity = 77;
         }
 
@@ -648,7 +728,7 @@ mod tests {
         let new_ids = project.paste_notes_into_clip(dst, &entries, 0.5);
         assert_eq!(new_ids.len(), 2);
 
-        let dst_clip = project.clip(dst).expect("dst");
+        let dst_clip = project.midi_clip(dst).expect("dst");
         let n0 = dst_clip.note(new_ids[0]).expect("n0");
         let n1 = dst_clip.note(new_ids[1]).expect("n1");
         assert_eq!(n0.pitch, 60);
@@ -656,14 +736,14 @@ mod tests {
         assert_eq!(n1.pitch, 64);
         assert_eq!(n1.start_beats, 1.5);
         assert_eq!(n1.velocity, 77);
-        assert_eq!(project.clip(src).map(|c| c.notes.len()), Some(2));
+        assert_eq!(project.midi_clip(src).map(|c| c.notes.len()), Some(2));
     }
 
     #[test]
     fn paste_clips_at_playhead_keeps_notes() {
         let mut project = Project::default();
         let track_id = project.tracks[0].id;
-        let src = project.tracks[0].clips[0].id;
+        let src = project.tracks[0].clips[0].id();
         project.add_note_to_clip(src, 60, 0.0, 1.0).expect("note");
 
         let entries = project.clips_for_clipboard(&[src]);
@@ -672,7 +752,7 @@ mod tests {
 
         let new_ids = project.paste_clips(&entries, 8.0);
         assert_eq!(new_ids.len(), 1);
-        let pasted = project.clip(new_ids[0]).expect("pasted");
+        let pasted = project.midi_clip(new_ids[0]).expect("pasted");
         assert_eq!(pasted.start_beats, 8.0);
         assert_eq!(pasted.notes.len(), 1);
         assert_eq!(pasted.notes[0].pitch, 60);
@@ -789,9 +869,9 @@ mod tests {
             velocity: 90,
         };
         let mut project = Project::default();
-        let clip_id = project.tracks[0].clips[0].id;
+        let clip_id = project.tracks[0].clips[0].id();
         let ids = project.paste_notes_into_clip(clip_id, &[entry], 2.0);
-        let note = project.clip(clip_id).unwrap().note(ids[0]).unwrap();
+        let note = project.midi_clip(clip_id).unwrap().note(ids[0]).unwrap();
         assert_eq!(note.start_beats, 3.25);
         assert_eq!(note.duration_beats, 0.25);
         assert_eq!(note.velocity, 90);
@@ -835,6 +915,59 @@ mod tests {
         let center = std::f32::consts::FRAC_1_SQRT_2;
         assert!((l - center).abs() < 1e-5);
         assert!((r - center).abs() < 1e-5);
+    }
+
+    #[test]
+    fn old_clip_json_without_kind_migrates_to_midi() {
+        let json = r#"{
+            "bpm": 120.0,
+            "beats_per_bar": 4.0,
+            "loop_end_beats": 16.0,
+            "tracks": [{
+                "id": 1,
+                "name": "Track 1",
+                "muted": false,
+                "solo": false,
+                "instrument": { "type": "built_in_piano" },
+                "clips": [{
+                    "id": 1,
+                    "name": "Clip 1",
+                    "start_beats": 0.0,
+                    "length_beats": 4.0,
+                    "notes": []
+                }]
+            }],
+            "next_note_id": 1,
+            "next_clip_id": 2,
+            "next_track_id": 2
+        }"#;
+        let project = Project::from_json(json).expect("parse");
+        assert!(matches!(project.tracks[0].clips[0], Clip::Midi(_)));
+    }
+
+    #[test]
+    fn audio_clip_round_trip_in_project_json() {
+        let mut project = Project::default();
+        let track_id = project.tracks[0].id;
+        let clip_id = project
+            .add_audio_clip_to_track(
+                track_id,
+                PathBuf::from("/tmp/kick.wav"),
+                String::from("kick"),
+                2.0,
+                8.0,
+            )
+            .expect("audio clip");
+        let json = serde_json::to_string(&crate::model::persistence::ProjectEnvelope::new(
+            project.clone(),
+        ))
+        .unwrap();
+        let loaded = Project::from_json(&json).expect("reload");
+        let clip = loaded.clip(clip_id).expect("clip");
+        let audio = clip.as_audio().expect("audio");
+        assert_eq!(audio.name, "kick");
+        assert_eq!(audio.source, PathBuf::from("/tmp/kick.wav"));
+        assert_eq!(audio.length_beats, 8.0);
     }
 
     #[test]

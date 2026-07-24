@@ -102,7 +102,7 @@ impl PianoRollUi {
     }
 
     pub fn prune_selection(&mut self, clip_id: u64, project: &Project) {
-        let Some(clip) = project.clip(clip_id) else {
+        let Some(clip) = project.midi_clip(clip_id) else {
             self.selected_note_ids.clear();
             return;
         };
@@ -151,7 +151,7 @@ impl PianoRollUi {
         theme: &ThemeColors,
     ) {
         let (clip_start, total_beats, beats_per_bar) = {
-            let Some(clip) = project.clip(clip_id) else {
+            let Some(clip) = project.midi_clip(clip_id) else {
                 return;
             };
             (
@@ -193,7 +193,7 @@ impl PianoRollUi {
         let playhead_visible = local_playhead >= 0.0 && local_playhead <= total_beats;
 
         let clip_notes: Vec<Note> = project
-            .clip(clip_id)
+            .midi_clip(clip_id)
             .map(|clip| clip.notes.clone())
             .unwrap_or_default();
 
@@ -869,7 +869,7 @@ fn apply_move_drag(
 
     for original in &drag.originals {
         if let Some(note) = project
-            .clip_mut(clip_id)
+            .midi_clip_mut(clip_id)
             .and_then(|clip| clip.note_mut(original.id))
         {
             note.start_beats = (original.start_beats + snapped_delta_beats).max(0.0);
@@ -919,7 +919,7 @@ fn apply_resize_drag(drag: &ActiveDrag, project: &mut Project, clip_id: u64, cur
         return;
     };
     let Some(note) = project
-        .clip_mut(clip_id)
+        .midi_clip_mut(clip_id)
         .and_then(|clip| clip.note_mut(drag.note_id))
     else {
         return;
@@ -959,7 +959,7 @@ fn finish_active_drag(
         history.commit(project);
         if matches!(drag.mode, DragMode::ResizeStart | DragMode::ResizeEnd) {
             if let Some(note) = project
-                .clip(clip_id)
+                .midi_clip(clip_id)
                 .and_then(|clip| clip.note(drag.note_id))
             {
                 *default_duration_beats = note.duration_beats;
@@ -991,7 +991,7 @@ fn audition_primary_drag_pitch(
         return;
     }
     let Some(pitch) = project
-        .clip(clip_id)
+        .midi_clip(clip_id)
         .and_then(|clip| clip.note(drag.note_id))
         .map(|note| note.pitch)
     else {
@@ -1034,7 +1034,7 @@ fn handle_pointer(
         .input(|input| input.pointer.button_down(egui::PointerButton::Primary));
 
     let clip_notes: Vec<Note> = project
-        .clip(clip_id)
+        .midi_clip(clip_id)
         .map(|clip| clip.notes.clone())
         .unwrap_or_default();
 
@@ -1123,7 +1123,7 @@ fn handle_pointer(
             if let Some(note) = hit_test_note(grid, &clip_notes, pointer, metrics) {
                 let note_id = note.id;
                 let before = project.clone();
-                if let Some(clip) = project.clip_mut(clip_id) {
+                if let Some(clip) = project.midi_clip_mut(clip_id) {
                     clip.remove_note(note_id);
                     history.push_before(before);
                 }
@@ -1206,7 +1206,7 @@ fn handle_pointer(
 
             let originals = match mode {
                 DragMode::Move => project
-                    .clip(clip_id)
+                    .midi_clip(clip_id)
                     .map(|clip| {
                         clip.notes
                             .iter()
@@ -1216,7 +1216,7 @@ fn handle_pointer(
                     })
                     .unwrap_or_default(),
                 DragMode::ResizeStart | DragMode::ResizeEnd => project
-                    .clip(clip_id)
+                    .midi_clip(clip_id)
                     .and_then(|clip| clip.note(primary_id).copied())
                     .into_iter()
                     .collect(),

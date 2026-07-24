@@ -345,7 +345,7 @@ impl SettingsUi {
             .on_hover_text(
                 "Default for all plugins. When on, Space plays/pauses Motif instead of \
                  going to the plugin. Override per plugin from the open-editors strip. \
-                 Ctrl+W always closes a focused editor.",
+                 Close plugin editor (Shortcuts) always closes a focused editor.",
             )
             .changed()
         {

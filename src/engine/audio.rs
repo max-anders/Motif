@@ -3,6 +3,7 @@
 //! Plugin load/activate runs on a worker thread so the UI stays responsive.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -18,6 +19,7 @@ use super::piano::PianoSynth;
 use super::plugins::{
     load_and_activate, CatalogEntry, HostedPlugin, PluginCatalog, PluginEditorHost, PluginRef,
 };
+use super::DecodedAudio;
 use super::{DawEngine, LoopPlayback};
 
 const LOADING_STATUS: &str = "Loading plugin...";
@@ -54,6 +56,15 @@ enum TrackVoice {
 struct FxSlot {
     plugin: Arc<Mutex<HostedPlugin>>,
     bypassed: bool,
+}
+
+#[derive(Clone)]
+struct SamplePlayback {
+    clip_id: u64,
+    start_beats: f32,
+    length_beats: f32,
+    gain: f32,
+    buffer: Arc<DecodedAudio>,
 }
 
 #[derive(Clone, Copy)]
@@ -109,6 +120,13 @@ enum AudioCommand {
     RemoveFxChain {
         track_id: u64,
     },
+    SetTrackSamples {
+        track_id: u64,
+        clips: Vec<SamplePlayback>,
+    },
+    ClearTrackSamples {
+        track_id: u64,
+    },
     SetMasterGain {
         gain: f32,
     },
@@ -129,6 +147,8 @@ struct AudioCallbackState {
     /// Per-track serial insert-FX chain, processed after the voice and
     /// before gain/pan. Absent key == empty chain (passthrough).
     fx_chains: HashMap<u64, Vec<FxSlot>>,
+    /// Per-track audio clip list (already decoded/resampled).
+    sample_clips: HashMap<u64, Vec<SamplePlayback>>,
     master_gain: f32,
     commands: Receiver<AudioCommand>,
     channels: usize,
@@ -191,6 +211,7 @@ impl AudioCallbackState {
                     self.voices.remove(&track_id);
                     self.channel_params.remove(&track_id);
                     self.fx_chains.remove(&track_id);
+                    self.sample_clips.remove(&track_id);
                 }
                 Ok(AudioCommand::SetChannel {
                     track_id,
@@ -212,6 +233,12 @@ impl AudioCallbackState {
                 }
                 Ok(AudioCommand::RemoveFxChain { track_id }) => {
                     self.fx_chains.remove(&track_id);
+                }
+                Ok(AudioCommand::SetTrackSamples { track_id, clips }) => {
+                    self.sample_clips.insert(track_id, clips);
+                }
+                Ok(AudioCommand::ClearTrackSamples { track_id }) => {
+                    self.sample_clips.remove(&track_id);
                 }
                 Ok(AudioCommand::SetMasterGain { gain }) => {
                     self.master_gain = gain;
@@ -314,6 +341,41 @@ impl AudioCallbackState {
                     }
                 }
                 Some(TrackVoice::Silent) | None => {}
+            }
+
+            if self.transport.playing {
+                if let (Some(song_pos_samples), Some(tempo_bpm)) =
+                    (self.transport.song_position_samples, self.transport.tempo_bpm)
+                {
+                    let bps = (tempo_bpm as f32 / 60.0).max(0.0001);
+                    if let Some(clips) = self.sample_clips.get(&track_id) {
+                        for clip in clips {
+                            let sample_rate = clip.buffer.device_sample_rate as f32;
+                            let clip_start_samples =
+                                ((clip.start_beats / bps) * sample_rate).round() as i64;
+                            let clip_length_samples =
+                                ((clip.length_beats / bps) * sample_rate).round() as i64;
+                            if clip_length_samples <= 0 {
+                                continue;
+                            }
+                            for i in 0..frames {
+                                let song_sample = song_pos_samples + i as i64;
+                                let clip_sample = song_sample - clip_start_samples;
+                                if clip_sample < 0
+                                    || clip_sample >= clip_length_samples
+                                    || clip_sample as usize >= clip.buffer.frames
+                                {
+                                    continue;
+                                }
+                                let idx = clip_sample as usize;
+                                let l = clip.buffer.left.get(idx).copied().unwrap_or(0.0) * clip.gain;
+                                let r = clip.buffer.right.get(idx).copied().unwrap_or(0.0) * clip.gain;
+                                self.tmp_l[i] += l;
+                                self.tmp_r[i] += r;
+                            }
+                        }
+                    }
+                }
             }
 
             // Serial insert-FX chain, pre-fader: each non-bypassed device
@@ -598,6 +660,10 @@ impl AudioEngine {
 
     pub fn init_error(&self) -> Option<&str> {
         self.init_error.as_deref()
+    }
+
+    pub fn sample_rate_hz(&self) -> u32 {
+        self.sample_rate.round().max(1.0) as u32
     }
 
     fn send(&mut self, command: AudioCommand) {
@@ -1310,6 +1376,10 @@ impl DawEngine for AudioEngine {
         self.editor_host.set_forward_transport(target, forward);
     }
 
+    fn set_plugin_editor_close_binding(&mut self, close_binding: super::plugins::EditorCloseBinding) {
+        self.editor_host.set_close_binding(close_binding);
+    }
+
     fn poll_plugin_editors(&mut self) -> super::EditorPoll {
         self.editor_host.poll()
     }
@@ -1329,6 +1399,9 @@ impl DawEngine for AudioEngine {
                 continue;
             }
             for clip in &track.clips {
+                let Some(clip) = clip.as_midi() else {
+                    continue;
+                };
                 let clip_start = clip.start_beats;
                 let clip_end = clip.end_beats();
 
@@ -1444,11 +1517,56 @@ impl DawEngine for AudioEngine {
             .map(|guard| *guard)
             .unwrap_or((0.0, 0.0))
     }
+
+    fn sync_samples(
+        &mut self,
+        project: &Project,
+        decoded_audio: &HashMap<PathBuf, Arc<DecodedAudio>>,
+    ) {
+        self.flush_pending_cmds();
+        let live_ids: HashSet<u64> = project.tracks.iter().map(|t| t.id).collect();
+        for track_id in self.synced_channels.keys().copied().collect::<Vec<_>>() {
+            if !live_ids.contains(&track_id) {
+                self.send(AudioCommand::ClearTrackSamples { track_id });
+            }
+        }
+
+        for track in &project.tracks {
+            let mut clips = Vec::new();
+            for clip in &track.clips {
+                let Some(audio) = clip.as_audio() else {
+                    continue;
+                };
+                let Some(decoded) = decoded_audio.get(&audio.source) else {
+                    continue;
+                };
+                clips.push(SamplePlayback {
+                    clip_id: audio.id,
+                    start_beats: audio.start_beats,
+                    length_beats: audio.length_beats,
+                    gain: db_to_linear(audio.gain_db),
+                    buffer: Arc::clone(decoded),
+                });
+            }
+            if clips.is_empty() {
+                self.send(AudioCommand::ClearTrackSamples { track_id: track.id });
+            } else {
+                self.send(AudioCommand::SetTrackSamples {
+                    track_id: track.id,
+                    clips,
+                });
+            }
+        }
+        self.flush_pending_cmds();
+    }
 }
 
 fn find_note(project: &Project, note_id: u64) -> Option<(u64, u8, u8)> {
     for track in &project.tracks {
         for clip in &track.clips {
+            let Some(clip) = clip.as_midi() else {
+                continue;
+            };
             if let Some(note) = clip.note(note_id) {
                 return Some((track.id, note.pitch, note.velocity));
             }
@@ -1480,6 +1598,7 @@ fn start_stream(
         voices: HashMap::new(),
         channel_params: HashMap::new(),
         fx_chains: HashMap::new(),
+        sample_clips: HashMap::new(),
         master_gain: 1.0,
         commands: rx,
         channels,

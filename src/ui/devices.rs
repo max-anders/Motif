@@ -1,16 +1,18 @@
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+use std::sync::Arc;
 
 use egui::containers::scroll_area::ScrollBarVisibility;
 use egui::{Align, Id, Layout, Pos2, Rect, RichText, Sense, Stroke, Ui, UiBuilder, Vec2};
 
-use crate::engine::{DawEngine, PluginCatalog, PluginRef};
+use crate::engine::{DawEngine, DecodedAudio, PluginCatalog, PluginRef};
 use crate::model::{Device, EditHistory, Project, Track};
 use crate::ui::instrument_menu::{
     choice_to_instrument, show_effect_picker, show_instrument_picker, InstrumentChoice,
 };
 use crate::ui::playlist::{
-    draw_lane_timeline, handle_single_track_clip_pointer, ms_toggle_button, track_header_row,
-    ClipDrag, LANE_HEIGHT, PluginEditorRequest, TRACK_HEADER_WIDTH,
+    draw_lane_timeline, draw_marquee, handle_single_track_clip_pointer, ms_toggle_button,
+    track_header_row, ClipDrag, LANE_HEIGHT, MarqueeDrag, PluginEditorRequest, TRACK_HEADER_WIDTH,
 };
 use crate::ui::theme::ThemeColors;
 use crate::ui::timeline::{
@@ -48,6 +50,7 @@ pub struct DevicesUi {
     open_clip_request: Option<u64>,
     mini_selected_clip_ids: HashSet<u64>,
     mini_active_drag: Option<ClipDrag>,
+    mini_marquee: Option<MarqueeDrag>,
     mini_dragging_playhead: bool,
     mini_beat_width: f32,
     mini_scroll_offset: Vec2,
@@ -64,6 +67,7 @@ impl Default for DevicesUi {
             open_clip_request: None,
             mini_selected_clip_ids: HashSet::new(),
             mini_active_drag: None,
+            mini_marquee: None,
             mini_dragging_playhead: false,
             mini_beat_width: DEFAULT_BEAT_WIDTH,
             mini_scroll_offset: Vec2::ZERO,
@@ -95,6 +99,7 @@ impl DevicesUi {
         history: &mut EditHistory,
         device_errors: &HashMap<(u64, u64), String>,
         selected_track: &mut Option<u64>,
+        decoded_audio: &HashMap<PathBuf, Arc<DecodedAudio>>,
         theme: &ThemeColors,
     ) {
         ui.painter().rect_filled(ui.max_rect(), 0.0, theme.panel_bg);
@@ -179,9 +184,17 @@ impl DevicesUi {
                 if let Some(track_id) = *selected_track {
                     if let Some(track_snapshot) = project.track(track_id).cloned() {
                         self.mini_selected_clip_ids.retain(|clip_id| {
-                            track_snapshot.clips.iter().any(|clip| clip.id == *clip_id)
+                            track_snapshot.clips.iter().any(|clip| clip.id() == *clip_id)
                         });
-                        self.show_mini_playlist(ui, project, engine, history, &track_snapshot, theme);
+                        self.show_mini_playlist(
+                            ui,
+                            project,
+                            engine,
+                            history,
+                            &track_snapshot,
+                            decoded_audio,
+                            theme,
+                        );
                         ui.add_space(8.0);
                         self.show_fx_grid(
                             ui,
@@ -205,6 +218,7 @@ impl DevicesUi {
 }
 
 impl DevicesUi {
+    #[allow(clippy::too_many_arguments)]
     fn show_mini_playlist(
         &mut self,
         ui: &mut Ui,
@@ -212,6 +226,7 @@ impl DevicesUi {
         engine: &mut dyn DawEngine,
         history: &mut EditHistory,
         track: &Track,
+        decoded_audio: &HashMap<PathBuf, Arc<DecodedAudio>>,
         theme: &ThemeColors,
     ) {
         let (mini_rect, _) = ui.allocate_exact_size(
@@ -290,6 +305,8 @@ impl DevicesUi {
                         &track.clips,
                         &self.mini_selected_clip_ids,
                         project.track_audible(track),
+                        project.bpm,
+                        decoded_audio,
                         theme,
                     );
                     draw_ruler(
@@ -323,16 +340,19 @@ impl DevicesUi {
                         theme,
                     );
 
-                    if handle_timeline_playhead_pointer(
-                        &response,
-                        ruler,
-                        lane,
-                        metrics,
-                        engine,
-                        &mut self.mini_dragging_playhead,
-                        0.0,
-                        true,
-                    ) {
+                    if self.mini_active_drag.is_none()
+                        && self.mini_marquee.is_none()
+                        && handle_timeline_playhead_pointer(
+                            &response,
+                            ruler,
+                            lane,
+                            metrics,
+                            engine,
+                            &mut self.mini_dragging_playhead,
+                            0.0,
+                            true,
+                        )
+                    {
                         return;
                     }
 
@@ -347,14 +367,19 @@ impl DevicesUi {
                         history,
                         &mut self.mini_selected_clip_ids,
                         &mut self.mini_active_drag,
+                        &mut self.mini_marquee,
                         &mut self.open_clip_request,
                         &mut self.mini_drag_moved,
                     );
+
+                    if let Some(marquee) = &self.mini_marquee {
+                        draw_marquee(&timeline_painter, marquee.rect(), theme);
+                    }
                 })
         });
 
         self.mini_scroll_offset = output.state.offset;
-        if self.mini_active_drag.is_none() {
+        if self.mini_active_drag.is_none() && self.mini_marquee.is_none() {
             self.mini_drag_moved = false;
         }
     }
