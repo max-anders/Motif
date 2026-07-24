@@ -444,7 +444,11 @@ impl DawApp {
         match request {
             PluginEditorRequest::Open { track_id, title } => {
                 let host_x11 = host_x11_from_frame(frame);
-                match self.engine.open_plugin_editor(track_id, &title, host_x11) {
+                let forward = self.plugin_forward_transport(track_id);
+                match self
+                    .engine
+                    .open_plugin_editor(track_id, &title, host_x11, forward)
+                {
                     Ok(()) => {
                         self.status_message = format!("Opened plugin editor: {title}");
                         ctx.request_repaint();
@@ -459,6 +463,78 @@ impl DawApp {
                 self.status_message = String::from("Closed plugin editor");
             }
         }
+    }
+
+    /// Plugin `unique_id` for a track, if it hosts a plugin instrument.
+    fn track_plugin_unique_id(&self, track_id: u64) -> Option<String> {
+        self.project
+            .tracks
+            .iter()
+            .find(|track| track.id == track_id)
+            .and_then(|track| match &track.instrument {
+                crate::model::TrackInstrument::Plugin { unique_id, .. } => Some(unique_id.clone()),
+                crate::model::TrackInstrument::BuiltInPiano => None,
+            })
+    }
+
+    /// Effective "forward Space to Motif" setting for a track's plugin.
+    fn plugin_forward_transport(&self, track_id: u64) -> bool {
+        match self.track_plugin_unique_id(track_id) {
+            Some(unique_id) => self
+                .settings
+                .plugin_keys
+                .forward_transport_for(&unique_id),
+            None => self.settings.plugin_keys.forward_transport_default,
+        }
+    }
+
+    /// Toggle Space forwarding for a track's plugin: persist the override and
+    /// apply it live to the open editor.
+    fn set_plugin_forward_transport(&mut self, track_id: u64, forward: bool) {
+        if let Some(unique_id) = self.track_plugin_unique_id(track_id) {
+            self.settings
+                .plugin_keys
+                .set_forward_transport_for(&unique_id, forward);
+            self.save_settings();
+        }
+        self.engine.set_plugin_editor_transport(track_id, forward);
+    }
+
+    /// Always-visible row of open plugin editors with a close button and a
+    /// per-plugin "Space -> Motif" transport-forward toggle. Gives a reliable
+    /// close under WMs (e.g. Hyprland) that draw no titlebar cross.
+    fn show_open_editors_strip(&mut self, ui: &mut egui::Ui) {
+        let editors = self.engine.open_plugin_editors();
+        if editors.is_empty() {
+            return;
+        }
+        ui.separator();
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Plugin editors:");
+            for (track_id, title) in editors {
+                ui.group(|ui| {
+                    ui.label(&title);
+                    let mut forward = self.plugin_forward_transport(track_id);
+                    if ui
+                        .checkbox(&mut forward, "Space -> Motif")
+                        .on_hover_text(
+                            "On: Space drives Motif play/pause while this editor is focused.\n\
+                             Off: Space goes to the plugin. (Ctrl+W always closes the editor.)",
+                        )
+                        .changed()
+                    {
+                        self.set_plugin_forward_transport(track_id, forward);
+                    }
+                    if ui
+                        .button("Close")
+                        .on_hover_text("Close this plugin editor (or press Ctrl+W in it)")
+                        .clicked()
+                    {
+                        self.engine.close_plugin_editor(track_id);
+                    }
+                });
+            }
+        });
     }
 
     fn back_to_playlist(&mut self) {
@@ -539,8 +615,12 @@ impl eframe::App for DawApp {
         self.sync_instruments();
         self.engine.advance(delta_seconds, loop_end);
         self.engine.schedule_project(&self.project);
-        if self.engine.poll_plugin_editors() {
+        let editor_poll = self.engine.poll_plugin_editors();
+        if editor_poll.any_open {
             ctx.request_repaint();
+        }
+        if editor_poll.toggle_playback {
+            self.dispatch_action(Action::TogglePlayback);
         }
 
         let poll_filter = if self.settings_ui.is_capturing() {
@@ -596,6 +676,8 @@ impl eframe::App for DawApp {
                 }
                 ui.label(&self.status_message);
             });
+
+            self.show_open_editors_strip(ui);
         });
 
         egui::CentralPanel::default()
@@ -663,11 +745,13 @@ impl eframe::App for DawApp {
                             &mut self.settings.themes,
                             &mut self.catalog,
                             &mut self.settings.plugin_extra_paths,
+                            &mut self.settings.plugin_keys,
                             &mut self.settings.undo_limit,
                         ) {
                             Some(SettingsAction::Back) => self.close_settings(),
                             Some(SettingsAction::ShortcutsChanged)
-                            | Some(SettingsAction::ThemeChanged) => self.save_settings(),
+                            | Some(SettingsAction::ThemeChanged)
+                            | Some(SettingsAction::PluginKeysChanged) => self.save_settings(),
                             Some(SettingsAction::EditingChanged) => {
                                 self.history.set_limit(self.settings.undo_limit);
                                 self.save_settings();

@@ -99,6 +99,7 @@ impl DawEngine for MockEngine {
         _track_id: u64,
         _title: &str,
         _host_x11: Option<super::plugins::HostX11>,
+        _forward_transport: bool,
     ) -> Result<(), String> {
         Err(String::from("MockEngine has no plugins"))
     }

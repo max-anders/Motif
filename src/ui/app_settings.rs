@@ -1,5 +1,6 @@
 //! Combined app settings persistence (`settings.json`): shortcuts + themes + plugin paths.
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -22,6 +23,8 @@ struct SettingsFile {
     plugin_extra_paths: Vec<PathBuf>,
     #[serde(default = "default_undo_limit")]
     undo_limit: usize,
+    #[serde(default)]
+    plugin_keys: PluginKeySettings,
 }
 
 fn default_active_theme() -> String {
@@ -32,12 +35,61 @@ fn default_undo_limit() -> usize {
     DEFAULT_UNDO_LIMIT
 }
 
+fn default_forward_transport() -> bool {
+    true
+}
+
+/// Keyboard routing between plugin editor windows and Motif.
+///
+/// While a plugin editor is focused, Space normally goes to the plugin. When
+/// forwarding is on, Motif grabs Space so it drives transport (play/pause).
+/// A plugin that needs Space in its own UI can opt out via `overrides`
+/// (keyed by the plugin `unique_id`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PluginKeySettings {
+    /// Default when a plugin has no explicit override.
+    #[serde(default = "default_forward_transport")]
+    pub forward_transport_default: bool,
+    /// Per-plugin override, keyed by plugin `unique_id`. `true` = forward Space.
+    #[serde(default)]
+    pub overrides: HashMap<String, bool>,
+}
+
+impl Default for PluginKeySettings {
+    fn default() -> Self {
+        Self {
+            forward_transport_default: true,
+            overrides: HashMap::new(),
+        }
+    }
+}
+
+impl PluginKeySettings {
+    /// Effective "forward Space to Motif" value for a plugin.
+    pub fn forward_transport_for(&self, unique_id: &str) -> bool {
+        self.overrides
+            .get(unique_id)
+            .copied()
+            .unwrap_or(self.forward_transport_default)
+    }
+
+    /// Set (or clear, when it matches the default) a per-plugin override.
+    pub fn set_forward_transport_for(&mut self, unique_id: &str, forward: bool) {
+        if forward == self.forward_transport_default {
+            self.overrides.remove(unique_id);
+        } else {
+            self.overrides.insert(unique_id.to_string(), forward);
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct AppSettings {
     pub shortcuts: ShortcutRegistry,
     pub themes: ThemeCatalog,
     pub plugin_extra_paths: Vec<PathBuf>,
     pub undo_limit: usize,
+    pub plugin_keys: PluginKeySettings,
 }
 
 impl Default for AppSettings {
@@ -47,6 +99,7 @@ impl Default for AppSettings {
             themes: ThemeCatalog::default(),
             plugin_extra_paths: Vec::new(),
             undo_limit: DEFAULT_UNDO_LIMIT,
+            plugin_keys: PluginKeySettings::default(),
         }
     }
 }
@@ -76,6 +129,7 @@ impl AppSettings {
             themes,
             plugin_extra_paths: file.plugin_extra_paths,
             undo_limit: clamp_undo_limit(file.undo_limit),
+            plugin_keys: file.plugin_keys,
         })
     }
 
@@ -87,6 +141,7 @@ impl AppSettings {
             themes,
             plugin_extra_paths: self.plugin_extra_paths.clone(),
             undo_limit: clamp_undo_limit(self.undo_limit),
+            plugin_keys: self.plugin_keys.clone(),
         };
         let json = serde_json::to_string_pretty(&file).map_err(|error| error.to_string())?;
         fs::write(path, json).map_err(|error| error.to_string())

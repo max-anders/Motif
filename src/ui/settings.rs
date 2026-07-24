@@ -7,6 +7,7 @@ use egui::Ui;
 use crate::engine::PluginCatalog;
 use crate::model::{MAX_UNDO_LIMIT, MIN_UNDO_LIMIT};
 
+use super::app_settings::PluginKeySettings;
 use super::shortcuts::{
     Action, ApplyChordOutcome, CaptureOutcome, Chord, ShortcutRegistry,
 };
@@ -72,6 +73,8 @@ pub enum SettingsAction {
     ShortcutsChanged,
     ThemeChanged,
     PluginsChanged,
+    /// Only plugin keyboard-routing prefs changed (no rescan/reload needed).
+    PluginKeysChanged,
     EditingChanged,
 }
 
@@ -92,6 +95,7 @@ impl SettingsUi {
         themes: &mut ThemeCatalog,
         catalog: &mut PluginCatalog,
         plugin_extra_paths: &mut Vec<PathBuf>,
+        plugin_keys: &mut PluginKeySettings,
         undo_limit: &mut usize,
     ) -> Option<SettingsAction> {
         let mut result = None;
@@ -155,9 +159,12 @@ impl SettingsUi {
                                     }
                                 }
                                 SettingsSection::Plugins => {
-                                    if let Some(action) =
-                                        self.show_plugins_section(ui, catalog, plugin_extra_paths)
-                                    {
+                                    if let Some(action) = self.show_plugins_section(
+                                        ui,
+                                        catalog,
+                                        plugin_extra_paths,
+                                        plugin_keys,
+                                    ) {
                                         result = Some(action);
                                     }
                                 }
@@ -225,6 +232,7 @@ impl SettingsUi {
         ui: &mut Ui,
         catalog: &mut PluginCatalog,
         plugin_extra_paths: &mut Vec<PathBuf>,
+        plugin_keys: &mut PluginKeySettings,
     ) -> Option<SettingsAction> {
         let mut result = None;
 
@@ -233,6 +241,23 @@ impl SettingsUi {
             "Scan native Linux CLAP/VST3 instruments. Plugin editors open via track header menu (need X11 or XWayland). Do not add yabridge paths — scanning them aborts Motif.",
         );
         ui.add_space(6.0);
+
+        ui.strong("Keyboard");
+        if ui
+            .checkbox(
+                &mut plugin_keys.forward_transport_default,
+                "Forward Space to Motif transport while a plugin editor is focused",
+            )
+            .on_hover_text(
+                "Default for all plugins. When on, Space plays/pauses Motif instead of \
+                 going to the plugin. Override per plugin from the open-editors strip. \
+                 Ctrl+W always closes a focused editor.",
+            )
+            .changed()
+        {
+            result = Some(SettingsAction::PluginKeysChanged);
+        }
+        ui.add_space(8.0);
 
         ui.horizontal(|ui| {
             ui.label(format!(

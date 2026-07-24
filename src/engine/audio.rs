@@ -721,11 +721,13 @@ impl DawEngine for AudioEngine {
         track_id: u64,
         title: &str,
         host_x11: Option<super::plugins::HostX11>,
+        forward_transport: bool,
     ) -> Result<(), String> {
         let Some(slot) = self.plugin_slots.get(&track_id).cloned() else {
             return Err(String::from("Plugin not loaded yet"));
         };
-        self.editor_host.open(track_id, slot, title, host_x11)
+        self.editor_host
+            .open(track_id, slot, title, host_x11, forward_transport)
     }
 
     fn close_plugin_editor(&mut self, track_id: u64) {
@@ -736,7 +738,15 @@ impl DawEngine for AudioEngine {
         self.editor_host.is_open(track_id)
     }
 
-    fn poll_plugin_editors(&mut self) -> bool {
+    fn open_plugin_editors(&self) -> Vec<(u64, String)> {
+        self.editor_host.open_editors()
+    }
+
+    fn set_plugin_editor_transport(&mut self, track_id: u64, forward: bool) {
+        self.editor_host.set_forward_transport(track_id, forward);
+    }
+
+    fn poll_plugin_editors(&mut self) -> super::EditorPoll {
         self.editor_host.poll()
     }
 

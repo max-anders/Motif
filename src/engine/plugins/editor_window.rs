@@ -16,12 +16,18 @@ use std::mem::MaybeUninit;
 use std::os::raw::{c_int, c_long, c_uint};
 use std::ptr;
 
+use x11::keysym::{XK_space, XK_w};
 use x11::xlib::{
     self, Atom, CWBackPixel, CWBorderPixel, CWEventMask, ClientMessage, ConfigureNotify,
-    DestroyNotify, Display, ExposureMask, FocusChangeMask, InputHint, PBaseSize, PMinSize, PSize,
-    PropertyChangeMask, StructureNotifyMask, SubstructureNotifyMask, Window, XClientMessageEvent,
-    XConfigureEvent, XEvent, XSetWindowAttributes,
+    ControlMask, DestroyNotify, Display, ExposureMask, FocusChangeMask, GrabModeAsync, InputHint,
+    KeyPress, KeyPressMask, LockMask, Mod2Mask, PBaseSize, PMinSize, PSize, PropertyChangeMask,
+    StructureNotifyMask, SubstructureNotifyMask, Window, XClientMessageEvent, XConfigureEvent,
+    XEvent, XKeyEvent, XSetWindowAttributes,
 };
+
+/// Lock modifiers we must ignore/replicate when grabbing keys so Caps Lock and
+/// Num Lock don't defeat the grab. X11 grabs are exact-match on modifiers.
+const LOCK_MASKS: [c_uint; 4] = [0, LockMask, Mod2Mask, LockMask | Mod2Mask];
 
 const DEFAULT_WIDTH: c_uint = 800;
 const DEFAULT_HEIGHT: c_uint = 600;
@@ -42,16 +48,31 @@ pub struct EditorParentWindow {
     /// When true we opened this Display ourselves and must XCloseDisplay on drop.
     owns_display: bool,
     wm_delete_window: Atom,
+    /// Keycode for Space; passively grabbed while `forward_transport` is on so
+    /// Motif transport shortcuts work even when the plugin editor has focus.
+    space_keycode: c_uint,
+    /// Keycode for W; grabbed with Control (Ctrl+W closes the editor window)
+    /// regardless of `forward_transport`, giving a keyboard close under WMs
+    /// (e.g. Hyprland) that draw no titlebar cross.
+    w_keycode: c_uint,
+    /// Whether Space is currently grabbed and reported as `TogglePlayback`.
+    forward_transport: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditorWindowEvent {
     CloseRequested,
     Resized { width: u32, height: u32 },
+    /// Space was pressed while the editor had focus and transport forwarding is on.
+    TogglePlayback,
 }
 
 impl EditorParentWindow {
-    pub fn create(title: &str, host: Option<HostX11>) -> Result<Self, String> {
+    pub fn create(
+        title: &str,
+        host: Option<HostX11>,
+        forward_transport: bool,
+    ) -> Result<Self, String> {
         unsafe {
             // Always a dedicated connection (see module docs). `host` is used only
             // for `transient_for` (so Hyprland associates/floats the dialog against
@@ -67,7 +88,7 @@ impl EditorParentWindow {
                 .map(|h| h.screen)
                 .unwrap_or_else(|| xlib::XDefaultScreen(display));
             let transient_for = host.and_then(|h| h.transient_for);
-            Self::create_on_display(display, screen, title, transient_for, true)
+            Self::create_on_display(display, screen, title, transient_for, true, forward_transport)
         }
     }
 
@@ -77,6 +98,7 @@ impl EditorParentWindow {
         title: &str,
         transient_for: Option<u64>,
         owns_display: bool,
+        forward_transport: bool,
     ) -> Result<Self, String> {
         let root = xlib::XRootWindow(display, screen);
         let black = xlib::XBlackPixel(display, screen);
@@ -88,7 +110,8 @@ impl EditorParentWindow {
             | ExposureMask
             | FocusChangeMask
             | SubstructureNotifyMask
-            | PropertyChangeMask;
+            | PropertyChangeMask
+            | KeyPressMask;
 
         let window = xlib::XCreateWindow(
             display,
@@ -168,12 +191,45 @@ impl EditorParentWindow {
 
         let _ = (wm_protocols, class_bytes);
 
+        // Passive key grabs. Ctrl+W (close) is always grabbed. Space (transport)
+        // is grabbed only when forwarding is enabled for this plugin; that way a
+        // plugin that needs Space in its own UI can opt out. The grab activates
+        // only while focus is inside our window (or the embedded plugin child),
+        // so it never affects other apps.
+        let space_keycode = c_uint::from(xlib::XKeysymToKeycode(display, XK_space as xlib::KeySym));
+        let w_keycode = c_uint::from(xlib::XKeysymToKeycode(display, XK_w as xlib::KeySym));
+        grab_key_all_locks(display, w_keycode, ControlMask, window);
+        if forward_transport {
+            grab_key_all_locks(display, space_keycode, 0, window);
+        }
+        xlib::XFlush(display);
+
         Ok(Self {
             display,
             window,
             owns_display,
             wm_delete_window: wm_delete,
+            space_keycode,
+            w_keycode,
+            forward_transport,
         })
+    }
+
+    /// Enable/disable forwarding Space to Motif transport while the editor is
+    /// focused. Toggling adds/removes the passive Space grab live.
+    pub fn set_forward_transport(&mut self, forward: bool) {
+        if forward == self.forward_transport {
+            return;
+        }
+        self.forward_transport = forward;
+        unsafe {
+            if forward {
+                grab_key_all_locks(self.display, self.space_keycode, 0, self.window);
+            } else {
+                ungrab_key_all_locks(self.display, self.space_keycode, 0, self.window);
+            }
+            xlib::XFlush(self.display);
+        }
     }
 
     pub fn x11_window_id(&self) -> u64 {
@@ -237,6 +293,23 @@ impl EditorParentWindow {
             {
                 events.push(EditorWindowEvent::CloseRequested);
             }
+            while xlib::XCheckTypedWindowEvent(
+                self.display,
+                self.window,
+                KeyPress,
+                event.as_mut_ptr(),
+            ) != 0
+            {
+                let ev = event.assume_init();
+                let key: XKeyEvent = ev.key;
+                // Ignore Caps Lock / Num Lock so grabs match regardless of lock state.
+                let mods = key.state & !(LockMask | Mod2Mask);
+                if key.keycode == self.w_keycode && (mods & ControlMask) != 0 {
+                    events.push(EditorWindowEvent::CloseRequested);
+                } else if self.forward_transport && key.keycode == self.space_keycode && mods == 0 {
+                    events.push(EditorWindowEvent::TogglePlayback);
+                }
+            }
             xlib::XFlush(self.display);
         }
         Ok(events)
@@ -261,6 +334,38 @@ impl Drop for EditorParentWindow {
 pub fn init_xlib_threads() {
     unsafe {
         let _ = xlib::XInitThreads();
+    }
+}
+
+/// Passively grab `keycode`+`base_mods` on `window` for every lock-key combo so
+/// Caps/Num Lock can't defeat it. GrabModeAsync keeps the plugin responsive.
+unsafe fn grab_key_all_locks(
+    display: *mut Display,
+    keycode: c_uint,
+    base_mods: c_uint,
+    window: Window,
+) {
+    for extra in LOCK_MASKS {
+        xlib::XGrabKey(
+            display,
+            keycode as c_int,
+            base_mods | extra,
+            window,
+            xlib::False,
+            GrabModeAsync,
+            GrabModeAsync,
+        );
+    }
+}
+
+unsafe fn ungrab_key_all_locks(
+    display: *mut Display,
+    keycode: c_uint,
+    base_mods: c_uint,
+    window: Window,
+) {
+    for extra in LOCK_MASKS {
+        xlib::XUngrabKey(display, keycode as c_int, base_mods | extra, window);
     }
 }
 
