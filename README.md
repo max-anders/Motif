@@ -134,8 +134,12 @@ cargo run --release
 - **Back to playlist** or **Escape** - return to arrangement
 - **Left-click empty grid** - add a note (1 beat, snapped to 1/16)
 - **Left-click note** - select note
+- **Ctrl/Cmd+A** - select all notes in the clip (remappable)
+- **Shift+Up / Shift+Down** - move selected note(s) up/down one semitone (remappable)
+- **Ctrl/Cmd+Shift+Up / Down** - move selected note(s) up/down one octave (remappable)
 - **Drag empty grid** - marquee multi-select
 - **Drag note body** - move selected note(s) (pitch/start)
+- **Alt + drag note body or resize** - free horizontal placement (no 1/16 snap)
 - **Shift + drag note body** - duplicate selection, then move the copies
 - **Drag left/right edge** - resize note
 - **Press / drag piano keys** - audition pitches (active track instrument)

@@ -51,6 +51,16 @@ pub enum Action {
     TogglePluginEditor,
     /// Close the focused native plugin editor window (grabbed on the editor parent).
     ClosePluginEditor,
+    /// Select every note in the open piano-roll clip.
+    SelectAll,
+    /// Raise selected piano-roll note(s) by one semitone.
+    TransposeUpSemitone,
+    /// Lower selected piano-roll note(s) by one semitone.
+    TransposeDownSemitone,
+    /// Raise selected piano-roll note(s) by one octave.
+    TransposeUpOctave,
+    /// Lower selected piano-roll note(s) by one octave.
+    TransposeDownOctave,
 }
 
 impl<'de> Deserialize<'de> for Action {
@@ -84,6 +94,11 @@ impl<'de> Deserialize<'de> for Action {
             "toggle_devices" => Ok(Self::ToggleDevices),
             "toggle_plugin_editor" | "open_plugin_editor" => Ok(Self::TogglePluginEditor),
             "close_plugin_editor" => Ok(Self::ClosePluginEditor),
+            "select_all" => Ok(Self::SelectAll),
+            "transpose_up_semitone" => Ok(Self::TransposeUpSemitone),
+            "transpose_down_semitone" => Ok(Self::TransposeDownSemitone),
+            "transpose_up_octave" => Ok(Self::TransposeUpOctave),
+            "transpose_down_octave" => Ok(Self::TransposeDownOctave),
             other => Err(serde::de::Error::unknown_variant(
                 other,
                 &[
@@ -111,6 +126,11 @@ impl<'de> Deserialize<'de> for Action {
                     "toggle_devices",
                     "toggle_plugin_editor",
                     "close_plugin_editor",
+                    "select_all",
+                    "transpose_up_semitone",
+                    "transpose_down_semitone",
+                    "transpose_up_octave",
+                    "transpose_down_octave",
                 ],
             )),
         }
@@ -119,7 +139,7 @@ impl<'de> Deserialize<'de> for Action {
 
 impl Action {
     /// All actions in Settings / docs order (includes actions with no factory binding).
-    pub const ALL: [Self; 24] = [
+    pub const ALL: [Self; 29] = [
         Self::TogglePlayback,
         Self::ToggleLoop,
         Self::DeleteSelection,
@@ -144,6 +164,11 @@ impl Action {
         Self::ToggleDevices,
         Self::TogglePluginEditor,
         Self::ClosePluginEditor,
+        Self::SelectAll,
+        Self::TransposeUpSemitone,
+        Self::TransposeDownSemitone,
+        Self::TransposeUpOctave,
+        Self::TransposeDownOctave,
     ];
 
     pub fn label(self) -> &'static str {
@@ -172,6 +197,11 @@ impl Action {
             Self::ToggleDevices => "Devices",
             Self::TogglePluginEditor => "Plugin editor",
             Self::ClosePluginEditor => "Close plugin editor",
+            Self::SelectAll => "Select all notes",
+            Self::TransposeUpSemitone => "Transpose up (semitone)",
+            Self::TransposeDownSemitone => "Transpose down (semitone)",
+            Self::TransposeUpOctave => "Transpose up (octave)",
+            Self::TransposeDownOctave => "Transpose down (octave)",
         }
     }
 }
@@ -209,6 +239,15 @@ impl Chord {
         Self {
             key,
             ctrl_or_cmd: true,
+            shift: true,
+            alt: false,
+        }
+    }
+
+    pub const fn shift(key: Key) -> Self {
+        Self {
+            key,
+            ctrl_or_cmd: false,
             shift: true,
             alt: false,
         }
@@ -410,6 +449,23 @@ impl ShortcutRegistry {
                         shift: true,
                         alt: false,
                     }),
+                ),
+                (Action::SelectAll, Binding::Key(Chord::ctrl_or_cmd(Key::A))),
+                (
+                    Action::TransposeUpSemitone,
+                    Binding::Key(Chord::shift(Key::ArrowUp)),
+                ),
+                (
+                    Action::TransposeDownSemitone,
+                    Binding::Key(Chord::shift(Key::ArrowDown)),
+                ),
+                (
+                    Action::TransposeUpOctave,
+                    Binding::Key(Chord::ctrl_or_cmd_shift(Key::ArrowUp)),
+                ),
+                (
+                    Action::TransposeDownOctave,
+                    Binding::Key(Chord::ctrl_or_cmd_shift(Key::ArrowDown)),
                 ),
             ],
         }

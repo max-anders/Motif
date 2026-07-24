@@ -891,9 +891,6 @@ impl truce_rack_core::editor::PluginEditor for ClapPlugin {
         if !unsafe { create(self.plugin, api.as_ptr(), false) } {
             return Err(Error::Other("clap.gui::create returned false".into()));
         }
-        if let Some(set_scale) = unsafe { (*self.gui_ext).set_scale } {
-            let _ = unsafe { set_scale(self.plugin, scale) };
-        }
         let window = handle_to_clap_window(parent);
         if let Some(set_parent) = unsafe { (*self.gui_ext).set_parent }
             && !unsafe { set_parent(self.plugin, &raw const window) }
@@ -902,6 +899,16 @@ impl truce_rack_core::editor::PluginEditor for ClapPlugin {
                 unsafe { destroy(self.plugin) };
             }
             return Err(Error::Other("clap.gui::set_parent returned false".into()));
+        }
+        // set_scale AFTER set_parent, and only for a non-identity scale. Some
+        // clap-juce-extensions plugins (e.g. Vital) crash inside guiSetScale ->
+        // EditorWrapperComponent::resizeHostWindow() when a scale is applied
+        // before the editor is embedded (there is no host window to resize yet).
+        // JUCE also does its own DPI handling, so a 1.0 scale is a no-op we skip.
+        if (scale - 1.0).abs() > f64::EPSILON {
+            if let Some(set_scale) = unsafe { (*self.gui_ext).set_scale } {
+                let _ = unsafe { set_scale(self.plugin, scale) };
+            }
         }
         if let Some(show) = unsafe { (*self.gui_ext).show } {
             let _ = unsafe { show(self.plugin) };

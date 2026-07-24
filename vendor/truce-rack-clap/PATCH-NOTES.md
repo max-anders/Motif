@@ -27,6 +27,15 @@ receives mouse or keyboard input (same root cause as the VST3 patch).
 
 Non-Linux platforms keep the historical null host (native run loop).
 
+## GUI open ordering (clap-juce-extensions / Vital crash)
+
+`PluginEditor::open` now calls `clap.gui::set_parent` before `set_scale`, and
+skips `set_scale` entirely for an identity (1.0) scale. clap-juce-extensions
+plugins (e.g. Vital) segfault in `guiSetScale -> EditorWrapperComponent::
+resizeHostWindow()` when a scale is applied before the editor is embedded (no
+host window exists yet to resize). JUCE also handles DPI itself, so a 1.0 scale
+is a no-op. Order is now: create -> set_parent -> (set_scale if != 1.0) -> show.
+
 ## Re-syncing after an upstream bump
 
 If upstream supplies a real `clap_host` with timer + posix-fd support, drop this

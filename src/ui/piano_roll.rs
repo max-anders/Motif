@@ -101,6 +101,14 @@ impl PianoRollUi {
         self.selected_note_ids.extend(note_ids);
     }
 
+    pub fn select_all_in_clip(&mut self, clip_id: u64, project: &Project) {
+        self.selected_note_ids.clear();
+        if let Some(clip) = project.midi_clip(clip_id) {
+            self.selected_note_ids
+                .extend(clip.notes.iter().map(|note| note.id));
+        }
+    }
+
     pub fn prune_selection(&mut self, clip_id: u64, project: &Project) {
         let Some(clip) = project.midi_clip(clip_id) else {
             self.selected_note_ids.clear();
@@ -833,22 +841,26 @@ fn apply_move_drag(
     clip_id: u64,
     current_beats: f32,
     current_pitch: i32,
+    snap_horizontal: bool,
 ) {
     let Some(primary) = drag.originals.iter().find(|note| note.id == drag.note_id) else {
         return;
     };
 
     let raw_delta_beats = current_beats - drag.pointer_start_beats;
-    let mut snapped_delta_beats =
-        Project::snap_beats(primary.start_beats + raw_delta_beats).max(0.0) - primary.start_beats;
+    let mut delta_beats = if snap_horizontal {
+        Project::snap_beats(primary.start_beats + raw_delta_beats).max(0.0) - primary.start_beats
+    } else {
+        raw_delta_beats
+    };
 
     let min_start = drag
         .originals
         .iter()
         .map(|note| note.start_beats)
         .fold(f32::INFINITY, f32::min);
-    if min_start + snapped_delta_beats < 0.0 {
-        snapped_delta_beats = -min_start;
+    if min_start + delta_beats < 0.0 {
+        delta_beats = -min_start;
     }
 
     let raw_delta_pitch = current_pitch - drag.pointer_start_pitch;
@@ -873,7 +885,7 @@ fn apply_move_drag(
             .midi_clip_mut(clip_id)
             .and_then(|clip| clip.note_mut(original.id))
         {
-            note.start_beats = (original.start_beats + snapped_delta_beats).max(0.0);
+            note.start_beats = (original.start_beats + delta_beats).max(0.0);
             note.pitch = Project::clamp_pitch(original.pitch as i32 + delta_pitch);
             note.duration_beats = original.duration_beats;
         }
@@ -915,7 +927,13 @@ fn update_resize_hover_cursor(
     }
 }
 
-fn apply_resize_drag(drag: &ActiveDrag, project: &mut Project, clip_id: u64, current_beats: f32) {
+fn apply_resize_drag(
+    drag: &ActiveDrag,
+    project: &mut Project,
+    clip_id: u64,
+    current_beats: f32,
+    snap_horizontal: bool,
+) {
     let Some(original) = drag.originals.first() else {
         return;
     };
@@ -926,16 +944,24 @@ fn apply_resize_drag(drag: &ActiveDrag, project: &mut Project, clip_id: u64, cur
         return;
     };
 
+    let snapped_beats = |beats: f32| {
+        if snap_horizontal {
+            Project::snap_beats(beats)
+        } else {
+            beats
+        }
+    };
+
     match drag.mode {
         DragMode::ResizeStart => {
-            let new_start = Project::snap_beats(current_beats.max(0.0));
+            let new_start = snapped_beats(current_beats.max(0.0));
             let end = original.end_beats();
             note.start_beats = new_start.min(end - SNAP_BEATS);
             note.duration_beats = (end - note.start_beats).max(SNAP_BEATS);
             note.pitch = original.pitch;
         }
         DragMode::ResizeEnd => {
-            let new_end = Project::snap_beats(current_beats.max(0.0));
+            let new_end = snapped_beats(current_beats.max(0.0));
             note.start_beats = original.start_beats;
             note.duration_beats = (new_end - original.start_beats).max(SNAP_BEATS);
             note.pitch = original.pitch;
@@ -1074,13 +1100,58 @@ fn handle_pointer(
         .input(|input| input.pointer.press_origin())
         .unwrap_or(pointer);
 
+    // Audition the note's pitch immediately on press (before egui drag threshold).
+    if response.ctx.input(|input| input.pointer.button_pressed(egui::PointerButton::Primary))
+        && is_timeline_pointer(grid, press_pos)
+        && active_drag.is_none()
+        && marquee.is_none()
+    {
+        if let Some(note) = hit_test_note(grid, &clip_notes, press_pos, metrics) {
+            if !selected_note_ids.contains(&note.id) {
+                set_single_selection(selected_note_ids, note.id);
+            }
+            let note_bounds = note_rect(grid, &note, metrics);
+            if resize_drag_mode(note_bounds, press_pos.x).is_none() {
+                hold_audition_pitch(
+                    engine,
+                    track_id,
+                    audition_pitch,
+                    audition_held,
+                    audition_until,
+                    note.pitch,
+                );
+            }
+        }
+    }
+
+    if response.ctx.input(|input| input.pointer.button_released(egui::PointerButton::Primary))
+        && active_drag.is_none()
+        && *audition_held
+    {
+        clear_audition(
+            engine,
+            track_id,
+            audition_pitch,
+            audition_held,
+            audition_until,
+        );
+    }
+
     if let Some(drag) = active_drag.clone() {
         if primary_down && (response.dragged() || response.drag_started()) {
+            let snap_horizontal = !response.ctx.input(|input| input.modifiers.alt);
             let current_beats = x_to_beat(grid, pointer.x, timeline);
             let current_pitch = y_to_pitch(grid, pointer.y, metrics) as i32;
             match drag.mode {
                 DragMode::Move => {
-                    apply_move_drag(&drag, project, clip_id, current_beats, current_pitch);
+                    apply_move_drag(
+                        &drag,
+                        project,
+                        clip_id,
+                        current_beats,
+                        current_pitch,
+                        snap_horizontal,
+                    );
                     audition_primary_drag_pitch(
                         &drag,
                         project,
@@ -1096,7 +1167,7 @@ fn handle_pointer(
                     response
                         .ctx
                         .set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
-                    apply_resize_drag(&drag, project, clip_id, current_beats);
+                    apply_resize_drag(&drag, project, clip_id, current_beats, snap_horizontal);
                 }
             }
         }
@@ -1233,10 +1304,18 @@ fn handle_pointer(
 
             let current_beats = x_to_beat(grid, pointer.x, timeline);
             let current_pitch = y_to_pitch(grid, pointer.y, metrics) as i32;
+            let snap_horizontal = !response.ctx.input(|input| input.modifiers.alt);
             if let Some(drag) = active_drag.clone() {
                 match drag.mode {
                     DragMode::Move => {
-                        apply_move_drag(&drag, project, clip_id, current_beats, current_pitch);
+                        apply_move_drag(
+                            &drag,
+                            project,
+                            clip_id,
+                            current_beats,
+                            current_pitch,
+                            snap_horizontal,
+                        );
                         audition_primary_drag_pitch(
                             &drag,
                             project,
@@ -1252,7 +1331,7 @@ fn handle_pointer(
                         response
                             .ctx
                             .set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
-                        apply_resize_drag(&drag, project, clip_id, current_beats);
+                        apply_resize_drag(&drag, project, clip_id, current_beats, snap_horizontal);
                     }
                 }
             }

@@ -1,6 +1,11 @@
 //! cpal-backed audio engine with UI-thread transport + edge-detect sequencing.
 //! Per-track voices: built-in piano and/or CLAP/VST3 plugins (shared slots for GUI).
-//! Plugin load/activate runs on a worker thread so the UI stays responsive.
+//! Plugin load/activate is format-dependent: JUCE-based CLAP plugins bind their
+//! message thread to the constructing thread, so every [main-thread] call
+//! (init/activate/gui.*) must share it or gui.create deadlocks on
+//! juce::MessageManager::Lock -- CLAP is therefore built on the UI (calling)
+//! thread. VST3 has no such affinity and is built on a background worker so its
+//! internal JUCE timers do not contend with our UI event loop.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
@@ -15,7 +20,8 @@ use cpal::{SampleFormat, Stream, StreamConfig};
 use truce_rack::core::transport::TransportInfo;
 
 use crate::model::{
-    db_to_linear, AutomationPoint, AutomationTarget, CurveKind, Project, TrackInstrument,
+    db_to_linear, AutomationPoint, AutomationTarget, CurveKind, PluginFormat, Project,
+    TrackInstrument,
 };
 
 use super::metronome::MetronomeRunner;
@@ -1147,7 +1153,7 @@ impl AudioEngine {
         self.push_metronome_config();
     }
 
-    fn spawn_plugin_load(
+    fn load_plugin_now(
         &mut self,
         track_id: u64,
         instrument: TrackInstrument,
@@ -1163,13 +1169,17 @@ impl AudioEngine {
             TrackInstrument::BuiltInPiano => String::from("Piano"),
         };
         self.pending_loads.insert(track_id, instrument.clone());
-        // Mute the lane until the worker finishes (keeps old wrong plugin from playing).
+        // Mute the lane until the load finishes (keeps old wrong plugin from playing).
         self.drop_plugin_slot(track_id);
         self.send(AudioCommand::SetVoice {
             track_id,
             voice: TrackVoice::Silent,
         });
-        thread::spawn(move || {
+
+        let format = entry.format;
+        // Route the result through load_tx either way, so poll_plugin_loads owns
+        // the stale-check and slot bookkeeping regardless of which thread built it.
+        let build = move || {
             let result = match load_and_activate(&entry, sample_rate, state.as_deref()) {
                 Ok(plugin) => Ok(plugin),
                 Err(error) => Err(format!("{name}: {error}")),
@@ -1179,7 +1189,22 @@ impl AudioEngine {
                 instrument,
                 result,
             });
-        });
+        };
+
+        // CLAP must be constructed on the UI (calling) thread: JUCE-based CLAP
+        // plugins (e.g. Vital via clap-juce-extensions) bind their "message
+        // thread" to the constructing thread, and per the CLAP spec init/activate
+        // and every gui.* call are [main-thread]. Building on a worker while
+        // opening the editor on the UI thread deadlocked gui.create inside
+        // juce::MessageManager::Lock::tryAcquire. VST3 has no such affinity, and
+        // building it on the UI thread makes its JUCE timer thread contend with
+        // our event loop (visible UI lag), so keep VST3 on a background worker.
+        match format {
+            PluginFormat::Clap => build(),
+            PluginFormat::Vst3 => {
+                thread::spawn(build);
+            }
+        }
     }
 
     fn drop_plugin_slot(&mut self, track_id: u64) {
@@ -1194,7 +1219,7 @@ impl AudioEngine {
         self.device_params.remove(&(track_id, device_id));
     }
 
-    fn spawn_device_load(
+    fn load_device_now(
         &mut self,
         track_id: u64,
         device_id: u64,
@@ -1206,14 +1231,24 @@ impl AudioEngine {
         };
         let sample_rate = self.sample_rate as f64;
         self.pending_device_loads.insert((track_id, device_id));
-        thread::spawn(move || {
+
+        let format = entry.format;
+        let build = move || {
             let result = load_and_activate(&entry, sample_rate, state.as_deref());
             let _ = load_tx.send(DeviceLoadResult {
                 track_id,
                 device_id,
                 result,
             });
-        });
+        };
+        // See load_plugin_now: CLAP is built on the UI thread (JUCE message-thread
+        // affinity), VST3 on a worker to avoid UI-thread timer contention/lag.
+        match format {
+            PluginFormat::Clap => build(),
+            PluginFormat::Vst3 => {
+                thread::spawn(build);
+            }
+        }
     }
 
     /// Drains completed device loads. A track's chain is marked dirty
@@ -1620,7 +1655,7 @@ impl DawEngine for AudioEngine {
                         });
                         continue;
                     };
-                    self.spawn_plugin_load(
+                    self.load_plugin_now(
                         track.id,
                         track.instrument.clone(),
                         entry,
@@ -1727,7 +1762,7 @@ impl DawEngine for AudioEngine {
                     ));
                     continue;
                 };
-                self.spawn_device_load(track.id, device.id, entry, device.plugin_state.clone());
+                self.load_device_now(track.id, device.id, entry, device.plugin_state.clone());
                 errors.push((track.id, device.id, String::from(LOADING_STATUS)));
             }
 

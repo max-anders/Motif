@@ -1023,6 +1023,36 @@ impl DawApp {
         }
     }
 
+    fn select_all_notes(&mut self) {
+        let CenterView::PianoRoll { clip_id } = self.center_view else {
+            return;
+        };
+        self.piano_roll.select_all_in_clip(clip_id, &self.project);
+    }
+
+    fn transpose_selected_notes(&mut self, delta_semitones: i32) {
+        let CenterView::PianoRoll { clip_id } = self.center_view else {
+            return;
+        };
+        let ids: Vec<u64> = self
+            .piano_roll
+            .selected_note_ids()
+            .iter()
+            .copied()
+            .collect();
+        if ids.is_empty() {
+            return;
+        }
+        let before = self.project.clone();
+        if self
+            .project
+            .transpose_notes_in_clip(clip_id, &ids, delta_semitones)
+        {
+            self.history.push_before(before);
+            self.piano_roll.prune_selection(clip_id, &self.project);
+        }
+    }
+
     fn duplicate_selected_clips(&mut self) {
         let ids: Vec<u64> = self.playlist.selected_clip_ids().iter().copied().collect();
         if ids.is_empty() {
@@ -1545,6 +1575,26 @@ impl DawApp {
             Action::ClosePluginEditor => {
                 // Handled in `update` when closing from the main Motif window.
             }
+            Action::SelectAll => match self.center_view {
+                CenterView::PianoRoll { .. } => self.select_all_notes(),
+                _ => {}
+            },
+            Action::TransposeUpSemitone => match self.center_view {
+                CenterView::PianoRoll { .. } => self.transpose_selected_notes(1),
+                _ => {}
+            },
+            Action::TransposeDownSemitone => match self.center_view {
+                CenterView::PianoRoll { .. } => self.transpose_selected_notes(-1),
+                _ => {}
+            },
+            Action::TransposeUpOctave => match self.center_view {
+                CenterView::PianoRoll { .. } => self.transpose_selected_notes(12),
+                _ => {}
+            },
+            Action::TransposeDownOctave => match self.center_view {
+                CenterView::PianoRoll { .. } => self.transpose_selected_notes(-12),
+                _ => {}
+            },
         }
     }
 }

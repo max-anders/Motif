@@ -585,6 +585,55 @@ impl Project {
         new_ids
     }
 
+    /// Transpose notes in a clip by semitones (clamped to MIDI range). Returns true when
+    /// at least one selected note moved.
+    pub fn transpose_notes_in_clip(
+        &mut self,
+        clip_id: u64,
+        note_ids: &[u64],
+        delta_semitones: i32,
+    ) -> bool {
+        if delta_semitones == 0 || note_ids.is_empty() {
+            return false;
+        }
+        let Some(clip) = self.midi_clip(clip_id) else {
+            return false;
+        };
+        let selected: Vec<&Note> = note_ids
+            .iter()
+            .filter_map(|id| clip.note(*id))
+            .collect();
+        if selected.is_empty() {
+            return false;
+        }
+        let min_pitch = selected
+            .iter()
+            .map(|note| note.pitch as i32)
+            .min()
+            .unwrap_or(MIN_PITCH as i32);
+        let max_pitch = selected
+            .iter()
+            .map(|note| note.pitch as i32)
+            .max()
+            .unwrap_or(MAX_PITCH as i32);
+        let delta = delta_semitones
+            .max(MIN_PITCH as i32 - min_pitch)
+            .min(MAX_PITCH as i32 - max_pitch);
+        if delta == 0 {
+            return false;
+        }
+        let ids: std::collections::HashSet<u64> = note_ids.iter().copied().collect();
+        let Some(clip) = self.midi_clip_mut(clip_id) else {
+            return false;
+        };
+        for note in &mut clip.notes {
+            if ids.contains(&note.id) {
+                note.pitch = Self::clamp_pitch(note.pitch as i32 + delta);
+            }
+        }
+        true
+    }
+
     /// Collect notes by id for clipboard (order follows `note_ids`, skipping missing).
     pub fn notes_for_clipboard(&self, clip_id: u64, note_ids: &[u64]) -> Vec<Note> {
         let Some(clip) = self.midi_clip(clip_id) else {
@@ -1086,6 +1135,38 @@ mod tests {
         project.track_mut(a).expect("a").muted = true;
         assert!(!project.any_track_soloed());
         assert!(!project.track_audible(project.track(a).expect("a")));
+    }
+
+    #[test]
+    fn transpose_notes_in_clip_clamps_to_midi_range() {
+        let mut project = Project::default();
+        let clip_id = project.tracks[0].clips[0].id();
+        let low = project
+            .add_note_to_clip(clip_id, MIN_PITCH + 5, 0.0, 1.0)
+            .expect("note")
+            .id;
+        let high = project
+            .add_note_to_clip(clip_id, MAX_PITCH, 1.0, 1.0)
+            .expect("note")
+            .id;
+
+        assert!(project.transpose_notes_in_clip(clip_id, &[low], -10));
+        assert_eq!(
+            project.midi_clip(clip_id).unwrap().note(low).unwrap().pitch,
+            MIN_PITCH
+        );
+
+        assert!(!project.transpose_notes_in_clip(clip_id, &[high], 1));
+        assert_eq!(
+            project.midi_clip(clip_id).unwrap().note(high).unwrap().pitch,
+            MAX_PITCH
+        );
+
+        assert!(project.transpose_notes_in_clip(clip_id, &[high], -12));
+        assert_eq!(
+            project.midi_clip(clip_id).unwrap().note(high).unwrap().pitch,
+            MAX_PITCH - 12
+        );
     }
 
     #[test]

@@ -24,7 +24,9 @@ use crate::ui::timeline::{
 
 pub(crate) const TRACK_HEADER_WIDTH: f32 = TIMELINE_GUTTER_WIDTH;
 pub(crate) const LANE_HEIGHT: f32 = 72.0;
-const ADD_TRACK_ROW_HEIGHT: f32 = 28.0;
+const ADD_TRACK_GAP: f32 = 14.0;
+const ADD_TRACK_BUTTON_SIZE: f32 = 28.0;
+const ADD_TRACK_ROW_HEIGHT: f32 = ADD_TRACK_GAP + ADD_TRACK_BUTTON_SIZE + 8.0;
 const RESIZE_HANDLE_PX: f32 = 10.0;
 const MS_BUTTON_SIZE: f32 = 18.0;
 
@@ -472,45 +474,40 @@ impl PlaylistUi {
                         );
                     }
 
-                    // Little "+" under the last lane (header column) to create a track.
-                    let add_row_top = body.top() + lane_count as f32 * LANE_HEIGHT;
-                    let add_header = Rect::from_min_max(
-                        Pos2::new(sticky_headers.left(), add_row_top),
-                        Pos2::new(
-                            sticky_headers.right(),
-                            add_row_top + ADD_TRACK_ROW_HEIGHT,
-                        ),
+                    // Compact "+" centered under the last lane, with a bit of breathing room.
+                    let add_center = Pos2::new(
+                        (sticky_headers.right() + viewport.right()) * 0.5,
+                        body.top()
+                            + lane_count as f32 * LANE_HEIGHT
+                            + ADD_TRACK_GAP
+                            + ADD_TRACK_BUTTON_SIZE * 0.5,
                     );
-                    ui.painter()
-                        .with_clip_rect(sticky_headers)
-                        .rect_filled(add_header, 0.0, theme.track_header_bg);
-                    ui.allocate_new_ui(UiBuilder::new().max_rect(add_header), |ui| {
-                        ui.with_layout(
-                            egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
+                    let add_button = Rect::from_center_size(
+                        add_center,
+                        Vec2::splat(ADD_TRACK_BUTTON_SIZE),
+                    );
+                    ui.allocate_new_ui(UiBuilder::new().max_rect(add_button), |ui| {
+                        egui::menu::menu_button(
+                            ui,
+                            egui::RichText::new("+")
+                                .size(18.0)
+                                .color(theme.text_muted),
                             |ui| {
-                                egui::menu::menu_button(
+                                if add_track_from_picker(
                                     ui,
-                                    egui::RichText::new("+")
-                                        .size(16.0)
-                                        .color(theme.text_muted),
-                                    |ui| {
-                                        if add_track_from_picker(
-                                            ui,
-                                            project,
-                                            catalog,
-                                            history,
-                                            selected_track,
-                                            &mut self.add_track_search,
-                                            "add_track_lane",
-                                        ) {
-                                            ui.close_menu();
-                                        }
-                                    },
-                                )
-                                .response
-                                .on_hover_text("Add track");
+                                    project,
+                                    catalog,
+                                    history,
+                                    selected_track,
+                                    &mut self.add_track_search,
+                                    "add_track_lane",
+                                ) {
+                                    ui.close_menu();
+                                }
                             },
-                        );
+                        )
+                        .response
+                        .on_hover_text("Add track");
                     });
                 })
         });
