@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::audio_clip::AudioClip;
+use super::automation::{AutomationLane, AutomationTarget};
 use super::clip::{Clip, MidiClip};
 use super::clipboard::{ClipboardClip, ClipboardNote};
 use super::instrument::{PluginFormat, TrackInstrument};
@@ -45,9 +46,16 @@ pub struct Project {
     /// Missing on projects saved before insert FX (Phase 2); starts at 1.
     #[serde(default = "default_next_device_id")]
     next_device_id: u64,
+    /// Missing on projects saved before automation lanes; starts at 1.
+    #[serde(default = "default_next_automation_lane_id")]
+    next_automation_lane_id: u64,
 }
 
 fn default_next_device_id() -> u64 {
+    1
+}
+
+fn default_next_automation_lane_id() -> u64 {
     1
 }
 
@@ -75,6 +83,7 @@ impl Default for Project {
             next_clip_id: 2,
             next_track_id: 2,
             next_device_id: 1,
+            next_automation_lane_id: 1,
         };
         let track_id = project.add_track("Track 1", TrackInstrument::BuiltInPiano);
         project.add_clip_to_track(track_id, 0.0, 4.0);
@@ -264,6 +273,67 @@ impl Project {
         self.next_device_id += 1;
     }
 
+    pub fn next_automation_lane_id(&self) -> u64 {
+        self.next_automation_lane_id
+    }
+
+    pub fn bump_automation_lane_id(&mut self) {
+        self.next_automation_lane_id += 1;
+    }
+
+    /// Append an automation lane to a track. Returns the new lane id.
+    pub fn add_automation_lane(
+        &mut self,
+        track_id: u64,
+        target: AutomationTarget,
+        param_name: impl Into<String>,
+        param_min: f64,
+        param_max: f64,
+    ) -> Option<u64> {
+        let id = self.next_automation_lane_id();
+        self.bump_automation_lane_id();
+        let lane = AutomationLane {
+            id,
+            target,
+            param_name: param_name.into(),
+            param_min,
+            param_max,
+            points: Vec::new(),
+            enabled: true,
+        };
+        self.track_mut(track_id)?.automation_lanes.push(lane);
+        Some(id)
+    }
+
+    /// Remove an automation lane from a track. Returns `false` if the track or
+    /// lane id is unknown (project unchanged).
+    pub fn remove_automation_lane(&mut self, track_id: u64, lane_id: u64) -> bool {
+        let Some(track) = self.track_mut(track_id) else {
+            return false;
+        };
+        let before = track.automation_lanes.len();
+        track.automation_lanes.retain(|lane| lane.id != lane_id);
+        track.automation_lanes.len() != before
+    }
+
+    pub fn automation_lane(&self, track_id: u64, lane_id: u64) -> Option<&AutomationLane> {
+        self.track(track_id)?
+            .automation_lanes
+            .iter()
+            .find(|lane| lane.id == lane_id)
+    }
+
+    pub fn automation_lane_mut(
+        &mut self,
+        track_id: u64,
+        lane_id: u64,
+    ) -> Option<&mut AutomationLane> {
+        self.track_mut(track_id)?
+            .automation_lanes
+            .iter_mut()
+            .find(|lane| lane.id == lane_id)
+    }
+
     /// Append a plugin effect to a track's insert chain. Returns the new device id.
     pub fn add_device(
         &mut self,
@@ -333,6 +403,7 @@ impl Project {
             sends: Vec::new(),
             devices: Vec::new(),
             macros: Vec::new(),
+            automation_lanes: Vec::new(),
             instrument,
             plugin_state: None,
             clips: Vec::new(),
@@ -830,6 +901,7 @@ impl Project {
             sends: Vec::new(),
             devices: Vec::new(),
             macros: Vec::new(),
+            automation_lanes: Vec::new(),
             instrument: TrackInstrument::BuiltInPiano,
             plugin_state: None,
             clips: vec![Clip::Midi(clip)],
@@ -847,6 +919,7 @@ impl Project {
             next_clip_id: 2,
             next_track_id: 2,
             next_device_id: 1,
+            next_automation_lane_id: 1,
         })
     }
 }
@@ -854,7 +927,7 @@ impl Project {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{ClipboardNote, EditClipboard};
+    use crate::model::{ClipboardNote, EditClipboard, EditHistory};
     use std::path::PathBuf;
 
     #[test]
@@ -1372,5 +1445,170 @@ mod tests {
         assert!(!project.remove_device(track_id, a));
         assert!(!project.move_device(track_id, 5, 0));
         assert!(!project.set_device_bypass(999, b, false));
+    }
+
+    #[test]
+    fn old_json_without_automation_fields_loads_defaults() {
+        let json = r#"{
+            "bpm": 120.0,
+            "beats_per_bar": 4.0,
+            "loop_end_beats": 16.0,
+            "tracks": [{
+                "id": 1,
+                "name": "Track 1",
+                "instrument": { "type": "built_in_piano" },
+                "clips": []
+            }],
+            "next_note_id": 1,
+            "next_clip_id": 2,
+            "next_track_id": 2
+        }"#;
+        let project = Project::from_json(json).expect("parse");
+        assert!(project.tracks[0].automation_lanes.is_empty());
+        assert_eq!(project.next_automation_lane_id(), 1);
+    }
+
+    #[test]
+    fn automation_lane_round_trip_in_envelope() {
+        let mut project = Project::default();
+        let track_id = project.tracks[0].id;
+        let lane_id = project
+            .add_automation_lane(
+                track_id,
+                AutomationTarget::Instrument { param_id: 42 },
+                "Cutoff",
+                20.0,
+                20_000.0,
+            )
+            .expect("lane added");
+        {
+            let lane = project
+                .automation_lane_mut(track_id, lane_id)
+                .expect("lane");
+            lane.points.push(crate::model::AutomationPoint {
+                beat: 0.0,
+                value: 0.25,
+                curve: crate::model::CurveKind::Hold,
+            });
+            lane.points.push(crate::model::AutomationPoint {
+                beat: 4.0,
+                value: 0.75,
+                curve: crate::model::CurveKind::Linear,
+            });
+        }
+
+        let json = serde_json::to_string(&crate::model::persistence::ProjectEnvelope::new(
+            project.clone(),
+        ))
+        .unwrap();
+        let loaded = Project::from_json(&json).unwrap();
+        assert_eq!(loaded.next_automation_lane_id(), 2);
+        let lane = loaded
+            .automation_lane(track_id, lane_id)
+            .expect("lane reloaded");
+        assert_eq!(lane.param_name, "Cutoff");
+        assert_eq!(lane.param_min, 20.0);
+        assert_eq!(lane.param_max, 20_000.0);
+        assert!(lane.enabled);
+        assert_eq!(lane.points.len(), 2);
+        assert_eq!(lane.points[0].curve, crate::model::CurveKind::Hold);
+        assert_eq!(lane.points[1].value, 0.75);
+    }
+
+    #[test]
+    fn next_automation_lane_id_increments_and_survives_round_trip() {
+        let mut project = Project::default();
+        let track_id = project.tracks[0].id;
+        assert_eq!(project.next_automation_lane_id(), 1);
+        let first = project
+            .add_automation_lane(
+                track_id,
+                AutomationTarget::Instrument { param_id: 1 },
+                "A",
+                0.0,
+                1.0,
+            )
+            .expect("first lane");
+        let second = project
+            .add_automation_lane(
+                track_id,
+                AutomationTarget::Device {
+                    device_id: 7,
+                    param_id: 2,
+                },
+                "B",
+                0.0,
+                1.0,
+            )
+            .expect("second lane");
+        assert_eq!(first, 1);
+        assert_eq!(second, 2);
+        assert_eq!(project.next_automation_lane_id(), 3);
+
+        let json = serde_json::to_string(&crate::model::persistence::ProjectEnvelope::new(
+            project.clone(),
+        ))
+        .unwrap();
+        let loaded = Project::from_json(&json).unwrap();
+        assert_eq!(loaded.next_automation_lane_id(), 3);
+    }
+
+    #[test]
+    fn automation_lane_add_remove_mut() {
+        let mut project = Project::default();
+        let track_id = project.tracks[0].id;
+        let lane_id = project
+            .add_automation_lane(
+                track_id,
+                AutomationTarget::Instrument { param_id: 5 },
+                "Gain",
+                0.0,
+                1.0,
+            )
+            .expect("lane");
+        assert_eq!(project.track(track_id).unwrap().automation_lanes.len(), 1);
+
+        project
+            .automation_lane_mut(track_id, lane_id)
+            .expect("lane")
+            .enabled = false;
+        assert!(!project.automation_lane(track_id, lane_id).unwrap().enabled);
+
+        assert!(project.remove_automation_lane(track_id, lane_id));
+        assert!(project.track(track_id).unwrap().automation_lanes.is_empty());
+        assert!(!project.remove_automation_lane(track_id, lane_id));
+        assert!(project.automation_lane_mut(track_id, lane_id).is_none());
+    }
+
+    #[test]
+    fn undo_snapshot_includes_automation_lanes_via_clone() {
+        let mut project = Project::default();
+        let track_id = project.tracks[0].id;
+        let lane_id = project
+            .add_automation_lane(
+                track_id,
+                AutomationTarget::Instrument { param_id: 9 },
+                "Resonance",
+                0.0,
+                1.0,
+            )
+            .expect("lane");
+        let before = project.clone();
+        project
+            .automation_lane_mut(track_id, lane_id)
+            .expect("lane")
+            .points
+            .push(crate::model::AutomationPoint {
+                beat: 2.0,
+                value: 0.5,
+                curve: crate::model::CurveKind::Linear,
+            });
+
+        let mut history = EditHistory::new(8);
+        history.push_before(before);
+        assert!(history.undo(&mut project));
+        let lane = &project.tracks[0].automation_lanes[0];
+        assert_eq!(lane.id, lane_id);
+        assert!(lane.points.is_empty());
     }
 }

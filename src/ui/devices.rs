@@ -7,6 +7,7 @@ use egui::{Align, Id, Layout, Pos2, Rect, RichText, Sense, Stroke, Ui, UiBuilder
 
 use crate::engine::{DawEngine, DecodedAudio, PluginCatalog, PluginRef};
 use crate::model::{Device, EditHistory, Project, Track};
+use crate::ui::automation::AutomationUi;
 use crate::ui::instrument_menu::{
     choice_to_instrument, show_effect_picker, show_instrument_picker, InstrumentChoice,
     MENU_LIST_MAX_HEIGHT,
@@ -75,6 +76,8 @@ pub struct DevicesUi {
     mini_beat_width: f32,
     mini_scroll_offset: Vec2,
     mini_drag_moved: bool,
+    automation: AutomationUi,
+    automation_strip_expanded: bool,
 }
 
 impl Default for DevicesUi {
@@ -93,6 +96,8 @@ impl Default for DevicesUi {
             mini_beat_width: DEFAULT_BEAT_WIDTH,
             mini_scroll_offset: Vec2::ZERO,
             mini_drag_moved: false,
+            automation: AutomationUi::default(),
+            automation_strip_expanded: false,
         }
     }
 }
@@ -223,6 +228,18 @@ impl DevicesUi {
                             theme,
                         );
                         ui.add_space(8.0);
+                        self.automation.show_page_section(
+                            ui,
+                            project,
+                            track_id,
+                            &track_snapshot,
+                            engine,
+                            history,
+                            self.mini_beat_width,
+                            self.mini_scroll_offset,
+                            theme,
+                        );
+                        ui.add_space(8.0);
                         self.show_device_chain(
                             ui,
                             project,
@@ -290,6 +307,22 @@ impl DevicesUi {
             });
         });
         ui.add_space(4.0);
+
+        self.automation.show_strip_section(
+            ui,
+            &mut self.automation_strip_expanded,
+            project,
+            track_id,
+            &track_snapshot,
+            engine,
+            history,
+            self.mini_beat_width,
+            self.mini_scroll_offset,
+            theme,
+        );
+        if self.automation_strip_expanded {
+            ui.add_space(4.0);
+        }
 
         self.show_device_chain(
             ui,

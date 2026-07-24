@@ -8,7 +8,7 @@ mod host;
 
 pub use catalog::{CatalogEntry, EntryCategory, PluginCatalog, PLUGIN_CACHE_FILE};
 pub use editor::{EditorCloseBinding, EditorPoll, PluginEditorHost, PluginRef};
-pub use host::{load_and_activate, HostedPlugin};
+pub use host::{load_and_activate, HostedPlugin, PluginParamInfo};
 
 #[cfg(not(target_os = "linux"))]
 pub use editor::HostX11;

@@ -1,3 +1,4 @@
+mod automation;
 mod audio_clip;
 mod clip;
 mod clipboard;
@@ -10,6 +11,10 @@ mod project;
 mod serde_b64;
 mod track;
 
+#[allow(unused_imports)] // public automation surface for UI / engine / tests
+pub use automation::{
+    AutomationLane, AutomationPoint, AutomationTarget, CurveKind,
+};
 #[allow(unused_imports)] // public audio clip surface for engine / app
 pub use audio_clip::AudioClip;
 #[allow(unused_imports)] // public clip surfaces for app / tests

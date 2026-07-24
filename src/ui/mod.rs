@@ -1,5 +1,6 @@
 mod add_browser;
 mod app_settings;
+mod automation;
 mod devices;
 mod inspector;
 mod instrument_menu;

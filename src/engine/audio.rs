@@ -12,12 +12,15 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, Stream, StreamConfig};
 use truce_rack::core::transport::TransportInfo;
 
-use crate::model::{db_to_linear, Project, TrackInstrument};
+use crate::model::{
+    db_to_linear, AutomationPoint, AutomationTarget, CurveKind, Project, TrackInstrument,
+};
 
 use super::metronome::MetronomeRunner;
 use super::piano::PianoSynth;
 use super::plugins::{
-    load_and_activate, CatalogEntry, HostedPlugin, PluginCatalog, PluginEditorHost, PluginRef,
+    load_and_activate, CatalogEntry, HostedPlugin, PluginCatalog, PluginEditorHost, PluginParamInfo,
+    PluginRef,
 };
 use super::DecodedAudio;
 use super::{DawEngine, LoopPlayback};
@@ -54,6 +57,7 @@ enum TrackVoice {
 /// on any add/remove/reorder/bypass change.
 #[derive(Clone)]
 struct FxSlot {
+    device_id: u64,
     plugin: Arc<Mutex<HostedPlugin>>,
     bypassed: bool,
 }
@@ -72,6 +76,21 @@ struct ChannelParams {
     gain: f32,
     pan_l: f32,
     pan_r: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RtAutomationTarget {
+    Instrument { param_id: u32 },
+    Device { device_id: u64, param_id: u32 },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct RtAutomationLane {
+    target: RtAutomationTarget,
+    points: Vec<AutomationPoint>,
+    min: f64,
+    max: f64,
+    step_count: u32,
 }
 
 impl Default for ChannelParams {
@@ -120,6 +139,10 @@ enum AudioCommand {
     RemoveFxChain {
         track_id: u64,
     },
+    SetAutomation {
+        track_id: u64,
+        lanes: Vec<RtAutomationLane>,
+    },
     SetTrackSamples {
         track_id: u64,
         clips: Vec<SamplePlayback>,
@@ -149,6 +172,8 @@ struct AudioCallbackState {
     fx_chains: HashMap<u64, Vec<FxSlot>>,
     /// Per-track audio clip list (already decoded/resampled).
     sample_clips: HashMap<u64, Vec<SamplePlayback>>,
+    /// Per-track block-rate automation lanes for plugin params.
+    automation: HashMap<u64, Vec<RtAutomationLane>>,
     master_gain: f32,
     commands: Receiver<AudioCommand>,
     channels: usize,
@@ -212,6 +237,7 @@ impl AudioCallbackState {
                     self.channel_params.remove(&track_id);
                     self.fx_chains.remove(&track_id);
                     self.sample_clips.remove(&track_id);
+                    self.automation.remove(&track_id);
                 }
                 Ok(AudioCommand::SetChannel {
                     track_id,
@@ -233,6 +259,14 @@ impl AudioCallbackState {
                 }
                 Ok(AudioCommand::RemoveFxChain { track_id }) => {
                     self.fx_chains.remove(&track_id);
+                    self.automation.remove(&track_id);
+                }
+                Ok(AudioCommand::SetAutomation { track_id, lanes }) => {
+                    if lanes.is_empty() {
+                        self.automation.remove(&track_id);
+                    } else {
+                        self.automation.insert(track_id, lanes);
+                    }
                 }
                 Ok(AudioCommand::SetTrackSamples { track_id, clips }) => {
                     self.sample_clips.insert(track_id, clips);
@@ -293,6 +327,95 @@ impl AudioCallbackState {
         }
     }
 
+    fn evaluate_lane_value(points: &[AutomationPoint], beat: f32) -> Option<f64> {
+        if points.is_empty() {
+            return None;
+        }
+        if points.len() == 1 || beat <= points[0].beat {
+            return Some(points[0].value as f64);
+        }
+        if beat >= points[points.len() - 1].beat {
+            return Some(points[points.len() - 1].value as f64);
+        }
+
+        for pair in points.windows(2) {
+            let left = &pair[0];
+            let right = &pair[1];
+            if beat < left.beat || beat > right.beat {
+                continue;
+            }
+            if matches!(left.curve, CurveKind::Hold) || (right.beat - left.beat).abs() <= f32::EPSILON {
+                return Some(left.value as f64);
+            }
+            let t = ((beat - left.beat) / (right.beat - left.beat)).clamp(0.0, 1.0) as f64;
+            let left_v = left.value as f64;
+            let right_v = right.value as f64;
+            return Some(left_v + (right_v - left_v) * t);
+        }
+
+        Some(points[points.len() - 1].value as f64)
+    }
+
+    fn normalized_to_native(normalized: f64, min: f64, max: f64, step_count: u32) -> f64 {
+        let clamped = normalized.clamp(0.0, 1.0);
+        let span = (max - min).max(0.0);
+        let mut native = min + clamped * span;
+        if step_count > 1 {
+            let max_step = (step_count - 1) as f64;
+            let step = (clamped * max_step).round().clamp(0.0, max_step);
+            native = if max_step > 0.0 {
+                min + (step / max_step) * span
+            } else {
+                min
+            };
+        } else if step_count == 1 {
+            native = min;
+        }
+        native
+    }
+
+    fn push_automation_for_instrument(
+        lanes: &[RtAutomationLane],
+        beat: f32,
+        plugin: &mut HostedPlugin,
+    ) {
+        for lane in lanes {
+            let RtAutomationTarget::Instrument { param_id } = lane.target else {
+                continue;
+            };
+            let Some(normalized) = Self::evaluate_lane_value(&lane.points, beat) else {
+                continue;
+            };
+            let native = Self::normalized_to_native(normalized, lane.min, lane.max, lane.step_count);
+            plugin.push_param(param_id, native, 0);
+        }
+    }
+
+    fn push_automation_for_device(
+        lanes: &[RtAutomationLane],
+        beat: f32,
+        device_id: u64,
+        plugin: &mut HostedPlugin,
+    ) {
+        for lane in lanes {
+            let RtAutomationTarget::Device {
+                device_id: lane_device_id,
+                param_id,
+            } = lane.target
+            else {
+                continue;
+            };
+            if lane_device_id != device_id {
+                continue;
+            }
+            let Some(normalized) = Self::evaluate_lane_value(&lane.points, beat) else {
+                continue;
+            };
+            let native = Self::normalized_to_native(normalized, lane.min, lane.max, lane.step_count);
+            plugin.push_param(param_id, native, 0);
+        }
+    }
+
     fn render_stereo(&mut self, frames: usize) {
         if frames == 0 {
             return;
@@ -311,6 +434,12 @@ impl AudioCallbackState {
         let transport = Some(self.transport);
         let default_channel = ChannelParams::default();
         let mut meter_scratch: Vec<(u64, f32, f32)> = Vec::with_capacity(self.voices.len());
+        let block_start_beat = self
+            .transport
+            .song_position_beats
+            .map(|beats| beats as f32)
+            .unwrap_or(0.0);
+        let apply_automation = self.transport.playing;
 
         let track_ids: Vec<u64> = self.voices.keys().copied().collect();
         for track_id in track_ids {
@@ -321,6 +450,7 @@ impl AudioCallbackState {
                 .unwrap_or(default_channel);
             self.tmp_l[..frames].fill(0.0);
             self.tmp_r[..frames].fill(0.0);
+            let lanes = self.automation.get(&track_id).map(Vec::as_slice).unwrap_or(&[]);
 
             match self.voices.get_mut(&track_id) {
                 Some(TrackVoice::Piano(synth)) => {
@@ -332,6 +462,9 @@ impl AudioCallbackState {
                 }
                 Some(TrackVoice::Plugin(plugin)) => {
                     if let Ok(mut guard) = plugin.try_lock() {
+                        if apply_automation {
+                            Self::push_automation_for_instrument(lanes, block_start_beat, &mut guard);
+                        }
                         guard.process_block(
                             frames,
                             transport,
@@ -386,6 +519,14 @@ impl AudioCallbackState {
                         continue;
                     }
                     if let Ok(mut guard) = slot.plugin.try_lock() {
+                        if apply_automation {
+                            Self::push_automation_for_device(
+                                lanes,
+                                block_start_beat,
+                                slot.device_id,
+                                &mut guard,
+                            );
+                        }
                         guard.process_effect(
                             frames,
                             transport,
@@ -525,6 +666,8 @@ pub struct AudioEngine {
     synced_channels: HashMap<u64, (f32, f32)>,
     /// Last master gain_db pushed.
     synced_master_gain_db: Option<f32>,
+    /// Last automation payload sent to the audio thread per track.
+    synced_automation: HashMap<u64, Vec<RtAutomationLane>>,
     /// In-flight background plugin loads (track -> desired instrument).
     pending_loads: HashMap<u64, TrackInstrument>,
     load_tx: Option<SyncSender<VoiceLoadResult>>,
@@ -590,6 +733,7 @@ impl AudioEngine {
                     synced_instruments: HashMap::new(),
                     synced_channels: HashMap::new(),
                     synced_master_gain_db: None,
+                    synced_automation: HashMap::new(),
                     pending_loads: HashMap::new(),
                     load_tx: Some(load_tx),
                     load_rx,
@@ -628,6 +772,7 @@ impl AudioEngine {
                 synced_instruments: HashMap::new(),
                 synced_channels: HashMap::new(),
                 synced_master_gain_db: None,
+                synced_automation: HashMap::new(),
                 pending_loads: HashMap::new(),
                 load_tx: Some(load_tx),
                 load_rx,
@@ -965,6 +1110,116 @@ impl AudioEngine {
         }
         updates
     }
+
+    pub fn plugin_parameters(&self, track_id: u64, device_id: Option<u64>) -> Vec<PluginParamInfo> {
+        let slot = match device_id {
+            None => self.plugin_slots.get(&track_id),
+            Some(device_id) => self.device_slots.get(&(track_id, device_id)),
+        };
+        let Some(slot) = slot else {
+            return Vec::new();
+        };
+        let Ok(guard) = slot.lock() else {
+            return Vec::new();
+        };
+        guard.parameters()
+    }
+
+    fn param_info_for_target(
+        &self,
+        track_id: u64,
+        target: &AutomationTarget,
+    ) -> Option<PluginParamInfo> {
+        let (device_id, param_id) = match target {
+            AutomationTarget::Instrument { param_id } => (None, *param_id),
+            AutomationTarget::Device {
+                device_id,
+                param_id,
+            } => (Some(*device_id), *param_id),
+        };
+        self.plugin_parameters(track_id, device_id)
+            .into_iter()
+            .find(|param| param.id == param_id)
+    }
+
+    pub fn sync_automation(&mut self, project: &Project) {
+        self.flush_pending_cmds();
+
+        let live_ids: HashSet<u64> = project.tracks.iter().map(|track| track.id).collect();
+        let stale: Vec<u64> = self
+            .synced_automation
+            .keys()
+            .copied()
+            .filter(|track_id| !live_ids.contains(track_id))
+            .collect();
+        for track_id in stale {
+            self.synced_automation.remove(&track_id);
+            self.send(AudioCommand::SetAutomation {
+                track_id,
+                lanes: Vec::new(),
+            });
+        }
+
+        for track in &project.tracks {
+            let mut lanes = Vec::new();
+            for lane in &track.automation_lanes {
+                if !lane.enabled {
+                    continue;
+                }
+                let target = match &lane.target {
+                    AutomationTarget::Instrument { param_id } => RtAutomationTarget::Instrument {
+                        param_id: *param_id,
+                    },
+                    AutomationTarget::Device {
+                        device_id,
+                        param_id,
+                    } => RtAutomationTarget::Device {
+                        device_id: *device_id,
+                        param_id: *param_id,
+                    },
+                };
+                let Some(param_info) = self.param_info_for_target(track.id, &lane.target) else {
+                    continue;
+                };
+                if !param_info.automatable {
+                    continue;
+                }
+                let mut points = lane.points.clone();
+                points.sort_by(|a, b| a.beat.total_cmp(&b.beat));
+                if points.is_empty() {
+                    continue;
+                }
+                lanes.push(RtAutomationLane {
+                    target,
+                    points,
+                    min: param_info.min,
+                    max: param_info.max,
+                    step_count: param_info.step_count,
+                });
+            }
+
+            let changed = self
+                .synced_automation
+                .get(&track.id)
+                .map(|prev| prev != &lanes)
+                .unwrap_or(true);
+            if !changed {
+                continue;
+            }
+
+            if lanes.is_empty() {
+                self.synced_automation.remove(&track.id);
+            } else {
+                self.synced_automation.insert(track.id, lanes.clone());
+            }
+            self.send(AudioCommand::SetAutomation {
+                track_id: track.id,
+                lanes,
+            });
+        }
+
+        self.flush_pending_cmds();
+    }
 }
 
 impl DawEngine for AudioEngine {
@@ -1281,6 +1536,7 @@ impl DawEngine for AudioEngine {
                 .filter_map(|device| {
                     let plugin = self.device_slots.get(&(track.id, device.id))?.clone();
                     Some(FxSlot {
+                        device_id: device.id,
                         plugin,
                         bypassed: device.bypassed,
                     })
@@ -1330,6 +1586,7 @@ impl DawEngine for AudioEngine {
         self.device_chain_sig.clear();
         self.device_chain_dirty.clear();
         self.pending_device_loads.clear();
+        self.synced_automation.clear();
     }
 
     fn plugin_slot_ready(&self, target: PluginRef) -> bool {
@@ -1382,6 +1639,10 @@ impl DawEngine for AudioEngine {
 
     fn poll_plugin_editors(&mut self) -> super::EditorPoll {
         self.editor_host.poll()
+    }
+
+    fn plugin_parameters(&self, track_id: u64, device_id: Option<u64>) -> Vec<PluginParamInfo> {
+        AudioEngine::plugin_parameters(self, track_id, device_id)
     }
 
     fn schedule_project(&mut self, project: &Project) {
@@ -1599,6 +1860,7 @@ fn start_stream(
         channel_params: HashMap::new(),
         fx_chains: HashMap::new(),
         sample_clips: HashMap::new(),
+        automation: HashMap::new(),
         master_gain: 1.0,
         commands: rx,
         channels,

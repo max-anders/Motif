@@ -17,7 +17,7 @@ pub use mock::MockEngine;
 #[allow(unused_imports)] // EntryCategory: public catalog surface, consumed once the effect picker lands
 pub use plugins::{
     CatalogEntry, EditorCloseBinding, EditorPoll, EntryCategory, HostX11, PluginCatalog,
-    PluginRef, PLUGIN_CACHE_FILE,
+    PluginParamInfo, PluginRef, PLUGIN_CACHE_FILE,
 };
 pub use sample::{decode_audio_file, DecodedAudio};
 
@@ -152,5 +152,12 @@ pub trait DawEngine {
     /// Poll editor windows / idle callbacks. Returns aggregated outcome.
     fn poll_plugin_editors(&mut self) -> EditorPoll {
         EditorPoll::default()
+    }
+
+    /// Enumerate automatable parameters for a track instrument (`device_id: None`)
+    /// or one insert-FX device.
+    fn plugin_parameters(&self, track_id: u64, device_id: Option<u64>) -> Vec<PluginParamInfo> {
+        let _ = (track_id, device_id);
+        Vec::new()
     }
 }

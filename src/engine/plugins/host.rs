@@ -7,7 +7,7 @@ use truce_rack::core::buffer::{AudioBuffer, BusRange};
 use truce_rack::core::bus::BusLayout;
 use truce_rack::core::editor::{PluginEditor, WindowHandle};
 use truce_rack::core::events::{Event, EventBody, EventList, MidiData, TransportFlag};
-use truce_rack::core::info::{PluginCategory, PluginInfo};
+use truce_rack::core::info::{ParameterFlags, PluginCategory, PluginInfo};
 use truce_rack::core::plugin::{Plugin, PluginCore, ProcessContext};
 use truce_rack::core::scanner::PluginScanner;
 use truce_rack::core::state::{FormatId, StateEnvelope};
@@ -20,6 +20,17 @@ use super::catalog::{CatalogEntry, EntryCategory};
 
 /// Max frames we prepare plugin buffers for (cpal blocks are usually smaller).
 pub const MAX_BLOCK_FRAMES: usize = 8192;
+
+/// Lightweight, host-agnostic parameter metadata exposed to the UI/engine.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PluginParamInfo {
+    pub id: u32,
+    pub name: String,
+    pub min: f64,
+    pub max: f64,
+    pub step_count: u32,
+    pub automatable: bool,
+}
 
 enum PluginInstance {
     Clap(truce_rack::clap::ClapPlugin),
@@ -41,6 +52,56 @@ pub struct HostedPlugin {
 }
 
 impl HostedPlugin {
+    pub fn parameter_count(&self) -> usize {
+        match &self.instance {
+            PluginInstance::Clap(plugin) => plugin.parameter_count(),
+            PluginInstance::Vst3(plugin) => plugin.parameter_count(),
+        }
+    }
+
+    pub fn parameters(&self) -> Vec<PluginParamInfo> {
+        let count = self.parameter_count();
+        let mut out = Vec::with_capacity(count);
+        for index in 0..count {
+            let info = match &self.instance {
+                PluginInstance::Clap(plugin) => plugin.parameter_info(index),
+                PluginInstance::Vst3(plugin) => plugin.parameter_info(index),
+            };
+            let Ok(info) = info else {
+                continue;
+            };
+            out.push(PluginParamInfo {
+                id: info.id,
+                name: info.name,
+                min: info.min,
+                max: info.max,
+                step_count: info.step_count,
+                automatable: info.flags.contains(ParameterFlags::AUTOMATABLE),
+            });
+        }
+        out
+    }
+
+    /// Convert normalized `0..1` automation to this param's native plugin units.
+    pub fn map_normalized_to_native(&self, param_id: u32, normalized_value: f64) -> Option<f64> {
+        let info = self.parameters().into_iter().find(|param| param.id == param_id)?;
+        let clamped = normalized_value.clamp(0.0, 1.0);
+        let span = (info.max - info.min).max(0.0);
+        let mut native = info.min + clamped * span;
+        if info.step_count > 1 {
+            let max_step = (info.step_count - 1) as f64;
+            let step = (clamped * max_step).round().clamp(0.0, max_step);
+            native = if max_step > 0.0 {
+                info.min + (step / max_step) * span
+            } else {
+                info.min
+            };
+        } else if info.step_count == 1 {
+            native = info.min;
+        }
+        Some(native)
+    }
+
     pub fn process_block(
         &mut self,
         frames: usize,
@@ -221,6 +282,18 @@ impl HostedPlugin {
         self.events.push(Event {
             sample_offset: 0,
             body: EventBody::TransportFlag(TransportFlag::PlayStop),
+        });
+    }
+
+    pub fn push_param(&mut self, param_id: u32, native_value: f64, sample_offset: u32) {
+        // truce-rack uses stable ParameterInfo.id here; CLAP consumes native
+        // plugin units (not normalized 0..1) in EventBody::ParamValue.value.
+        self.events.push(Event {
+            sample_offset,
+            body: EventBody::ParamValue {
+                param_id,
+                value: native_value,
+            },
         });
     }
 

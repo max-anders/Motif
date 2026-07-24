@@ -877,6 +877,7 @@ impl DawApp {
         self.sync_instruments();
         self.engine.sync_samples(&self.project, &self.decoded_audio);
         self.engine.sync_channels(&self.project);
+        self.engine.sync_automation(&self.project);
     }
 
     fn undo_edit(&mut self) {
@@ -1523,6 +1524,7 @@ impl eframe::App for DawApp {
         self.sync_instruments();
         self.engine.sync_samples(&self.project, &self.decoded_audio);
         self.engine.sync_channels(&self.project);
+        self.engine.sync_automation(&self.project);
         self.engine.advance(delta_seconds, playback);
         self.engine.schedule_project(&self.project);
         let editor_poll = self.engine.poll_plugin_editors();
