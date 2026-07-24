@@ -4,7 +4,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
-use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
+use std::sync::mpsc::{self, Receiver, Sender, SyncSender, TryRecvError, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -50,6 +50,20 @@ enum TrackVoice {
     Plugin(Arc<Mutex<HostedPlugin>>),
     /// Plugin selected but failed to load/activate — stays silent.
     Silent,
+}
+
+/// A plugin-bearing value retired from the audio callback. Hosted plugins must
+/// never be *dropped* on the real-time audio thread: destroying a CLAP/VST3
+/// plugin runs `terminate()` + native COM release, which is RT-unsafe and (for
+/// VST3) must not happen off the main thread — doing so segfaults. Instead the
+/// callback ships retired voices/chains here and the UI thread drops them.
+///
+/// The variant payloads are never read — they exist solely so their `Drop`
+/// runs on the UI thread when the enum is dropped in `drain_retired`.
+#[allow(dead_code)]
+enum RetiredResource {
+    Voice(TrackVoice),
+    FxChain(Vec<FxSlot>),
 }
 
 /// One insert-FX slot in a track's serial chain (RT-side). Cheap to clone
@@ -186,9 +200,27 @@ struct AudioCallbackState {
     /// Shared with UI: `(track_id, peak_l, peak_r)`.
     track_meters: Arc<Mutex<Vec<(u64, f32, f32)>>>,
     master_meter: Arc<Mutex<(f32, f32)>>,
+    /// Retired plugin voices/chains handed back to the UI thread to drop
+    /// (never destroy a hosted plugin on the RT thread — see [`RetiredResource`]).
+    retire_tx: Sender<RetiredResource>,
 }
 
 impl AudioCallbackState {
+    /// Ship a retired voice to the UI thread for dropping. Piano/Silent voices
+    /// carry no native plugin and are safe to drop here.
+    fn retire_voice(&self, voice: TrackVoice) {
+        if matches!(voice, TrackVoice::Plugin(_)) {
+            let _ = self.retire_tx.send(RetiredResource::Voice(voice));
+        }
+    }
+
+    /// Ship a retired insert-FX chain to the UI thread for dropping.
+    fn retire_chain(&self, chain: Vec<FxSlot>) {
+        if !chain.is_empty() {
+            let _ = self.retire_tx.send(RetiredResource::FxChain(chain));
+        }
+    }
+
     fn process_commands(&mut self) {
         loop {
             match self.commands.try_recv() {
@@ -230,12 +262,18 @@ impl AudioCallbackState {
                     }
                 }
                 Ok(AudioCommand::SetVoice { track_id, voice }) => {
-                    self.voices.insert(track_id, voice);
+                    if let Some(old) = self.voices.insert(track_id, voice) {
+                        self.retire_voice(old);
+                    }
                 }
                 Ok(AudioCommand::RemoveVoice { track_id }) => {
-                    self.voices.remove(&track_id);
+                    if let Some(old) = self.voices.remove(&track_id) {
+                        self.retire_voice(old);
+                    }
                     self.channel_params.remove(&track_id);
-                    self.fx_chains.remove(&track_id);
+                    if let Some(chain) = self.fx_chains.remove(&track_id) {
+                        self.retire_chain(chain);
+                    }
                     self.sample_clips.remove(&track_id);
                     self.automation.remove(&track_id);
                 }
@@ -255,10 +293,14 @@ impl AudioCallbackState {
                     );
                 }
                 Ok(AudioCommand::SetFxChain { track_id, chain }) => {
-                    self.fx_chains.insert(track_id, chain);
+                    if let Some(old) = self.fx_chains.insert(track_id, chain) {
+                        self.retire_chain(old);
+                    }
                 }
                 Ok(AudioCommand::RemoveFxChain { track_id }) => {
-                    self.fx_chains.remove(&track_id);
+                    if let Some(old) = self.fx_chains.remove(&track_id) {
+                        self.retire_chain(old);
+                    }
                     self.automation.remove(&track_id);
                 }
                 Ok(AudioCommand::SetAutomation { track_id, lanes }) => {
@@ -705,6 +747,9 @@ pub struct AudioEngine {
     editor_host: PluginEditorHost,
     track_meters: Arc<Mutex<Vec<(u64, f32, f32)>>>,
     master_meter: Arc<Mutex<(f32, f32)>>,
+    /// Plugin voices/chains retired by the audio callback, drained and dropped
+    /// on the UI thread (never destroy a hosted plugin on the RT thread).
+    retire_rx: Receiver<RetiredResource>,
     /// Kept alive for the lifetime of the engine.
     _stream: Option<Stream>,
     audio_available: bool,
@@ -716,9 +761,10 @@ impl AudioEngine {
     pub fn new(beats_per_second: f32) -> Self {
         let (load_tx, load_rx) = mpsc::sync_channel::<VoiceLoadResult>(8);
         let (device_load_tx, device_load_rx) = mpsc::sync_channel::<DeviceLoadResult>(8);
+        let (retire_tx, retire_rx) = mpsc::channel::<RetiredResource>();
         let track_meters = Arc::new(Mutex::new(Vec::new()));
         let master_meter = Arc::new(Mutex::new((0.0_f32, 0.0_f32)));
-        match start_stream(Arc::clone(&track_meters), Arc::clone(&master_meter)) {
+        match start_stream(Arc::clone(&track_meters), Arc::clone(&master_meter), retire_tx) {
             Ok((stream, tx, sample_rate)) => {
                 let play_error = stream
                     .play()
@@ -760,6 +806,7 @@ impl AudioEngine {
                     editor_host: PluginEditorHost::default(),
                     track_meters,
                     master_meter,
+                    retire_rx,
                     _stream: Some(stream),
                     audio_available,
                     init_error: play_error,
@@ -801,11 +848,20 @@ impl AudioEngine {
                 editor_host: PluginEditorHost::default(),
                 track_meters,
                 master_meter,
+                retire_rx,
                 _stream: None,
                 audio_available: false,
                 init_error: Some(error),
                 metronome_enabled: true,
             },
+        }
+    }
+
+    /// Drop plugin voices/chains retired by the audio callback here on the UI
+    /// thread. Destroying a hosted CLAP/VST3 plugin on the RT thread segfaults.
+    fn drain_retired(&mut self) {
+        while let Ok(resource) = self.retire_rx.try_recv() {
+            drop(resource);
         }
     }
 
@@ -1353,6 +1409,7 @@ impl DawEngine for AudioEngine {
         self.loop_end_beats = project.loop_end_beats;
         self.content_end_beats = project.content_end_beats();
         self.flush_pending_cmds();
+        self.drain_retired();
 
         let mut errors = self.poll_plugin_loads(project);
         let live_ids: HashSet<u64> = project.tracks.iter().map(|t| t.id).collect();
@@ -1862,6 +1919,7 @@ fn find_note(project: &Project, note_id: u64) -> Option<(u64, u8, u8)> {
 fn start_stream(
     track_meters: Arc<Mutex<Vec<(u64, f32, f32)>>>,
     master_meter: Arc<Mutex<(f32, f32)>>,
+    retire_tx: Sender<RetiredResource>,
 ) -> Result<(Stream, SyncSender<AudioCommand>, f32), String> {
     let host = cpal::default_host();
     let device = host
@@ -1895,6 +1953,7 @@ fn start_stream(
         tmp_r: vec![0.0; 4096],
         track_meters,
         master_meter,
+        retire_tx,
     };
 
     let err_fn = |error| eprintln!("Motif audio stream error: {error}");

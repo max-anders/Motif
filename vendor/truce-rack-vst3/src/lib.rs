@@ -521,8 +521,6 @@ pub struct Vst3Plugin {
     layouts: Vec<BusLayout>,
     active_layout: Option<BusLayout>,
 
-    // Hold the module open for the lifetime of the instance.
-    _module: LoadedModule,
     /// Host context handed to `initialize`. Kept alive so a plugin that stored
     /// the context pointer (without its own AddRef) can't dereference freed
     /// memory later.
@@ -553,6 +551,14 @@ pub struct Vst3Plugin {
     /// Shared run-loop registry, cloned into the frame object above.
     #[cfg(target_os = "linux")]
     run_loop: Option<std::sync::Arc<std::sync::Mutex<run_loop::RunLoopState>>>,
+
+    /// Holds the dylib mapped for the instance's lifetime. MUST be the last
+    /// field: Rust drops fields in declaration order, and every COM pointer
+    /// above calls back into this module's code on `release()`. Dropping the
+    /// module first `dlclose`s the `.so`, so a later `release()` would jump
+    /// into unmapped memory (SEGV). Keep `_module` last so it unloads only
+    /// after all COM pointers are released.
+    _module: LoadedModule,
 }
 
 /// Minimal `IHostApplication` handed to every plugin as its `initialize`

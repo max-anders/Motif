@@ -47,6 +47,26 @@ LSP-Plugins segfaults (`SEGV_MAPERR`) deep inside `lsp-plugins.so` during
 
 This is cross-platform (not Linux-gated).
 
+## Third patch: `_module` must drop after the COM pointers
+
+Upstream declares `_module: LoadedModule` (the `dlopen` handle) *before* the
+COM smart pointers (`component`, `processor`, `controller`, `view`, ...). Rust
+drops struct fields in declaration order, so on drop the module was `dlclose`d
+first, then each `ComPtr::release()` jumped into the now-unmapped plugin `.so`
+and crashed with `SEGV_MAPERR` (frame: `IComponent::release` ->
+`FUnknown_release`). This stayed latent until the host-context fix above let
+VST3 plugins load (and therefore drop) successfully.
+
+- Moved `_module` to be the **last** field of `Vst3Plugin` so the dylib unloads
+  only after every COM pointer has been released.
+- The explicit `Drop for Vst3Plugin` (terminate/release) is unaffected: it runs
+  before any field drops, while the module is still mapped.
+- CLAP (`truce-rack-clap`) is not affected: its `plugin` is a raw pointer with
+  no drop glue and is destroyed explicitly in `Drop::drop` before the library
+  field unloads.
+
+This is cross-platform (not Linux-gated).
+
 ## Re-syncing after an upstream bump
 
 If upstream adds real run-loop support, drop this vendored copy and the
