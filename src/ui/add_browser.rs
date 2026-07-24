@@ -153,12 +153,14 @@ impl AddBrowserUi {
             BrowserTab::Instruments => {
                 ui.label("Create a new track with the selected instrument.");
                 ui.add_space(4.0);
+                let list_height = ui.available_height();
                 if let Some(choice) = show_instrument_picker(
                     ui,
                     catalog,
                     &mut self.instrument_search,
                     "add_browser_inst",
                     focus,
+                    list_height,
                 ) {
                     action = Some(AddBrowserAction::CreateTrack(choice));
                 }
@@ -166,12 +168,14 @@ impl AddBrowserUi {
             BrowserTab::Fx => {
                 ui.label("Add an insert effect to the selected track.");
                 ui.add_space(4.0);
+                let list_height = ui.available_height();
                 if let Some(entry) = show_effect_picker(
                     ui,
                     catalog,
                     &mut self.effect_search,
                     "add_browser_fx",
                     focus,
+                    list_height,
                 ) {
                     action = Some(AddBrowserAction::AddEffect(entry));
                 }
@@ -232,6 +236,7 @@ impl AddBrowserUi {
         ui.strong("Recent samples");
         ui.add_space(4.0);
 
+        let list_height = ui.available_height();
         if filtered.is_empty() {
             if recent_samples.is_empty() {
                 ui.weak("No recent samples yet. Use Browse... to import a file.");
@@ -241,7 +246,8 @@ impl AddBrowserUi {
         } else {
             egui::ScrollArea::vertical()
                 .id_salt("add_browser_sample_list")
-                .max_height(280.0)
+                .max_height(list_height)
+                .auto_shrink([false, false])
                 .show(ui, |ui| {
                     for path in filtered {
                         let label = sample_label(path);

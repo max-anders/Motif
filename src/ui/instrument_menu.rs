@@ -5,6 +5,9 @@ use egui::Ui;
 use crate::engine::{CatalogEntry, PluginCatalog};
 use crate::model::TrackInstrument;
 
+/// Default list height for compact egui menus (Add track / + Add FX).
+pub const MENU_LIST_MAX_HEIGHT: f32 = 240.0;
+
 #[derive(Debug, Clone)]
 pub enum InstrumentChoice {
     BuiltInPiano,
@@ -20,6 +23,7 @@ pub fn show_instrument_picker(
     search: &mut String,
     id_salt: &str,
     focus_search: bool,
+    list_max_height: f32,
 ) -> Option<InstrumentChoice> {
     let mut choice = None;
 
@@ -49,9 +53,12 @@ pub fn show_instrument_picker(
     if catalog.instrument_count() == 0 {
         ui.label("No scanned instruments. Open Settings -> Plugin Manager and Rescan.");
     } else {
+        // Cap to remaining space so a tall browser budget does not overflow after chrome.
+        let height = list_max_height.min(ui.available_height());
         egui::ScrollArea::vertical()
             .id_salt(format!("{id_salt}_list"))
-            .max_height(240.0)
+            .max_height(height)
+            .auto_shrink([false, false])
             .show(ui, |ui| {
                 for entry in catalog.filtered(search) {
                     let label = format!(
@@ -84,7 +91,7 @@ pub fn track_name_for_choice(choice: &InstrumentChoice, fallback_number: usize) 
     }
 }
 
-/// Searchable list of insert-FX candidates (effects only — no built-in entry).
+/// Searchable list of insert-FX candidates (effects only - no built-in entry).
 /// Returns the chosen catalog entry when the user picks one.
 /// When `focus_search` is true, the search field requests keyboard focus.
 pub fn show_effect_picker(
@@ -93,6 +100,7 @@ pub fn show_effect_picker(
     search: &mut String,
     id_salt: &str,
     focus_search: bool,
+    list_max_height: f32,
 ) -> Option<CatalogEntry> {
     let mut choice = None;
 
@@ -113,9 +121,12 @@ pub fn show_effect_picker(
     if catalog.effect_count() == 0 {
         ui.label("No scanned effects. Open Settings -> Plugin Manager and Rescan.");
     } else {
+        // Cap to remaining space so a tall browser budget does not overflow after chrome.
+        let height = list_max_height.min(ui.available_height());
         egui::ScrollArea::vertical()
             .id_salt(format!("{id_salt}_list"))
-            .max_height(240.0)
+            .max_height(height)
+            .auto_shrink([false, false])
             .show(ui, |ui| {
                 for entry in catalog.filtered_effects(search) {
                     let label = format!(

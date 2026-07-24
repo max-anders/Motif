@@ -9,6 +9,7 @@ use crate::engine::{DawEngine, DecodedAudio, PluginCatalog, PluginRef};
 use crate::model::{Device, EditHistory, Project, Track};
 use crate::ui::instrument_menu::{
     choice_to_instrument, show_effect_picker, show_instrument_picker, InstrumentChoice,
+    MENU_LIST_MAX_HEIGHT,
 };
 use crate::ui::playlist::{
     draw_lane_timeline, draw_marquee, handle_single_track_clip_pointer, ms_toggle_button,
@@ -692,6 +693,7 @@ fn instrument_tile(
             change_instrument_search,
             &format!("devfx_chg_{track_id}"),
             false,
+            MENU_LIST_MAX_HEIGHT,
         ) {
             let rename = match &choice {
                 InstrumentChoice::Plugin(entry) => Some(entry.name.clone()),
@@ -813,6 +815,7 @@ fn add_fx_tile(
                 add_fx_search,
                 &format!("devfx_add_{track_id}"),
                 false,
+                MENU_LIST_MAX_HEIGHT,
             )
         {
             project.add_device(track_id, entry.format, &entry.unique_id, &entry.name);

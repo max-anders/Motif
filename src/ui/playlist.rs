@@ -11,6 +11,7 @@ use crate::model::{
 };
 use crate::ui::instrument_menu::{
     choice_to_instrument, show_instrument_picker, track_name_for_choice, InstrumentChoice,
+    MENU_LIST_MAX_HEIGHT,
 };
 use crate::ui::theme::ThemeColors;
 use crate::ui::timeline::{
@@ -201,6 +202,7 @@ impl PlaylistUi {
                         &mut self.add_track_search,
                         "add_track",
                         false,
+                        MENU_LIST_MAX_HEIGHT,
                     )
                 {
                     let number = project.tracks.len() + 1;
@@ -608,6 +610,7 @@ pub(crate) fn track_header_row(
             change_instrument_search,
             &format!("chg_{track_id}"),
             false,
+            MENU_LIST_MAX_HEIGHT,
         ) {
             let rename = match &choice {
                 InstrumentChoice::Plugin(entry) => Some(entry.name.clone()),
