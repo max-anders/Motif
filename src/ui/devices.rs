@@ -634,23 +634,41 @@ impl DevicesUi {
             let editor_open = engine.plugin_editor_is_open(PluginRef::device(track.id, device.id));
             let slot_ready = engine.plugin_slot_ready(PluginRef::device(track.id, device.id));
 
+            // Drag handle only -- wrapping the whole tile in `dnd_drag_source` overlays
+            // Sense::drag + Grab cursor on Edit/Byp/x and steals their clicks.
             let payload = (track.id, index);
-            let tile_id = Id::new(("device_tile", track.id, device.id));
-            let mut action = DeviceTileAction::None;
-            let drag_result = ui.dnd_drag_source(tile_id, payload, |ui| {
-                action = device_tile_contents(ui, device, status, editor_open, slot_ready, theme);
-            });
-            let response = drag_result.response;
+            let drag_id = Id::new(("device_tile_drag", track.id, device.id));
+            let (tile_response, action) = device_tile_contents(
+                ui,
+                device,
+                status,
+                editor_open,
+                slot_ready,
+                theme,
+                drag_id,
+                payload,
+            );
 
             if let Some(pointer) = ui.input(|input| input.pointer.interact_pos()) {
-                if let Some(hovered) = response.dnd_hover_payload::<(u64, usize)>() {
+                if let Some(hovered) = tile_response.dnd_hover_payload::<(u64, usize)>() {
                     if hovered.0 == track.id {
-                        let insert_idx = if pointer.x < response.rect.center().x {
+                        let insert_idx = if pointer.x < tile_response.rect.center().x {
                             index
                         } else {
                             index + 1
                         };
-                        if let Some(released) = response.dnd_release_payload::<(u64, usize)>() {
+                        // Light insert cue while reordering.
+                        let x = if insert_idx == index {
+                            tile_response.rect.left()
+                        } else {
+                            tile_response.rect.right()
+                        };
+                        ui.painter().vline(
+                            x,
+                            tile_response.rect.y_range(),
+                            Stroke::new(2.0, theme.accent),
+                        );
+                        if let Some(released) = tile_response.dnd_release_payload::<(u64, usize)>() {
                             if released.0 == track.id {
                                 drag_from = Some(released.1);
                                 drag_to = Some(insert_idx);
@@ -816,10 +834,8 @@ fn device_tile_shell(
     stroke: egui::Color32,
     id_salt: impl std::hash::Hash,
 ) -> (egui::Response, Ui) {
-    let (rect, response) = ui.allocate_exact_size(
-        Vec2::new(TILE_WIDTH, TILE_HEIGHT),
-        Sense::click_and_drag(),
-    );
+    // Hover is enough for drop-target `contains_pointer`; drag lives on the grip only.
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(TILE_WIDTH, TILE_HEIGHT), Sense::hover());
     ui.painter().rect_filled(rect, TILE_ROUNDING, fill);
     ui.painter().rect_stroke(
         rect,
@@ -848,25 +864,45 @@ fn device_tile_contents(
     editor_open: bool,
     slot_ready: bool,
     theme: &ThemeColors,
-) -> DeviceTileAction {
+    drag_id: Id,
+    drag_payload: (u64, usize),
+) -> (egui::Response, DeviceTileAction) {
     let mut action = DeviceTileAction::None;
     let fill = if device.bypassed {
         theme.widget_bg
     } else {
         theme.widget_bg_active
     };
-    let (_, mut tile_ui) = device_tile_shell(
+    let (tile_response, mut tile_ui) = device_tile_shell(
         ui,
         fill,
         theme.separator,
         ("device_tile", device.id),
     );
-    tile_ui.label(
-        RichText::new(truncate_label(&device.name, 16))
-            .color(theme.track_header_text)
-            .strong()
-            .small(),
-    );
+    tile_ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        ui.label(
+            RichText::new(truncate_label(&device.name, 14))
+                .color(theme.track_header_text)
+                .strong()
+                .small(),
+        );
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            // Narrow grip only: whole-tile dnd overlays Grab and steals Edit clicks.
+            ui.dnd_drag_source(drag_id, drag_payload, |ui| {
+                ui.add(
+                    egui::Label::new(
+                        RichText::new("::")
+                            .color(theme.text_muted)
+                            .monospace()
+                            .small(),
+                    )
+                    .sense(Sense::hover()),
+                )
+                .on_hover_text("Drag to reorder");
+            });
+        });
+    });
     tile_ui.label(
         RichText::new(device.format_badge())
             .color(theme.text_muted)
@@ -919,7 +955,7 @@ fn device_tile_contents(
             }
         });
     });
-    action
+    (tile_response, action)
 }
 
 fn add_fx_tile(

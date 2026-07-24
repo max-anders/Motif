@@ -22,7 +22,7 @@ const RESIZE_HANDLE_PX: f32 = 12.0;
 
 /// Fraction of the viewport width the clip fills at maximum zoom-out. The rest
 /// becomes symmetric empty "outside" margin on both sides of the clip.
-const MIN_CLIP_VIEW_FILL: f32 = 0.82;
+const MIN_CLIP_VIEW_FILL: f32 = 0.90;
 /// Max zoom-in for a clip expressed as how many viewport widths the whole clip may
 /// span. Short clips get a proportionally larger px/beat ceiling so notes can be
 /// enlarged; long clips fall back to the flat `MAX_BEAT_WIDTH`.
@@ -107,6 +107,9 @@ pub struct PianoRollUi {
     /// frame (excludes the always-visible vertical scrollbar). Zoom-out fit and
     /// edge-snap math use this real width so the scrollbar reaches its extremes.
     grid_view_w: f32,
+    /// When set, the next `show` applies the zoom-out floor (whole clip in view
+    /// with breathing room) and resets horizontal scroll. Cleared after apply.
+    pending_fit_horizontal: bool,
 }
 
 impl PianoRollUi {
@@ -116,6 +119,11 @@ impl PianoRollUi {
 
     pub fn clear_selection(&mut self) {
         self.selected_note_ids.clear();
+    }
+
+    /// Fit the next paint to the clip zoom-out floor (used when opening from playlist).
+    pub fn request_fit_horizontal(&mut self) {
+        self.pending_fit_horizontal = true;
     }
 
     pub fn set_selection(&mut self, note_ids: impl IntoIterator<Item = u64>) {
@@ -167,6 +175,7 @@ impl Default for PianoRollUi {
             key_height: DEFAULT_KEY_HEIGHT,
             scroll_offset: Vec2::new(0.0, initial_scroll_y),
             grid_view_w: 0.0,
+            pending_fit_horizontal: false,
         }
     }
 }
@@ -239,8 +248,16 @@ impl PianoRollUi {
         let min_beat_width = (fit_beat_width * MIN_CLIP_VIEW_FILL)
             .max(MIN_BEAT_WIDTH)
             .min(max_beat_width);
-        // Re-fit on window resize / clip switch, not just on wheel input.
-        self.beat_width = self.beat_width.clamp(min_beat_width, max_beat_width);
+        if self.pending_fit_horizontal {
+            // Opening from playlist/devices: land at the zoom-out floor so the
+            // whole clip is visible with Bitwig-style breathing room.
+            self.beat_width = min_beat_width;
+            self.scroll_offset.x = 0.0;
+            self.pending_fit_horizontal = false;
+        } else {
+            // Re-fit on window resize / clip length change, not just on wheel.
+            self.beat_width = self.beat_width.clamp(min_beat_width, max_beat_width);
+        }
 
         let did_h_zoom = apply_piano_roll_wheel_controls(
             ui,
@@ -405,18 +422,50 @@ impl PianoRollUi {
                 &mut self.audition_until,
             );
 
-        let playhead_handled = !gesture_active
-            && !keyboard_handled
-            && handle_timeline_playhead_pointer(
-                &ruler_response,
-                ruler_ref,
-                beat_grid,
-                metrics.timeline(),
-                engine,
-                &mut self.dragging_playhead,
-                clip_start,
-                false,
-            );
+        // Ruler and grid are separate interact regions (side-by-side layout), so
+        // playhead scrubbing must consult both. Playlist uses one shared response.
+        // seek_on_body_secondary=false: empty-grid secondary *click* seeks in
+        // handle_pointer (and deletes a note if hit); secondary *drag* still scrubs.
+        let playhead_handled = !gesture_active && !keyboard_handled && {
+            if self.dragging_playhead {
+                // Continue on whichever region still owns the pointer.
+                let active = if response.interact_pointer_pos().is_some() {
+                    &response
+                } else {
+                    &ruler_response
+                };
+                handle_timeline_playhead_pointer(
+                    active,
+                    ruler_ref,
+                    beat_grid,
+                    metrics.timeline(),
+                    engine,
+                    &mut self.dragging_playhead,
+                    clip_start,
+                    false,
+                )
+            } else {
+                handle_timeline_playhead_pointer(
+                    &ruler_response,
+                    ruler_ref,
+                    beat_grid,
+                    metrics.timeline(),
+                    engine,
+                    &mut self.dragging_playhead,
+                    clip_start,
+                    false,
+                ) || handle_timeline_playhead_pointer(
+                    &response,
+                    ruler_ref,
+                    beat_grid,
+                    metrics.timeline(),
+                    engine,
+                    &mut self.dragging_playhead,
+                    clip_start,
+                    false,
+                )
+            }
+        };
 
         if gesture_active || (!keyboard_handled && !playhead_handled) {
             handle_pointer(

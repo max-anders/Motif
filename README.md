@@ -102,7 +102,7 @@ cargo run --release
 - **Left-click empty lane** - create a MIDI clip (4 beats)
 - **Drag empty lane** - marquee multi-select
 - **Left-click clip** - select clip
-- **Double-click clip** - open piano roll for that clip
+- **Double-click clip** - open piano roll for that clip (zoomed out to fit the clip)
 - **Audio clips** - do not open piano roll (arrangement-only clips)
 - **Ctrl/Cmd + left-click clip** - toggle multi-select
 - **Drag clip body** - move selected clip(s) on timeline (same-track clips cannot overlap)
@@ -124,7 +124,7 @@ cargo run --release
 - **Ctrl/Cmd+Shift+E** - open/close plugin editor for the selected track (remappable)
 - **Shift+Q** - close a focused plugin editor window (remappable; default)
 - **Left-click / drag ruler** - move playhead (snapped to 1/16)
-- **Shift + left-click** or **right-click empty timeline** - move playhead
+- **Shift + left-click**, **right-click empty timeline**, or **right-click drag** on the timeline - move playhead
 - **Wheel** - scroll; **Shift+Wheel** - horizontal scroll; **Ctrl/Cmd+Wheel** - zoom time
 - **Scrollbars** - always-visible solid bars (drag to scroll)
 - Track headers stay pinned on the left while the timeline scrolls horizontally (vertical scroll stays synced); the beat ruler stays pinned to the top
@@ -132,6 +132,7 @@ cargo run --release
 ### Piano roll (clip editor)
 
 - **Back to playlist** or **Escape** - return to arrangement
+- **Open from playlist** - horizontal zoom starts at the zoom-out floor (whole clip in view); wheel zoom afterward as usual
 - **Left-click empty grid** - add a note (1 beat, snapped to 1/16)
 - **Left-click note** - select note
 - **Ctrl/Cmd+A** - select all notes in the clip (remappable)
@@ -144,7 +145,7 @@ cargo run --release
 - **Drag left/right edge** - resize note
 - **Press / drag piano keys** - audition pitches (active track instrument)
 - **Left-click / drag ruler** - move playhead (mapped to arrangement time)
-- **Shift + left-click** or **right-click empty grid** - move playhead
+- **Shift + left-click**, **right-click empty grid**, or **right-click drag** on the grid - move playhead (right-click on a note still deletes)
 - **Delete / Backspace** - remove selected note(s)
 - **Ctrl/Cmd+C** - copy selected note(s)
 - **Ctrl/Cmd+X** - cut selected note(s)

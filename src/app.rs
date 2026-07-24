@@ -1205,6 +1205,7 @@ impl DawApp {
     fn open_clip(&mut self, clip_id: u64) {
         if self.project.midi_clip(clip_id).is_some() {
             self.piano_roll.clear_selection();
+            self.piano_roll.request_fit_horizontal();
             self.center_view = CenterView::PianoRoll { clip_id };
         }
     }
