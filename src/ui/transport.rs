@@ -117,7 +117,10 @@ impl TransportUi {
             let mut loop_enabled = project.loop_enabled;
             if ui
                 .toggle_value(&mut loop_enabled, "Loop")
-                .on_hover_text("Cycle playback inside the loop region. Off = play through to the end.")
+                .on_hover_text(
+                    "Cycle playback inside the loop region. Off = play through to the end. \
+                     Shortcut: L (remappable in Settings).",
+                )
                 .changed()
             {
                 project.loop_enabled = loop_enabled;

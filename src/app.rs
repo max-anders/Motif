@@ -1447,6 +1447,9 @@ impl DawApp {
         }
         match action {
             Action::TogglePlayback => self.engine.toggle_playback(),
+            Action::ToggleLoop => {
+                self.project.loop_enabled = !self.project.loop_enabled;
+            }
             Action::DeleteSelection => match self.center_view {
                 CenterView::Playlist => self.delete_selected_clips(),
                 CenterView::PianoRoll { .. } => self.delete_selected_notes(),

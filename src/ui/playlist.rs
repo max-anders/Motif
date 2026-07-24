@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use egui::{Pos2, Rect, Response, Sense, Ui, Vec2};
+use egui::{Pos2, Rect, Response, Sense, Ui, UiBuilder, Vec2};
 
 use crate::engine::{DawEngine, DecodedAudio, PluginCatalog, PluginRef};
 use crate::model::{
@@ -24,6 +24,7 @@ use crate::ui::timeline::{
 
 pub(crate) const TRACK_HEADER_WIDTH: f32 = TIMELINE_GUTTER_WIDTH;
 pub(crate) const LANE_HEIGHT: f32 = 72.0;
+const ADD_TRACK_ROW_HEIGHT: f32 = 28.0;
 const RESIZE_HANDLE_PX: f32 = 10.0;
 const MS_BUTTON_SIZE: f32 = 18.0;
 
@@ -198,22 +199,15 @@ impl PlaylistUi {
 
         ui.horizontal(|ui| {
             egui::menu::menu_button(ui, "Add track", |ui| {
-                if let Some(choice) =
-                    show_instrument_picker(
-                        ui,
-                        catalog,
-                        &mut self.add_track_search,
-                        "add_track",
-                        false,
-                        MENU_LIST_MAX_HEIGHT,
-                    )
-                {
-                    let number = project.tracks.len() + 1;
-                    let name = track_name_for_choice(&choice, number);
-                    let instrument = choice_to_instrument(choice);
-                    history.push_before(project.clone());
-                    project.add_track(&name, instrument);
-                    self.add_track_search.clear();
+                if add_track_from_picker(
+                    ui,
+                    project,
+                    catalog,
+                    history,
+                    selected_track,
+                    &mut self.add_track_search,
+                    "add_track",
+                ) {
                     ui.close_menu();
                 }
             });
@@ -246,7 +240,8 @@ impl PlaylistUi {
         };
         let total_beats = project.arrangement_length_beats();
         let lane_count = project.tracks.len().max(1);
-        let content_height = RULER_HEIGHT + lane_count as f32 * LANE_HEIGHT;
+        let content_height =
+            RULER_HEIGHT + lane_count as f32 * LANE_HEIGHT + ADD_TRACK_ROW_HEIGHT;
         let content_width = TRACK_HEADER_WIDTH + total_beats * metrics.beat_width;
         let viewport = ui.available_size();
         let canvas_size = Vec2::new(
@@ -476,6 +471,47 @@ impl PlaylistUi {
                             "playlist",
                         );
                     }
+
+                    // Little "+" under the last lane (header column) to create a track.
+                    let add_row_top = body.top() + lane_count as f32 * LANE_HEIGHT;
+                    let add_header = Rect::from_min_max(
+                        Pos2::new(sticky_headers.left(), add_row_top),
+                        Pos2::new(
+                            sticky_headers.right(),
+                            add_row_top + ADD_TRACK_ROW_HEIGHT,
+                        ),
+                    );
+                    ui.painter()
+                        .with_clip_rect(sticky_headers)
+                        .rect_filled(add_header, 0.0, theme.track_header_bg);
+                    ui.allocate_new_ui(UiBuilder::new().max_rect(add_header), |ui| {
+                        ui.with_layout(
+                            egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
+                            |ui| {
+                                egui::menu::menu_button(
+                                    ui,
+                                    egui::RichText::new("+")
+                                        .size(16.0)
+                                        .color(theme.text_muted),
+                                    |ui| {
+                                        if add_track_from_picker(
+                                            ui,
+                                            project,
+                                            catalog,
+                                            history,
+                                            selected_track,
+                                            &mut self.add_track_search,
+                                            "add_track_lane",
+                                        ) {
+                                            ui.close_menu();
+                                        }
+                                    },
+                                )
+                                .response
+                                .on_hover_text("Add track");
+                            },
+                        );
+                    });
                 })
         });
 
@@ -488,6 +524,36 @@ impl PlaylistUi {
             self.drag_moved = false;
         }
     }
+}
+
+/// Instrument picker that creates a track; returns true when a choice was made.
+fn add_track_from_picker(
+    ui: &mut Ui,
+    project: &mut Project,
+    catalog: &PluginCatalog,
+    history: &mut EditHistory,
+    selected_track: &mut Option<u64>,
+    search: &mut String,
+    id_salt: &str,
+) -> bool {
+    let Some(choice) = show_instrument_picker(
+        ui,
+        catalog,
+        search,
+        id_salt,
+        false,
+        MENU_LIST_MAX_HEIGHT,
+    ) else {
+        return false;
+    };
+    let number = project.tracks.len() + 1;
+    let name = track_name_for_choice(&choice, number);
+    let instrument = choice_to_instrument(choice);
+    history.push_before(project.clone());
+    let track_id = project.add_track(&name, instrument);
+    *selected_track = Some(track_id);
+    search.clear();
+    true
 }
 
 pub(crate) fn ms_toggle_button(ui: &mut Ui, label: &str, active: bool, theme: &ThemeColors) -> bool {

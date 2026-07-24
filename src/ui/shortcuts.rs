@@ -13,6 +13,8 @@ pub const SETTINGS_FILE: &str = "settings.json";
 #[serde(rename_all = "snake_case")]
 pub enum Action {
     TogglePlayback,
+    /// Toggle cycle/loop playback on the current loop region.
+    ToggleLoop,
     DeleteSelection,
     /// Delete the track under the pointer (track header hover).
     DeleteTrack,
@@ -59,6 +61,7 @@ impl<'de> Deserialize<'de> for Action {
         let raw = String::deserialize(deserializer)?;
         match raw.as_str() {
             "toggle_playback" => Ok(Self::TogglePlayback),
+            "toggle_loop" => Ok(Self::ToggleLoop),
             "delete_selection" => Ok(Self::DeleteSelection),
             "delete_track" => Ok(Self::DeleteTrack),
             "copy_selection" => Ok(Self::CopySelection),
@@ -85,6 +88,7 @@ impl<'de> Deserialize<'de> for Action {
                 other,
                 &[
                     "toggle_playback",
+                    "toggle_loop",
                     "delete_selection",
                     "delete_track",
                     "copy_selection",
@@ -115,8 +119,9 @@ impl<'de> Deserialize<'de> for Action {
 
 impl Action {
     /// All actions in Settings / docs order (includes actions with no factory binding).
-    pub const ALL: [Self; 23] = [
+    pub const ALL: [Self; 24] = [
         Self::TogglePlayback,
+        Self::ToggleLoop,
         Self::DeleteSelection,
         Self::DeleteTrack,
         Self::CopySelection,
@@ -144,6 +149,7 @@ impl Action {
     pub fn label(self) -> &'static str {
         match self {
             Self::TogglePlayback => "Play / Pause",
+            Self::ToggleLoop => "Loop",
             Self::DeleteSelection => "Delete selection",
             Self::DeleteTrack => "Delete track",
             Self::CopySelection => "Copy selection",
@@ -335,6 +341,7 @@ impl ShortcutRegistry {
         Self {
             bindings: vec![
                 (Action::TogglePlayback, Binding::Key(Chord::new(Key::Space))),
+                (Action::ToggleLoop, Binding::Key(Chord::new(Key::L))),
                 (
                     Action::DeleteSelection,
                     Binding::Key(Chord::new(Key::Delete)),
