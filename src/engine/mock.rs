@@ -93,4 +93,13 @@ impl DawEngine for MockEngine {
     fn invalidate_instruments(&mut self) {}
 
     fn schedule_project(&mut self, _project: &Project) {}
+
+    fn open_plugin_editor(
+        &mut self,
+        _track_id: u64,
+        _title: &str,
+        _host_x11: Option<super::plugins::HostX11>,
+    ) -> Result<(), String> {
+        Err(String::from("MockEngine has no plugins"))
+    }
 }

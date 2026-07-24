@@ -22,6 +22,9 @@ pub struct CatalogEntry {
     pub format: PluginFormat,
     pub path: PathBuf,
     pub accepts_midi: bool,
+    /// Scanner-reported custom editor; confirm after load via the instance.
+    #[serde(default)]
+    pub has_editor: bool,
 }
 
 impl CatalogEntry {
@@ -144,6 +147,15 @@ impl PluginCatalog {
                 errors.push(format!("Missing path: {}", path.display()));
                 continue;
             }
+            // yabridge chainloaders abort the host process on failed Wine bridge —
+            // never dlopen them from Motif (in-process).
+            if is_yabridge_path(path) {
+                errors.push(format!(
+                    "Skipped yabridge path {} (Windows VST3 bridge cannot be scanned/loaded in-process; use a native Linux CLAP/VST3)",
+                    path.display()
+                ));
+                continue;
+            }
             match scan_clap_instruments(&[path.clone()]) {
                 Ok(mut found) => entries.append(&mut found),
                 Err(error) => errors.push(format!("CLAP {}: {error}", path.display())),
@@ -179,8 +191,24 @@ fn now_unix() -> u64 {
         .unwrap_or(0)
 }
 
-fn is_instrument(category: PluginCategory, _accepts_midi: bool) -> bool {
-    matches!(category, PluginCategory::Instrument)
+fn is_yabridge_path(path: &Path) -> bool {
+    path.components().any(|c| {
+        c.as_os_str()
+            .to_str()
+            .is_some_and(|s| s.eq_ignore_ascii_case("yabridge"))
+    })
+}
+
+fn keep_catalog_candidate(format: PluginFormat, category: PluginCategory, accepts_midi: bool) -> bool {
+    match format {
+        // truce-rack currently tags every VST3 as Effect; keep MIDI-capable modules.
+        PluginFormat::Vst3 => {
+            matches!(category, PluginCategory::Instrument)
+                || accepts_midi
+                || matches!(category, PluginCategory::Effect)
+        }
+        PluginFormat::Clap => matches!(category, PluginCategory::Instrument),
+    }
 }
 
 fn scan_clap_instruments(extra_only: &[PathBuf]) -> Result<Vec<CatalogEntry>, String> {
@@ -190,15 +218,21 @@ fn scan_clap_instruments(extra_only: &[PathBuf]) -> Result<Vec<CatalogEntry>, St
     } else {
         let mut all = Vec::new();
         for path in extra_only {
+            if is_yabridge_path(path) {
+                continue;
+            }
             all.extend(scanner.scan_path(path).map_err(|e| e.to_string())?);
         }
         all
     };
     Ok(infos
         .into_iter()
-        .filter(|info| is_instrument(info.category, info.accepts_midi))
+        .filter(|info| !is_yabridge_path(&info.path))
         .filter_map(|info| {
             let format = PluginFormat::from_rack_format(info.format)?;
+            if !keep_catalog_candidate(format, info.category, info.accepts_midi) {
+                return None;
+            }
             Some(CatalogEntry {
                 name: info.name,
                 vendor: info.vendor,
@@ -206,6 +240,7 @@ fn scan_clap_instruments(extra_only: &[PathBuf]) -> Result<Vec<CatalogEntry>, St
                 format,
                 path: info.path,
                 accepts_midi: info.accepts_midi,
+                has_editor: info.has_editor,
             })
         })
         .collect())
@@ -218,15 +253,21 @@ fn scan_vst3_instruments(extra_only: &[PathBuf]) -> Result<Vec<CatalogEntry>, St
     } else {
         let mut all = Vec::new();
         for path in extra_only {
+            if is_yabridge_path(path) {
+                continue;
+            }
             all.extend(scanner.scan_path(path).map_err(|e| e.to_string())?);
         }
         all
     };
     Ok(infos
         .into_iter()
-        .filter(|info| is_instrument(info.category, info.accepts_midi))
+        .filter(|info| !is_yabridge_path(&info.path))
         .filter_map(|info| {
             let format = PluginFormat::from_rack_format(info.format)?;
+            if !keep_catalog_candidate(format, info.category, info.accepts_midi) {
+                return None;
+            }
             Some(CatalogEntry {
                 name: info.name,
                 vendor: info.vendor,
@@ -234,6 +275,7 @@ fn scan_vst3_instruments(extra_only: &[PathBuf]) -> Result<Vec<CatalogEntry>, St
                 format,
                 path: info.path,
                 accepts_midi: info.accepts_midi,
+                has_editor: info.has_editor,
             })
         })
         .collect())

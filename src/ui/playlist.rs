@@ -3,7 +3,9 @@ use std::collections::{HashMap, HashSet};
 use egui::{Pos2, Rect, Response, Sense, Ui, Vec2};
 
 use crate::engine::{DawEngine, PluginCatalog};
-use crate::model::{MidiClip, Project, SNAP_BEATS, DEFAULT_CLIP_LENGTH_BEATS, MAX_PITCH, MIN_PITCH};
+use crate::model::{
+    MidiClip, Project, TrackInstrument, SNAP_BEATS, DEFAULT_CLIP_LENGTH_BEATS, MAX_PITCH, MIN_PITCH,
+};
 use crate::ui::instrument_menu::{
     choice_to_instrument, show_instrument_picker, track_name_for_choice, InstrumentChoice,
 };
@@ -42,6 +44,12 @@ struct ClipDrag {
     originals: Vec<ClipOriginal>,
 }
 
+#[derive(Debug, Clone)]
+pub enum PluginEditorRequest {
+    Open { track_id: u64, title: String },
+    Close { track_id: u64 },
+}
+
 pub struct PlaylistUi {
     selected_clip_ids: HashSet<u64>,
     active_drag: Option<ClipDrag>,
@@ -50,6 +58,8 @@ pub struct PlaylistUi {
     scroll_offset: Vec2,
     /// Set when user clicks a clip without dragging (consumed by app).
     open_clip_request: Option<u64>,
+    /// Open/close native plugin editor (consumed by app).
+    plugin_editor_request: Option<PluginEditorRequest>,
     /// True if pointer moved enough during drag to count as a drag, not a click.
     drag_moved: bool,
     add_track_search: String,
@@ -67,6 +77,7 @@ impl Default for PlaylistUi {
             beat_width: DEFAULT_BEAT_WIDTH,
             scroll_offset: Vec2::ZERO,
             open_clip_request: None,
+            plugin_editor_request: None,
             drag_moved: false,
             add_track_search: String::new(),
             change_instrument_search: String::new(),
@@ -82,6 +93,10 @@ impl PlaylistUi {
 
     pub fn take_open_clip_request(&mut self) -> Option<u64> {
         self.open_clip_request.take()
+    }
+
+    pub fn take_plugin_editor_request(&mut self) -> Option<PluginEditorRequest> {
+        self.plugin_editor_request.take()
     }
 
     pub fn clear_selection(&mut self) {
@@ -230,7 +245,7 @@ impl PlaylistUi {
                     theme,
                 );
 
-                // Track header context menus (change instrument).
+                // Track header context menus (plugin editor + change instrument).
                 let track_ids: Vec<u64> = project.tracks.iter().map(|t| t.id).collect();
                 for (index, track_id) in track_ids.into_iter().enumerate() {
                     let lane_top = body.top() + index as f32 * LANE_HEIGHT;
@@ -240,7 +255,49 @@ impl PlaylistUi {
                     );
                     let id = ui.id().with(("track_header", track_id));
                     let header_response = ui.interact(header, id, Sense::click());
+
+                    let track_name = project
+                        .tracks
+                        .iter()
+                        .find(|t| t.id == track_id)
+                        .map(|t| t.name.clone())
+                        .unwrap_or_else(|| String::from("Plugin"));
+                    let instrument = project
+                        .tracks
+                        .iter()
+                        .find(|t| t.id == track_id)
+                        .map(|t| t.instrument.clone());
+                    let editor_open = engine.plugin_editor_is_open(track_id);
+                    let slot_ready = engine.plugin_slot_ready(track_id);
+                    let is_plugin = matches!(instrument, Some(TrackInstrument::Plugin { .. }));
+
                     header_response.context_menu(|ui| {
+                        if is_plugin {
+                            if editor_open {
+                                if ui.button("Close plugin editor").clicked() {
+                                    self.plugin_editor_request =
+                                        Some(PluginEditorRequest::Close { track_id });
+                                    ui.close_menu();
+                                }
+                            } else {
+                                let label = if slot_ready {
+                                    "Open plugin editor"
+                                } else {
+                                    "Open plugin editor (loading...)"
+                                };
+                                if ui
+                                    .add_enabled(slot_ready, egui::Button::new(label))
+                                    .clicked()
+                                {
+                                    self.plugin_editor_request = Some(PluginEditorRequest::Open {
+                                        track_id,
+                                        title: track_name.clone(),
+                                    });
+                                    ui.close_menu();
+                                }
+                            }
+                            ui.separator();
+                        }
                         ui.label("Change instrument");
                         ui.separator();
                         if let Some(choice) = show_instrument_picker(

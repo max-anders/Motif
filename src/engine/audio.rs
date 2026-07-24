@@ -1,8 +1,11 @@
 //! cpal-backed audio engine with UI-thread transport + edge-detect sequencing.
-//! Per-track voices: built-in piano and/or headless CLAP/VST3 plugins.
+//! Per-track voices: built-in piano and/or CLAP/VST3 plugins (shared slots for GUI).
+//! Plugin load/activate runs on a worker thread so the UI stays responsive.
 
-use std::collections::{HashMap, HashSet};
-use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
+use std::sync::{Arc, Mutex};
+use std::thread;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, Stream, StreamConfig};
@@ -11,12 +14,22 @@ use truce_rack::core::transport::TransportInfo;
 use crate::model::{Project, TrackInstrument};
 
 use super::piano::PianoSynth;
-use super::plugins::{load_and_activate, HostedPlugin, PluginCatalog};
+use super::plugins::{
+    load_and_activate, CatalogEntry, HostedPlugin, PluginCatalog, PluginEditorHost,
+};
 use super::DawEngine;
+
+const LOADING_STATUS: &str = "Loading plugin...";
+
+struct VoiceLoadResult {
+    track_id: u64,
+    instrument: TrackInstrument,
+    result: Result<HostedPlugin, String>,
+}
 
 enum TrackVoice {
     Piano(PianoSynth),
-    Plugin(HostedPlugin),
+    Plugin(Arc<Mutex<HostedPlugin>>),
     /// Plugin selected but failed to load/activate — stays silent.
     Silent,
 }
@@ -63,20 +76,32 @@ impl AudioCallbackState {
                     velocity,
                 }) => match self.voices.get_mut(&track_id) {
                     Some(TrackVoice::Piano(synth)) => synth.note_on(pitch, velocity),
-                    Some(TrackVoice::Plugin(plugin)) => plugin.push_note_on(pitch, velocity),
+                    Some(TrackVoice::Plugin(plugin)) => {
+                        if let Ok(mut guard) = plugin.try_lock() {
+                            guard.push_note_on(pitch, velocity);
+                        }
+                    }
                     Some(TrackVoice::Silent) | None => {}
                 },
                 Ok(AudioCommand::NoteOff { track_id, pitch }) => match self.voices.get_mut(&track_id)
                 {
                     Some(TrackVoice::Piano(synth)) => synth.note_off(pitch),
-                    Some(TrackVoice::Plugin(plugin)) => plugin.push_note_off(pitch),
+                    Some(TrackVoice::Plugin(plugin)) => {
+                        if let Ok(mut guard) = plugin.try_lock() {
+                            guard.push_note_off(pitch);
+                        }
+                    }
                     Some(TrackVoice::Silent) | None => {}
                 },
                 Ok(AudioCommand::AllNotesOff) => {
                     for voice in self.voices.values_mut() {
                         match voice {
                             TrackVoice::Piano(synth) => synth.all_notes_off(),
-                            TrackVoice::Plugin(plugin) => plugin.all_notes_off(),
+                            TrackVoice::Plugin(plugin) => {
+                                if let Ok(mut guard) = plugin.try_lock() {
+                                    guard.all_notes_off();
+                                }
+                            }
                             TrackVoice::Silent => {}
                         }
                     }
@@ -121,7 +146,9 @@ impl AudioCallbackState {
                     }
                 }
                 TrackVoice::Plugin(plugin) => {
-                    plugin.process_block(frames, transport, mix_l, mix_r);
+                    if let Ok(mut guard) = plugin.try_lock() {
+                        guard.process_block(frames, transport, mix_l, mix_r);
+                    }
                 }
                 TrackVoice::Silent => {}
             }
@@ -210,8 +237,20 @@ pub struct AudioEngine {
     active_seq_notes: HashSet<u64>,
     /// Last instrument identity synced per track (UI-side).
     synced_instruments: HashMap<u64, TrackInstrument>,
+    /// In-flight background plugin loads (track -> desired instrument).
+    pending_loads: HashMap<u64, TrackInstrument>,
+    load_tx: Option<SyncSender<VoiceLoadResult>>,
+    load_rx: Receiver<VoiceLoadResult>,
+    /// Commands waiting for audio-thread channel space (never block UI / never drop MIDI).
+    pending_cmds: VecDeque<AudioCommand>,
+    /// Latest transport when the channel is full (coalesced; only one pending).
+    pending_transport: Option<TransportInfo>,
     command_tx: Option<SyncSender<AudioCommand>>,
     sample_rate: f32,
+    /// UI-side handles to the same plugin instances the audio thread mixes.
+    plugin_slots: HashMap<u64, Arc<Mutex<HostedPlugin>>>,
+    /// Open native plugin editor windows (UI thread).
+    editor_host: PluginEditorHost,
     /// Kept alive for the lifetime of the engine.
     _stream: Option<Stream>,
     audio_available: bool,
@@ -220,6 +259,7 @@ pub struct AudioEngine {
 
 impl AudioEngine {
     pub fn new(beats_per_second: f32) -> Self {
+        let (load_tx, load_rx) = mpsc::sync_channel::<VoiceLoadResult>(8);
         match start_stream() {
             Ok((stream, tx, sample_rate)) => {
                 let play_error = stream.play().err().map(|e| format!("Audio stream play failed: {e}"));
@@ -233,8 +273,15 @@ impl AudioEngine {
                     loop_end_beats: 16.0,
                     active_seq_notes: HashSet::new(),
                     synced_instruments: HashMap::new(),
+                    pending_loads: HashMap::new(),
+                    load_tx: Some(load_tx),
+                    load_rx,
+                    pending_cmds: VecDeque::new(),
+                    pending_transport: None,
                     command_tx: Some(tx),
                     sample_rate,
+                    plugin_slots: HashMap::new(),
+                    editor_host: PluginEditorHost::default(),
                     _stream: Some(stream),
                     audio_available,
                     init_error: play_error,
@@ -249,8 +296,15 @@ impl AudioEngine {
                 loop_end_beats: 16.0,
                 active_seq_notes: HashSet::new(),
                 synced_instruments: HashMap::new(),
+                pending_loads: HashMap::new(),
+                load_tx: Some(load_tx),
+                load_rx,
+                pending_cmds: VecDeque::new(),
+                pending_transport: None,
                 command_tx: None,
                 sample_rate: 48_000.0,
+                plugin_slots: HashMap::new(),
+                editor_host: PluginEditorHost::default(),
                 _stream: None,
                 audio_available: false,
                 init_error: Some(error),
@@ -266,17 +320,51 @@ impl AudioEngine {
         self.init_error.as_deref()
     }
 
-    fn send(&self, command: AudioCommand) {
-        if let Some(tx) = &self.command_tx {
-            // Voice swaps may block briefly on the UI thread; note events use try_send.
-            let is_voice = matches!(
-                command,
-                AudioCommand::SetVoice { .. } | AudioCommand::RemoveVoice { .. }
-            );
-            if is_voice {
-                let _ = tx.send(command);
-            } else {
-                let _ = tx.try_send(command);
+    fn send(&mut self, command: AudioCommand) {
+        if self.command_tx.is_none() {
+            return;
+        }
+        // Transport updates every UI frame while playing — keep only the latest.
+        if let AudioCommand::SetTransport { transport } = command {
+            self.pending_transport = Some(transport);
+            self.flush_pending_cmds();
+            return;
+        }
+        self.pending_cmds.push_back(command);
+        self.flush_pending_cmds();
+    }
+
+    fn flush_pending_cmds(&mut self) {
+        let Some(tx) = &self.command_tx else {
+            self.pending_cmds.clear();
+            self.pending_transport = None;
+            return;
+        };
+        while let Some(command) = self.pending_cmds.pop_front() {
+            match tx.try_send(command) {
+                Ok(()) => {}
+                Err(TrySendError::Full(command)) => {
+                    self.pending_cmds.push_front(command);
+                    return;
+                }
+                Err(TrySendError::Disconnected(_)) => {
+                    self.pending_cmds.clear();
+                    self.pending_transport = None;
+                    return;
+                }
+            }
+        }
+        if let Some(transport) = self.pending_transport.take() {
+            match tx.try_send(AudioCommand::SetTransport { transport }) {
+                Ok(()) => {}
+                Err(TrySendError::Full(AudioCommand::SetTransport { transport })) => {
+                    self.pending_transport = Some(transport);
+                }
+                Err(TrySendError::Full(_)) => {}
+                Err(TrySendError::Disconnected(_)) => {
+                    self.pending_cmds.clear();
+                    self.pending_transport = None;
+                }
             }
         }
     }
@@ -284,9 +372,10 @@ impl AudioEngine {
     fn silence_sequencer(&mut self) {
         self.active_seq_notes.clear();
         self.send(AudioCommand::AllNotesOff);
+        self.flush_pending_cmds();
     }
 
-    fn push_transport(&self) {
+    fn push_transport(&mut self) {
         let tempo_bpm = (self.beats_per_second * 60.0) as f64;
         let beats_per_bar = self.beats_per_bar.max(1.0) as u32;
         let transport = TransportInfo {
@@ -307,30 +396,97 @@ impl AudioEngine {
         self.send(AudioCommand::SetTransport { transport });
     }
 
-    fn build_voice(
-        &self,
-        instrument: &TrackInstrument,
-        catalog: &PluginCatalog,
-    ) -> Result<TrackVoice, String> {
-        match instrument {
-            TrackInstrument::BuiltInPiano => Ok(TrackVoice::Piano(PianoSynth::new(self.sample_rate))),
-            TrackInstrument::Plugin {
-                format,
-                unique_id,
-                name,
-            } => {
-                let Some(entry) = catalog.find(*format, unique_id) else {
-                    return Err(format!(
-                        "Plugin not in catalog: {name} ({})",
-                        format.label()
-                    ));
-                };
-                match load_and_activate(entry, self.sample_rate as f64) {
-                    Ok(plugin) => Ok(TrackVoice::Plugin(plugin)),
-                    Err(error) => Err(format!("{name}: {error}")),
+    fn spawn_plugin_load(
+        &mut self,
+        track_id: u64,
+        instrument: TrackInstrument,
+        entry: CatalogEntry,
+    ) {
+        let Some(load_tx) = self.load_tx.clone() else {
+            return;
+        };
+        let sample_rate = self.sample_rate as f64;
+        let name = match &instrument {
+            TrackInstrument::Plugin { name, .. } => name.clone(),
+            TrackInstrument::BuiltInPiano => String::from("Piano"),
+        };
+        self.pending_loads.insert(track_id, instrument.clone());
+        // Mute the lane until the worker finishes (keeps old wrong plugin from playing).
+        self.drop_plugin_slot(track_id);
+        self.send(AudioCommand::SetVoice {
+            track_id,
+            voice: TrackVoice::Silent,
+        });
+        thread::spawn(move || {
+            let result = match load_and_activate(&entry, sample_rate) {
+                Ok(plugin) => Ok(plugin),
+                Err(error) => Err(format!("{name}: {error}")),
+            };
+            let _ = load_tx.send(VoiceLoadResult {
+                track_id,
+                instrument,
+                result,
+            });
+        });
+    }
+
+    fn drop_plugin_slot(&mut self, track_id: u64) {
+        self.editor_host.close(track_id);
+        self.plugin_slots.remove(&track_id);
+    }
+
+    fn poll_plugin_loads(&mut self, project: &Project) -> Vec<(u64, String)> {
+        let mut updates = Vec::new();
+        loop {
+            match self.load_rx.try_recv() {
+                Ok(VoiceLoadResult {
+                    track_id,
+                    instrument,
+                    result,
+                }) => {
+                    let still_wanted = project
+                        .tracks
+                        .iter()
+                        .any(|track| track.id == track_id && track.instrument == instrument);
+                    let still_pending = self
+                        .pending_loads
+                        .get(&track_id)
+                        .is_some_and(|pending| pending == &instrument);
+
+                    if !still_wanted || !still_pending {
+                        // Stale load (track removed / instrument changed) — drop voice.
+                        continue;
+                    }
+
+                    self.pending_loads.remove(&track_id);
+                    match result {
+                        Ok(plugin) => {
+                            let slot = Arc::new(Mutex::new(plugin));
+                            self.drop_plugin_slot(track_id);
+                            self.plugin_slots.insert(track_id, Arc::clone(&slot));
+                            self.synced_instruments.insert(track_id, instrument);
+                            updates.push((track_id, String::new()));
+                            self.send(AudioCommand::SetVoice {
+                                track_id,
+                                voice: TrackVoice::Plugin(slot),
+                            });
+                        }
+                        Err(error) => {
+                            self.drop_plugin_slot(track_id);
+                            self.synced_instruments.insert(track_id, instrument);
+                            updates.push((track_id, error));
+                            self.send(AudioCommand::SetVoice {
+                                track_id,
+                                voice: TrackVoice::Silent,
+                            });
+                        }
+                    }
                 }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => break,
             }
         }
+        updates
     }
 }
 
@@ -383,6 +539,7 @@ impl DawEngine for AudioEngine {
 
     fn advance(&mut self, delta_seconds: f32, loop_end_beats: f32) {
         self.loop_end_beats = loop_end_beats;
+        self.flush_pending_cmds();
         if !self.playing || loop_end_beats <= 0.0 {
             return;
         }
@@ -423,8 +580,9 @@ impl DawEngine for AudioEngine {
     ) -> Vec<(u64, String)> {
         self.beats_per_bar = project.beats_per_bar;
         self.loop_end_beats = project.loop_end_beats;
+        self.flush_pending_cmds();
 
-        let mut errors = Vec::new();
+        let mut errors = self.poll_plugin_loads(project);
         let live_ids: HashSet<u64> = project.tracks.iter().map(|t| t.id).collect();
 
         let stale: Vec<u64> = self
@@ -435,10 +593,31 @@ impl DawEngine for AudioEngine {
             .collect();
         for track_id in stale {
             self.synced_instruments.remove(&track_id);
+            self.pending_loads.remove(&track_id);
+            self.drop_plugin_slot(track_id);
             self.send(AudioCommand::RemoveVoice { track_id });
         }
 
+        let stale_pending: Vec<u64> = self
+            .pending_loads
+            .keys()
+            .copied()
+            .filter(|id| !live_ids.contains(id))
+            .collect();
+        for track_id in stale_pending {
+            self.pending_loads.remove(&track_id);
+        }
+
         for track in &project.tracks {
+            if self
+                .pending_loads
+                .get(&track.id)
+                .is_some_and(|pending| pending == &track.instrument)
+            {
+                errors.push((track.id, String::from(LOADING_STATUS)));
+                continue;
+            }
+
             let needs_sync = self
                 .synced_instruments
                 .get(&track.id)
@@ -448,37 +627,87 @@ impl DawEngine for AudioEngine {
                 continue;
             }
 
-            match self.build_voice(&track.instrument, catalog) {
-                Ok(voice) => {
+            match &track.instrument {
+                TrackInstrument::BuiltInPiano => {
+                    let voice = TrackVoice::Piano(PianoSynth::new(self.sample_rate));
+                    self.pending_loads.remove(&track.id);
+                    self.drop_plugin_slot(track.id);
                     self.synced_instruments
                         .insert(track.id, track.instrument.clone());
-                    // Empty error string means success for this track (app clears banner).
                     errors.push((track.id, String::new()));
                     self.send(AudioCommand::SetVoice {
                         track_id: track.id,
                         voice,
                     });
                 }
-                Err(error) => {
-                    errors.push((track.id, error));
-                    self.synced_instruments
-                        .insert(track.id, track.instrument.clone());
-                    self.send(AudioCommand::SetVoice {
-                        track_id: track.id,
-                        voice: TrackVoice::Silent,
-                    });
+                TrackInstrument::Plugin {
+                    format,
+                    unique_id,
+                    name,
+                } => {
+                    let Some(entry) = catalog.find(*format, unique_id).cloned() else {
+                        let error = format!(
+                            "Plugin not in catalog: {name} ({})",
+                            format.label()
+                        );
+                        self.pending_loads.remove(&track.id);
+                        self.drop_plugin_slot(track.id);
+                        self.synced_instruments
+                            .insert(track.id, track.instrument.clone());
+                        errors.push((track.id, error));
+                        self.send(AudioCommand::SetVoice {
+                            track_id: track.id,
+                            voice: TrackVoice::Silent,
+                        });
+                        continue;
+                    };
+                    self.spawn_plugin_load(track.id, track.instrument.clone(), entry);
+                    errors.push((track.id, String::from(LOADING_STATUS)));
                 }
             }
         }
 
+        self.flush_pending_cmds();
         errors
     }
 
     fn invalidate_instruments(&mut self) {
+        self.editor_host.close_all();
+        self.plugin_slots.clear();
         self.synced_instruments.clear();
+        self.pending_loads.clear();
+    }
+
+    fn plugin_slot_ready(&self, track_id: u64) -> bool {
+        self.plugin_slots.contains_key(&track_id)
+    }
+
+    fn open_plugin_editor(
+        &mut self,
+        track_id: u64,
+        title: &str,
+        host_x11: Option<super::plugins::HostX11>,
+    ) -> Result<(), String> {
+        let Some(slot) = self.plugin_slots.get(&track_id).cloned() else {
+            return Err(String::from("Plugin not loaded yet"));
+        };
+        self.editor_host.open(track_id, slot, title, host_x11)
+    }
+
+    fn close_plugin_editor(&mut self, track_id: u64) {
+        self.editor_host.close(track_id);
+    }
+
+    fn plugin_editor_is_open(&self, track_id: u64) -> bool {
+        self.editor_host.is_open(track_id)
+    }
+
+    fn poll_plugin_editors(&mut self) -> bool {
+        self.editor_host.poll()
     }
 
     fn schedule_project(&mut self, project: &Project) {
+        self.flush_pending_cmds();
         if !self.playing {
             return;
         }

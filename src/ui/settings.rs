@@ -1,6 +1,6 @@
 //! Settings center view: shortcut remapping + theme colors + plugin manager.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use egui::Ui;
 
@@ -99,7 +99,7 @@ impl SettingsUi {
 
         ui.heading("Plugin Manager");
         ui.label(
-            "Scan CLAP and VST3 instruments from standard OS paths (headless host; no plugin GUI yet).",
+            "Scan native Linux CLAP/VST3 instruments. Plugin editors open via track header menu (need X11 or XWayland). Do not add yabridge paths — scanning them aborts Motif.",
         );
         ui.add_space(6.0);
 
@@ -127,23 +127,32 @@ impl SettingsUi {
 
         ui.add_space(8.0);
         ui.strong("Extra scan paths");
-        ui.label("One directory per line (optional). Saved with settings.");
-        for (index, path) in plugin_extra_paths.iter().enumerate() {
-            ui.label(format!("{}. {}", index + 1, path.display()));
-        }
+        ui.label("Optional native plugin directories (not yabridge). Saved with settings.");
         ui.horizontal(|ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut self.extra_path_draft)
                     .desired_width(320.0)
-                    .hint_text("/path/to/plugins"),
+                    .hint_text(format!("{}/.clap", std::env::var("HOME").unwrap_or_else(|_| "~".into()))),
             );
             if ui.button("Add path").clicked() {
-                let draft = self.extra_path_draft.trim();
-                if !draft.is_empty() {
-                    plugin_extra_paths.push(PathBuf::from(draft));
-                    self.extra_path_draft.clear();
-                    catalog.extra_paths = plugin_extra_paths.clone();
-                    result = Some(SettingsAction::PluginsChanged);
+                let draft = self.extra_path_draft.trim().to_string();
+                if draft.is_empty() {
+                    self.message = "Enter a directory path before clicking Add path".into();
+                } else {
+                    let path = PathBuf::from(&draft);
+                    if path_contains_yabridge(&path) {
+                        self.message = format!(
+                            "Refused: {draft} is a yabridge path (would crash Motif on Rescan)"
+                        );
+                    } else if plugin_extra_paths.iter().any(|p| p == &path) {
+                        self.message = format!("Already listed: {draft}");
+                    } else {
+                        plugin_extra_paths.push(path);
+                        self.extra_path_draft.clear();
+                        catalog.extra_paths = plugin_extra_paths.clone();
+                        self.message = format!("Added: {draft}");
+                        result = Some(SettingsAction::PluginsChanged);
+                    }
                 }
             }
             if ui
@@ -155,9 +164,49 @@ impl SettingsUi {
             {
                 plugin_extra_paths.clear();
                 catalog.extra_paths.clear();
+                self.message = "Cleared extra scan paths".into();
                 result = Some(SettingsAction::PluginsChanged);
             }
         });
+
+        if plugin_extra_paths.is_empty() {
+            ui.weak("No extra paths yet.");
+        } else {
+            ui.add_space(4.0);
+            let mut remove_index = None;
+            for (index, path) in plugin_extra_paths.iter().enumerate() {
+                ui.horizontal(|ui| {
+                    ui.monospace(format!("{}. {}", index + 1, path.display()));
+                    if ui.small_button("Remove").clicked() {
+                        remove_index = Some(index);
+                    }
+                });
+            }
+            if let Some(index) = remove_index {
+                let removed = plugin_extra_paths.remove(index);
+                catalog.extra_paths = plugin_extra_paths.clone();
+                self.message = format!("Removed: {}", removed.display());
+                result = Some(SettingsAction::PluginsChanged);
+            }
+        }
+
+        if self.message.starts_with("Added:")
+            || self.message.starts_with("Refused:")
+            || self.message.starts_with("Already listed:")
+            || self.message.starts_with("Enter a directory")
+            || self.message.starts_with("Cleared ")
+            || self.message.starts_with("Removed:")
+        {
+            ui.add_space(4.0);
+            let color = if self.message.starts_with("Refused:")
+                || self.message.starts_with("Enter a directory")
+            {
+                ui.visuals().warn_fg_color
+            } else {
+                ui.visuals().strong_text_color()
+            };
+            ui.colored_label(color, &self.message);
+        }
 
         if catalog.instrument_count() > 0 {
             ui.add_space(8.0);
@@ -372,4 +421,12 @@ impl SettingsUi {
 
         result
     }
+}
+
+fn path_contains_yabridge(path: &Path) -> bool {
+    path.components().any(|c| {
+        c.as_os_str()
+            .to_str()
+            .is_some_and(|s| s.eq_ignore_ascii_case("yabridge"))
+    })
 }

@@ -1,23 +1,25 @@
 # Motif
 
-Open-source music sketchpad: piano roll, playlist, soft-synth piano, and headless CLAP/VST3 instruments over a real audio engine.
+Open-source music sketchpad: piano roll, playlist, soft-synth piano, and CLAP/VST3 instruments (optional native editor windows) over a real audio engine.
 
 ## Status
 
-**Early but usable sketchpad** (2026-07-24): playlist + piano roll editing, transport, cpal playback (built-in piano and/or CLAP/VST3), plugin manager, `project.json` save/load, and Settings for shortcuts, themes, and plugin scan. Not a full DAW.
+**Early but usable sketchpad** (2026-07-24): playlist + piano roll editing, transport, cpal playback (built-in piano and/or CLAP/VST3), plugin manager + editor windows (Linux X11/XWayland), `project.json` save/load, and Settings for shortcuts, themes, and plugin scan. Not a full DAW.
 
 | Area | State |
 |---|---|
 | Playlist (tracks / MIDI clips) | Working |
-| Per-track instruments (piano / CLAP / VST3) | Working (headless; no plugin GUI yet) |
+| Per-track instruments (piano / CLAP / VST3) | Working (load off UI thread) |
 | Plugin manager (scan / cache) | Working (`plugin_cache.json` in CWD) |
+| Plugin editor GUI | Working on Linux (X11 / XWayland); not Wayland-native |
 | Piano roll (notes + key audition) | Working |
 | Transport + loop + BPM | Working |
 | Soft piano + plugin mix (`cpal`) | Working (UI continues if device open fails) |
 | Project save/load | Working (`project.json` in CWD) |
 | Settings (shortcuts + themes + plugins) | Working (`settings.json` in CWD) |
-| Plugin editor GUI / VST2 / mixer / export | Not started |
+| VST2 / mixer / export | Not started |
 | Tests / undo / samples | Not started |
+| Platform support | **Linux** (developed & tested); Windows/macOS untested |
 
 It is **free and open source from minute zero**: public from the first commit, not opened up later after something polished existed behind closed doors.
 
@@ -27,7 +29,7 @@ This is a personal experiment being built in the open from day one — not a pro
 
 The repo is public from the start. No closed preview, no "open sourcing later" roadmap. If you are reading this early, you are seeing it almost as it is being born.
 
-The early versions may be rough, experimental, or "vibe coded." That is intentional. The goal is to explore ideas, test workflows, and see what kind of creative tool can emerge.
+The early versions may be rough and experimental. I iterate quickly in public; not every path is reviewed to production standards yet. The goal is to explore ideas, test workflows, and see what kind of creative tool can emerge.
 
 This is not a promise that every feature request will be implemented, and it is not a community-driven product roadmap.
 
@@ -58,6 +60,12 @@ Credit for contributions is appreciated and will be given where appropriate, but
 
 Motif is licensed under the [GNU General Public License v3.0 or later](LICENSE).
 
+## Platform support
+
+**Linux only for now** — developed and daily-tested on Arch (Wayland/X11). There is no Windows or macOS build in CI and no maintainer testing on those platforms yet.
+
+The stack (egui, cpal, truce-rack) is cross-platform in principle, so ports may work with extra setup, but **non-Linux use is best-effort**. Bug reports and patches for other OSes are welcome; they are not the current focus.
+
 ## Setup
 
 Install Rust if needed:
@@ -67,7 +75,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source "$HOME/.cargo/env"
 ```
 
-Linux may also need egui native deps (Wayland/X11 + OpenGL or wgpu stack) and audio (ALSA/PipeWire). On Arch:
+Linux needs egui native deps (Wayland/X11 + OpenGL or wgpu stack) and audio (ALSA/PipeWire). On Arch:
 
 ```bash
 sudo pacman -S --needed base-devel pkgconf openssl libxkbcommon wayland alsa-lib
@@ -100,7 +108,7 @@ cargo run --release
 - **Delete / Backspace / Ctrl+X** - remove selected clip(s)
 - **Ctrl/Cmd+D** - duplicate selected clip(s) to the right by selection length (remappable)
 - **Add track** - menu: Built-in Piano or a scanned CLAP/VST3 instrument
-- **Right-click track header** - change instrument (searchable list)
+- **Right-click track header** - open/close plugin editor (plugin tracks) or change instrument (searchable list)
 - **Left-click / drag ruler** - move playhead (snapped to 1/16)
 - **Shift + left-click** or **right-click empty timeline** - move playhead
 - **Wheel** - scroll; **Shift+Wheel** - horizontal scroll; **Ctrl/Cmd+Wheel** - zoom time
@@ -135,12 +143,13 @@ cargo run --release
 
 ## Plugins (CLAP / VST3)
 
-Motif hosts **CLAP** and **VST3** instruments in-process via [truce-rack](https://crates.io/crates/truce-rack). There is **no plugin editor window** yet (headless audio only). **VST2 is not supported.**
+Motif hosts **CLAP** and **VST3** instruments in-process via [truce-rack](https://crates.io/crates/truce-rack). **VST2 is not supported.**
 
 - Open **Settings → Plugin Manager → Rescan** to refresh the instrument list from standard OS plugin directories (plus any extra paths you add).
 - **Add track** or right-click a track header to pick Built-in Piano or a scanned instrument.
+- **Right-click a plugin track header → Open plugin editor** to show the instrument GUI (e.g. Vital). Editors are X11-only; Motif forces the **X11** winit backend on Linux (XWayland under Hyprland) so host + editor share one stack. Native Wayland Motif + XWayland Vital often floats but ignores clicks. Override with `MOTIF_UNIX_BACKEND=wayland` if you need a Wayland Motif window. The editor is a dialog (`WM_CLASS` = `MotifPluginEditor`) so Hyprland should float it. Close via the window chrome or the same menu.
 - Good Linux smoke targets: native **Vital** or **Surge XT** (CLAP/VST3).
-- **Serum on Linux** usually needs a Windows VST3 bridge such as yabridge; Motif does not bundle or configure that — if the bridged VST3 appears in a scan path, Motif may load it, but support is best-effort and crashes can take the app down (in-process host).
+- **Serum / yabridge on Linux is not supported** in Motif. yabridge VST3 stubs need a Wine host process; scanning or loading them in-process aborts Motif (`Assertion bridge failed`). Do not add `~/.vst3/yabridge` as an extra scan path. Use a **native Linux** CLAP/VST3 (e.g. Vital, Surge XT).
 
 ## Architecture
 
@@ -149,7 +158,7 @@ UI (egui)
   -> Project model (tracks + instruments, clips, notes, tempo, loop)
   -> PlaylistUi / PianoRollUi (shared timeline navigation)
   -> DawEngine trait
-       -> AudioEngine (UI clock + cpal mix of piano / hosted plugins)
+       -> AudioEngine (UI clock + cpal mix; shared plugin slots + editor host)
        -> MockEngine (silent fallback / tests)
   -> PluginCatalog (scan cache; load off the audio thread)
 ```

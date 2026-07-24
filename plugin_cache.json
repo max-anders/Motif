@@ -1,5 +1,24 @@
 {
-  "scanned_at_unix": 1784852961,
-  "extra_paths": [],
-  "entries": []
+  "scanned_at_unix": 1784854143,
+  "extra_paths": [
+    "/home/max/.clap"
+  ],
+  "entries": [
+    {
+      "name": "Vital",
+      "vendor": "Vital Audio",
+      "unique_id": "audio.vital.synth",
+      "format": "clap",
+      "path": "/home/max/.clap/Vital.clap",
+      "accepts_midi": false
+    },
+    {
+      "name": "Vital",
+      "vendor": "",
+      "unique_id": "56535456697461766974616c00000000",
+      "format": "vst3",
+      "path": "/home/max/.vst3/Vital.vst3",
+      "accepts_midi": false
+    }
+  ]
 }

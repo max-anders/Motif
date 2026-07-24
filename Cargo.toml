@@ -13,3 +13,19 @@ egui = "0.31"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 truce-rack = { version = "1.1", features = ["clap", "vst3"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Same major as eframe's winit; used to force X11 for plugin editor hosting.
+winit = { version = "0.30", default-features = false, features = ["x11"] }
+# Feature `xlib` makes build.rs link libX11 (needed for shared-Display editor parents).
+x11 = { version = "2.21", features = ["xlib"] }
+raw-window-handle = "0.6"
+
+# Vendored, patched plugin-host wrappers: upstream 1.1.5 never drives the plugin's
+# Linux event loop (VST3 has no IPlugFrame/IRunLoop; CLAP passes a null clap_host),
+# so embedded editors paint but never receive mouse/keyboard. Our copies add the
+# host-side run loop (IRunLoop for VST3, timer + posix-fd support for CLAP) and pump
+# it from PluginEditor::on_idle. See vendor/*/PATCH-NOTES.md.
+[patch.crates-io]
+truce-rack-vst3 = { path = "vendor/truce-rack-vst3" }
+truce-rack-clap = { path = "vendor/truce-rack-clap" }

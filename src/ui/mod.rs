@@ -10,7 +10,7 @@ mod transport;
 
 pub use app_settings::AppSettings;
 pub use piano_roll::PianoRollUi;
-pub use playlist::PlaylistUi;
+pub use playlist::{PlaylistUi, PluginEditorRequest};
 pub use settings::{SettingsAction, SettingsUi};
 pub use shortcuts::{Action, PollFilter, SETTINGS_FILE};
 pub use transport::TransportUi;

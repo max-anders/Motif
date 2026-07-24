@@ -8,7 +8,7 @@ pub use audio::AudioEngine;
 // Kept for silent fallback / tests; not wired in the app UI path.
 #[allow(unused_imports)]
 pub use mock::MockEngine;
-pub use plugins::{CatalogEntry, PluginCatalog, PLUGIN_CACHE_FILE};
+pub use plugins::{CatalogEntry, HostX11, PluginCatalog, PLUGIN_CACHE_FILE};
 
 use crate::model::Project;
 
@@ -42,4 +42,37 @@ pub trait DawEngine {
     fn invalidate_instruments(&mut self);
 
     fn schedule_project(&mut self, project: &Project);
+
+    /// True when an activated plugin instance is ready for this track.
+    fn plugin_slot_ready(&self, track_id: u64) -> bool {
+        let _ = track_id;
+        false
+    }
+
+    /// Open the native plugin editor for a track (UI thread).
+    /// `host_x11` should be Motif's Display + window so the editor parent shares the
+    /// same X11 connection as winit (required for clickable GUIs under XWayland).
+    fn open_plugin_editor(
+        &mut self,
+        track_id: u64,
+        title: &str,
+        host_x11: Option<crate::engine::plugins::HostX11>,
+    ) -> Result<(), String> {
+        let _ = (track_id, title, host_x11);
+        Err(String::from("Plugin editors not available"))
+    }
+
+    fn close_plugin_editor(&mut self, track_id: u64) {
+        let _ = track_id;
+    }
+
+    fn plugin_editor_is_open(&self, track_id: u64) -> bool {
+        let _ = track_id;
+        false
+    }
+
+    /// Poll editor windows / idle callbacks. Returns true if any editor is open.
+    fn poll_plugin_editors(&mut self) -> bool {
+        false
+    }
 }

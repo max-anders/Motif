@@ -7,8 +7,8 @@ use eframe::egui;
 use crate::engine::{AudioEngine, DawEngine, PluginCatalog, PLUGIN_CACHE_FILE};
 use crate::model::Project;
 use crate::ui::{
-    Action, AppSettings, PianoRollUi, PlaylistUi, PollFilter, SettingsAction, SettingsUi,
-    TransportUi, SETTINGS_FILE,
+    Action, AppSettings, PianoRollUi, PlaylistUi, PluginEditorRequest, PollFilter, SettingsAction,
+    SettingsUi, TransportUi, SETTINGS_FILE,
 };
 
 const PROJECT_FILE: &str = "project.json";
@@ -43,17 +43,19 @@ impl DawApp {
         let settings = AppSettings::load_or_defaults(&Self::settings_path());
         let mut catalog = PluginCatalog::load_or_defaults(&Self::plugin_cache_path());
         catalog.extra_paths = settings.plugin_extra_paths.clone();
-        if catalog.entries.is_empty() {
-            catalog.rescan();
-            let _ = catalog.save_to_path(&Self::plugin_cache_path());
-        }
-        let status_message = if engine.audio_available() {
-            String::from(
-                "Playlist: Add track picks an instrument. Right-click track header to change. Double-click clip for piano roll.",
-            )
-        } else {
+        // Do not rescan here — scanning CLAP/VST3 paths blocks the UI thread and trips
+        // the desktop "not responding" dialog. Empty cache: user rescans from Settings.
+        let status_message = if !engine.audio_available() {
             let detail = engine.init_error().unwrap_or("unknown error");
             format!("Audio unavailable ({detail}). Transport still works silently.")
+        } else if catalog.entries.is_empty() {
+            String::from(
+                "No plugin cache yet. Open Settings -> Plugin Manager -> Rescan, or add a Built-in Piano track.",
+            )
+        } else {
+            String::from(
+                "Playlist: Add track picks an instrument. Right-click track header for editor / change instrument. Double-click clip for piano roll.",
+            )
         };
 
         let mut app = Self {
@@ -89,17 +91,25 @@ impl DawApp {
         let updates = self
             .engine
             .sync_instruments(&self.project, &self.catalog);
+        let mut dirty = false;
         for (track_id, error) in updates {
+            dirty = true;
             if error.is_empty() {
                 self.instrument_errors.remove(&track_id);
             } else {
                 self.instrument_errors.insert(track_id, error);
             }
         }
+        let before_len = self.instrument_errors.len();
         self.instrument_errors
             .retain(|track_id, _| self.project.tracks.iter().any(|t| t.id == *track_id));
-        self.playlist
-            .set_instrument_errors(self.instrument_errors.clone());
+        if self.instrument_errors.len() != before_len {
+            dirty = true;
+        }
+        if dirty {
+            self.playlist
+                .set_instrument_errors(self.instrument_errors.clone());
+        }
     }
 
     fn save_plugin_cache(&mut self) {
@@ -233,6 +243,32 @@ impl DawApp {
         }
     }
 
+    fn handle_plugin_editor_request(
+        &mut self,
+        ctx: &egui::Context,
+        frame: &eframe::Frame,
+        request: PluginEditorRequest,
+    ) {
+        match request {
+            PluginEditorRequest::Open { track_id, title } => {
+                let host_x11 = host_x11_from_frame(frame);
+                match self.engine.open_plugin_editor(track_id, &title, host_x11) {
+                    Ok(()) => {
+                        self.status_message = format!("Opened plugin editor: {title}");
+                        ctx.request_repaint();
+                    }
+                    Err(error) => {
+                        self.status_message = format!("Plugin editor: {error}");
+                    }
+                }
+            }
+            PluginEditorRequest::Close { track_id } => {
+                self.engine.close_plugin_editor(track_id);
+                self.status_message = String::from("Closed plugin editor");
+            }
+        }
+    }
+
     fn back_to_playlist(&mut self) {
         self.piano_roll.release_audition(&mut self.engine);
         self.piano_roll.clear_selection();
@@ -282,12 +318,15 @@ impl DawApp {
 }
 
 impl eframe::App for DawApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         let delta_seconds = ctx.input(|input| input.unstable_dt);
         let loop_end = self.project.loop_end_beats;
         self.sync_instruments();
         self.engine.advance(delta_seconds, loop_end);
         self.engine.schedule_project(&self.project);
+        if self.engine.poll_plugin_editors() {
+            ctx.request_repaint();
+        }
 
         let poll_filter = if self.settings_ui.is_capturing() {
             PollFilter::None
@@ -349,7 +388,7 @@ impl eframe::App for DawApp {
             .show(ctx, |ui| {
                 match self.center_view {
                     CenterView::Playlist => {
-                        let open_clip = {
+                        let (open_clip, editor_request) = {
                             let DawApp {
                                 playlist,
                                 project,
@@ -365,10 +404,16 @@ impl eframe::App for DawApp {
                                 catalog,
                                 settings.themes.colors(),
                             );
-                            playlist.take_open_clip_request()
+                            (
+                                playlist.take_open_clip_request(),
+                                playlist.take_plugin_editor_request(),
+                            )
                         };
                         if let Some(clip_id) = open_clip {
                             self.open_clip(clip_id);
+                        }
+                        if let Some(request) = editor_request {
+                            self.handle_plugin_editor_request(ctx, frame, request);
                         }
                     }
                     CenterView::PianoRoll { clip_id } => {
@@ -425,4 +470,35 @@ impl eframe::App for DawApp {
 fn load_project() -> Result<Project, Box<dyn std::error::Error>> {
     let json = fs::read_to_string(DawApp::project_path())?;
     Ok(Project::from_json(&json)?)
+}
+
+#[cfg(target_os = "linux")]
+fn host_x11_from_frame(frame: &eframe::Frame) -> Option<crate::engine::HostX11> {
+    use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
+
+    let display_handle = frame.display_handle().ok()?;
+    let window_handle = frame.window_handle().ok()?;
+
+    // Confirm we are under X11/XWayland and grab the screen index. The editor
+    // parent opens its own connection, so we do not keep winit's Display pointer.
+    let screen = match display_handle.as_raw() {
+        RawDisplayHandle::Xlib(xlib) => xlib.screen,
+        _ => return None,
+    };
+
+    let transient_for = match window_handle.as_raw() {
+        RawWindowHandle::Xlib(xlib) => Some(xlib.window as u64),
+        RawWindowHandle::Xcb(xcb) => Some(u64::from(xcb.window.get())),
+        _ => None,
+    };
+
+    Some(crate::engine::HostX11 {
+        screen,
+        transient_for,
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn host_x11_from_frame(_frame: &eframe::Frame) -> Option<crate::engine::HostX11> {
+    None
 }
