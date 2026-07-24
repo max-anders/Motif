@@ -62,9 +62,9 @@ struct AudioCallbackState {
     commands: Receiver<AudioCommand>,
     channels: usize,
     transport: TransportInfo,
-        mix_l: Vec<f32>,
-        mix_r: Vec<f32>,
-    }
+    mix_l: Vec<f32>,
+    mix_r: Vec<f32>,
+}
 
 impl AudioCallbackState {
     fn process_commands(&mut self) {
@@ -83,16 +83,17 @@ impl AudioCallbackState {
                     }
                     Some(TrackVoice::Silent) | None => {}
                 },
-                Ok(AudioCommand::NoteOff { track_id, pitch }) => match self.voices.get_mut(&track_id)
-                {
-                    Some(TrackVoice::Piano(synth)) => synth.note_off(pitch),
-                    Some(TrackVoice::Plugin(plugin)) => {
-                        if let Ok(mut guard) = plugin.try_lock() {
-                            guard.push_note_off(pitch);
+                Ok(AudioCommand::NoteOff { track_id, pitch }) => {
+                    match self.voices.get_mut(&track_id) {
+                        Some(TrackVoice::Piano(synth)) => synth.note_off(pitch),
+                        Some(TrackVoice::Plugin(plugin)) => {
+                            if let Ok(mut guard) = plugin.try_lock() {
+                                guard.push_note_off(pitch);
+                            }
                         }
+                        Some(TrackVoice::Silent) | None => {}
                     }
-                    Some(TrackVoice::Silent) | None => {}
-                },
+                }
                 Ok(AudioCommand::AllNotesOff) => {
                     for voice in self.voices.values_mut() {
                         match voice {
@@ -262,7 +263,10 @@ impl AudioEngine {
         let (load_tx, load_rx) = mpsc::sync_channel::<VoiceLoadResult>(8);
         match start_stream() {
             Ok((stream, tx, sample_rate)) => {
-                let play_error = stream.play().err().map(|e| format!("Audio stream play failed: {e}"));
+                let play_error = stream
+                    .play()
+                    .err()
+                    .map(|e| format!("Audio stream play failed: {e}"));
                 let audio_available = play_error.is_none();
                 Self {
                     playing: false,
@@ -387,7 +391,8 @@ impl AudioEngine {
                     * self.sample_rate as f64) as i64,
             ),
             bar_start_beats: Some(
-                (self.current_beats / self.beats_per_bar).floor() as f64 * self.beats_per_bar as f64,
+                (self.current_beats / self.beats_per_bar).floor() as f64
+                    * self.beats_per_bar as f64,
             ),
             playing: self.playing,
             recording: false,
@@ -647,10 +652,7 @@ impl DawEngine for AudioEngine {
                     name,
                 } => {
                     let Some(entry) = catalog.find(*format, unique_id).cloned() else {
-                        let error = format!(
-                            "Plugin not in catalog: {name} ({})",
-                            format.label()
-                        );
+                        let error = format!("Plugin not in catalog: {name} ({})", format.label());
                         self.pending_loads.remove(&track.id);
                         self.drop_plugin_slot(track.id);
                         self.synced_instruments

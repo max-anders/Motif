@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::clip::MidiClip;
+use super::clipboard::{ClipboardClip, ClipboardNote};
 use super::instrument::TrackInstrument;
 use super::track::{migrate_notes_to_clip, Track};
 use super::Note;
@@ -13,7 +14,7 @@ pub const MIN_PITCH: u8 = 0;
 pub const MAX_PITCH: u8 = 127;
 pub const DEFAULT_NOTE_DURATION_BEATS: f32 = 1.0;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Project {
     pub bpm: f32,
     pub beats_per_bar: f32,
@@ -205,6 +206,126 @@ impl Project {
         new_ids
     }
 
+    /// Collect notes by id for clipboard (order follows `note_ids`, skipping missing).
+    pub fn notes_for_clipboard(&self, clip_id: u64, note_ids: &[u64]) -> Vec<Note> {
+        let Some(clip) = self.clip(clip_id) else {
+            return Vec::new();
+        };
+        note_ids
+            .iter()
+            .filter_map(|id| clip.note(*id).copied())
+            .collect()
+    }
+
+    /// Paste clipboard notes into a clip. `origin_beats` is clip-local; entry starts are
+    /// relative to that origin. Returns new note ids.
+    pub fn paste_notes_into_clip(
+        &mut self,
+        clip_id: u64,
+        notes: &[ClipboardNote],
+        origin_beats: f32,
+    ) -> Vec<u64> {
+        if notes.is_empty() || self.clip(clip_id).is_none() {
+            return Vec::new();
+        }
+        let origin = Self::snap_beats(origin_beats.max(0.0));
+        let mut new_ids = Vec::with_capacity(notes.len());
+        for template in notes {
+            let id = self.next_note_id();
+            self.bump_note_id();
+            let start = (origin + template.start_beats).max(0.0);
+            if let Some(clip) = self.clip_mut(clip_id) {
+                clip.add_note_with_id(id, template.pitch, start, template.duration_beats);
+                if let Some(note) = clip.note_mut(id) {
+                    note.velocity = template.velocity;
+                }
+                new_ids.push(id);
+            }
+        }
+        new_ids
+    }
+
+    /// Build clip clipboard entries (arrangement starts relative to earliest selected clip).
+    pub fn clips_for_clipboard(&self, clip_ids: &[u64]) -> Vec<ClipboardClip> {
+        let mut templates = Vec::new();
+        for clip_id in clip_ids {
+            let Some(track_id) = self.track_id_for_clip(*clip_id) else {
+                continue;
+            };
+            let Some(clip) = self.clip(*clip_id) else {
+                continue;
+            };
+            templates.push(ClipboardClip {
+                track_id,
+                name: clip.name.clone(),
+                start_beats: clip.start_beats,
+                length_beats: clip.length_beats,
+                notes: clip
+                    .notes
+                    .iter()
+                    .map(|note| ClipboardNote {
+                        pitch: note.pitch,
+                        start_beats: note.start_beats,
+                        duration_beats: note.duration_beats,
+                        velocity: note.velocity,
+                    })
+                    .collect(),
+            });
+        }
+        if templates.is_empty() {
+            return templates;
+        }
+        let origin = templates
+            .iter()
+            .map(|clip| clip.start_beats)
+            .fold(f32::INFINITY, f32::min);
+        for clip in &mut templates {
+            clip.start_beats = (clip.start_beats - origin).max(0.0);
+        }
+        templates
+    }
+
+    /// Paste clipboard clips at an arrangement origin. Keeps each entry's track when present;
+    /// otherwise skips. Returns new clip ids.
+    pub fn paste_clips(&mut self, clips: &[ClipboardClip], origin_beats: f32) -> Vec<u64> {
+        if clips.is_empty() {
+            return Vec::new();
+        }
+        let origin = Self::snap_beats(origin_beats.max(0.0));
+        let mut new_ids = Vec::with_capacity(clips.len());
+        for template in clips {
+            if self.track(template.track_id).is_none() {
+                continue;
+            }
+            let clip_id = self.next_clip_id();
+            self.bump_clip_id();
+            let mut notes = Vec::with_capacity(template.notes.len());
+            for note in &template.notes {
+                let id = self.next_note_id();
+                self.bump_note_id();
+                notes.push(Note {
+                    id,
+                    pitch: note.pitch,
+                    start_beats: Self::snap_beats(note.start_beats.max(0.0)),
+                    duration_beats: Self::snap_beats(note.duration_beats.max(SNAP_BEATS)),
+                    velocity: note.velocity,
+                });
+            }
+            let clip = MidiClip {
+                id: clip_id,
+                name: format!("{} copy", template.name),
+                start_beats: Self::snap_beats((origin + template.start_beats).max(0.0)),
+                length_beats: template.length_beats,
+                notes,
+            };
+            if let Some(track) = self.track_mut(template.track_id) {
+                track.clips.push(clip);
+                new_ids.push(clip_id);
+            }
+        }
+        new_ids
+    }
+
     /// Deep-copy clips (new clip + note ids) onto the same tracks, offset in time.
     /// Returns new clip ids in input order (skipping missing ids).
     pub fn duplicate_clips(&mut self, clip_ids: &[u64], delta_beats: f32) -> Vec<u64> {
@@ -318,5 +439,85 @@ impl Project {
             next_clip_id: 2,
             next_track_id: 2,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{ClipboardNote, EditClipboard};
+
+    #[test]
+    fn paste_notes_into_another_clip_at_origin() {
+        let mut project = Project::default();
+        let track_id = project.tracks[0].id;
+        let src = project.tracks[0].clips[0].id;
+        let dst = project
+            .add_clip_to_track(track_id, 4.0, 4.0)
+            .expect("dst clip");
+
+        let a = project
+            .add_note_to_clip(src, 60, 1.0, 1.0)
+            .expect("note a");
+        let b = project
+            .add_note_to_clip(src, 64, 2.0, 0.5)
+            .expect("note b");
+        if let Some(note) = project.clip_mut(src).and_then(|c| c.note_mut(b.id)) {
+            note.velocity = 77;
+        }
+
+        let clipboard = EditClipboard::from_notes(&project.notes_for_clipboard(src, &[a.id, b.id]));
+        let EditClipboard::Notes(entries) = clipboard else {
+            panic!("notes");
+        };
+        let new_ids = project.paste_notes_into_clip(dst, &entries, 0.5);
+        assert_eq!(new_ids.len(), 2);
+
+        let dst_clip = project.clip(dst).expect("dst");
+        let n0 = dst_clip.note(new_ids[0]).expect("n0");
+        let n1 = dst_clip.note(new_ids[1]).expect("n1");
+        assert_eq!(n0.pitch, 60);
+        assert_eq!(n0.start_beats, 0.5);
+        assert_eq!(n1.pitch, 64);
+        assert_eq!(n1.start_beats, 1.5);
+        assert_eq!(n1.velocity, 77);
+        assert_eq!(project.clip(src).map(|c| c.notes.len()), Some(2));
+    }
+
+    #[test]
+    fn paste_clips_at_playhead_keeps_notes() {
+        let mut project = Project::default();
+        let track_id = project.tracks[0].id;
+        let src = project.tracks[0].clips[0].id;
+        project.add_note_to_clip(src, 60, 0.0, 1.0).expect("note");
+
+        let entries = project.clips_for_clipboard(&[src]);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].start_beats, 0.0);
+
+        let new_ids = project.paste_clips(&entries, 8.0);
+        assert_eq!(new_ids.len(), 1);
+        let pasted = project.clip(new_ids[0]).expect("pasted");
+        assert_eq!(pasted.start_beats, 8.0);
+        assert_eq!(pasted.notes.len(), 1);
+        assert_eq!(pasted.notes[0].pitch, 60);
+        assert_eq!(project.track(track_id).map(|t| t.clips.len()), Some(2));
+    }
+
+    #[test]
+    fn clipboard_note_round_trip_relative_starts() {
+        let entry = ClipboardNote {
+            pitch: 72,
+            start_beats: 1.25,
+            duration_beats: 0.25,
+            velocity: 90,
+        };
+        let mut project = Project::default();
+        let clip_id = project.tracks[0].clips[0].id;
+        let ids = project.paste_notes_into_clip(clip_id, &[entry], 2.0);
+        let note = project.clip(clip_id).unwrap().note(ids[0]).unwrap();
+        assert_eq!(note.start_beats, 3.25);
+        assert_eq!(note.duration_beats, 0.25);
+        assert_eq!(note.velocity, 90);
     }
 }

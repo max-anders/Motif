@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use eframe::egui;
 
 use crate::engine::{AudioEngine, DawEngine, PluginCatalog, PLUGIN_CACHE_FILE};
-use crate::model::Project;
+use crate::model::{EditClipboard, EditHistory, Project};
 use crate::ui::{
     Action, AppSettings, PianoRollUi, PlaylistUi, PluginEditorRequest, PollFilter, SettingsAction,
     SettingsUi, TransportUi, SETTINGS_FILE,
@@ -33,6 +33,10 @@ pub struct DawApp {
     catalog: PluginCatalog,
     /// Per-track instrument load errors for playlist headers.
     instrument_errors: HashMap<u64, String>,
+    /// Session clipboard for notes/clips (Ctrl/Cmd+C/X/V).
+    clipboard: EditClipboard,
+    /// Snapshot undo/redo for clip and note edits.
+    history: EditHistory,
     status_message: String,
 }
 
@@ -58,6 +62,7 @@ impl DawApp {
             )
         };
 
+        let undo_limit = settings.undo_limit;
         let mut app = Self {
             project,
             engine,
@@ -69,6 +74,8 @@ impl DawApp {
             settings,
             catalog,
             instrument_errors: HashMap::new(),
+            clipboard: EditClipboard::Empty,
+            history: EditHistory::new(undo_limit),
             status_message,
         };
         app.sync_instruments();
@@ -88,9 +95,7 @@ impl DawApp {
     }
 
     fn sync_instruments(&mut self) {
-        let updates = self
-            .engine
-            .sync_instruments(&self.project, &self.catalog);
+        let updates = self.engine.sync_instruments(&self.project, &self.catalog);
         let mut dirty = false;
         for (track_id, error) in updates {
             dirty = true;
@@ -145,9 +150,9 @@ impl DawApp {
             Ok(project) => {
                 self.engine.stop();
                 self.engine.all_notes_off();
-                self.engine
-                    .set_beats_per_second(project.beats_per_second());
+                self.engine.set_beats_per_second(project.beats_per_second());
                 self.project = project;
+                self.history.clear();
                 self.center_view = CenterView::Playlist;
                 self.settings_return = CenterView::Playlist;
                 self.playlist.clear_selection();
@@ -161,20 +166,71 @@ impl DawApp {
         }
     }
 
+    fn prune_ui_after_history(&mut self) {
+        self.engine.set_beats_per_second(self.project.beats_per_second());
+        self.playlist.prune_selection(&self.project);
+        if let CenterView::PianoRoll { clip_id } = self.center_view {
+            if self.project.clip(clip_id).is_none() {
+                self.back_to_playlist();
+            } else {
+                self.piano_roll.prune_selection(clip_id, &self.project);
+            }
+        }
+        if matches!(self.settings_return, CenterView::PianoRoll { clip_id } if self.project.clip(clip_id).is_none())
+        {
+            self.settings_return = CenterView::Playlist;
+        }
+        self.sync_instruments();
+    }
+
+    fn undo_edit(&mut self) {
+        if !self.history.can_undo() {
+            self.status_message = String::from("Nothing to undo");
+            return;
+        }
+        if !self.history.undo(&mut self.project) {
+            return;
+        }
+        self.prune_ui_after_history();
+        self.status_message = String::from("Undo");
+    }
+
+    fn redo_edit(&mut self) {
+        if !self.history.can_redo() {
+            self.status_message = String::from("Nothing to redo");
+            return;
+        }
+        if !self.history.redo(&mut self.project) {
+            return;
+        }
+        self.prune_ui_after_history();
+        self.status_message = String::from("Redo");
+    }
+
     fn delete_selected_notes(&mut self) {
         let CenterView::PianoRoll { clip_id } = self.center_view else {
             return;
         };
-        let ids: Vec<u64> = self.piano_roll.selected_note_ids().iter().copied().collect();
+        let ids: Vec<u64> = self
+            .piano_roll
+            .selected_note_ids()
+            .iter()
+            .copied()
+            .collect();
         if ids.is_empty() {
             return;
         }
+        self.history.push_before(self.project.clone());
+        self.remove_notes_from_clip(clip_id, &ids);
+        self.piano_roll.clear_selection();
+    }
+
+    fn remove_notes_from_clip(&mut self, clip_id: u64, ids: &[u64]) {
         if let Some(clip) = self.project.clip_mut(clip_id) {
             for id in ids {
-                clip.remove_note(id);
+                clip.remove_note(*id);
             }
         }
-        self.piano_roll.clear_selection();
     }
 
     fn delete_selected_clips(&mut self) {
@@ -182,25 +238,34 @@ impl DawApp {
         if ids.is_empty() {
             return;
         }
+        self.history.push_before(self.project.clone());
+        self.remove_clips(&ids);
+        self.playlist.clear_selection();
+    }
+
+    fn remove_clips(&mut self, ids: &[u64]) {
         for id in ids {
-            self.project.remove_clip(id);
-            if matches!(self.center_view, CenterView::PianoRoll { clip_id } if clip_id == id) {
+            self.project.remove_clip(*id);
+            if matches!(self.center_view, CenterView::PianoRoll { clip_id } if clip_id == *id) {
                 self.center_view = CenterView::Playlist;
                 self.piano_roll.clear_selection();
             }
-            if matches!(self.settings_return, CenterView::PianoRoll { clip_id } if clip_id == id)
-            {
+            if matches!(self.settings_return, CenterView::PianoRoll { clip_id } if clip_id == *id) {
                 self.settings_return = CenterView::Playlist;
             }
         }
-        self.playlist.clear_selection();
     }
 
     fn duplicate_selected_notes(&mut self) {
         let CenterView::PianoRoll { clip_id } = self.center_view else {
             return;
         };
-        let ids: Vec<u64> = self.piano_roll.selected_note_ids().iter().copied().collect();
+        let ids: Vec<u64> = self
+            .piano_roll
+            .selected_note_ids()
+            .iter()
+            .copied()
+            .collect();
         if ids.is_empty() {
             return;
         }
@@ -213,9 +278,8 @@ impl DawApp {
                     .map(|note| (note.start_beats, note.end_beats()))
             }))
         };
-        let new_ids = self
-            .project
-            .duplicate_notes_in_clip(clip_id, &ids, span, 0);
+        self.history.push_before(self.project.clone());
+        let new_ids = self.project.duplicate_notes_in_clip(clip_id, &ids, span, 0);
         if !new_ids.is_empty() {
             self.piano_roll.set_selection(new_ids);
         }
@@ -231,10 +295,137 @@ impl DawApp {
                 .clip(*id)
                 .map(|clip| (clip.start_beats, clip.end_beats()))
         }));
+        self.history.push_before(self.project.clone());
         let new_ids = self.project.duplicate_clips(&ids, span);
         if !new_ids.is_empty() {
             self.playlist.set_selection(new_ids);
         }
+    }
+
+    fn copy_selected_notes(&mut self) {
+        let CenterView::PianoRoll { clip_id } = self.center_view else {
+            return;
+        };
+        let ids: Vec<u64> = self
+            .piano_roll
+            .selected_note_ids()
+            .iter()
+            .copied()
+            .collect();
+        if ids.is_empty() {
+            return;
+        }
+        let notes = self.project.notes_for_clipboard(clip_id, &ids);
+        self.clipboard = EditClipboard::from_notes(&notes);
+        if !self.clipboard.is_empty() {
+            self.status_message = format!("Copied {} note(s)", notes.len());
+        }
+    }
+
+    fn copy_selected_clips(&mut self) {
+        let ids: Vec<u64> = self.playlist.selected_clip_ids().iter().copied().collect();
+        if ids.is_empty() {
+            return;
+        }
+        let clips = self.project.clips_for_clipboard(&ids);
+        if clips.is_empty() {
+            return;
+        }
+        let count = clips.len();
+        self.clipboard = EditClipboard::Clips(clips);
+        self.status_message = format!("Copied {count} clip(s)");
+    }
+
+    fn paste_notes_at_playhead(&mut self, clip_id: u64) {
+        let EditClipboard::Notes(notes) = &self.clipboard else {
+            if self.clipboard.is_empty() {
+                self.status_message = String::from("Clipboard empty");
+            } else {
+                self.status_message = String::from("Clipboard has clips - paste in playlist");
+            }
+            return;
+        };
+        let notes = notes.clone();
+        let clip_start = self
+            .project
+            .clip(clip_id)
+            .map(|clip| clip.start_beats)
+            .unwrap_or(0.0);
+        let origin = (self.engine.current_beats() - clip_start).max(0.0);
+        let before = self.project.clone();
+        let new_ids = self.project.paste_notes_into_clip(clip_id, &notes, origin);
+        if new_ids.is_empty() {
+            self.project = before;
+            return;
+        }
+        self.history.push_before(before);
+        self.piano_roll.set_selection(new_ids);
+        self.status_message = format!("Pasted {} note(s)", notes.len());
+    }
+
+    fn paste_clips_at_playhead(&mut self) {
+        let EditClipboard::Clips(clips) = &self.clipboard else {
+            if self.clipboard.is_empty() {
+                self.status_message = String::from("Clipboard empty");
+            } else {
+                self.status_message = String::from("Clipboard has notes - paste in piano roll");
+            }
+            return;
+        };
+        let clips = clips.clone();
+        let origin = self.engine.current_beats();
+        let before = self.project.clone();
+        let new_ids = self.project.paste_clips(&clips, origin);
+        if new_ids.is_empty() {
+            self.project = before;
+            self.status_message = String::from("Paste failed (missing track?)");
+            return;
+        }
+        self.history.push_before(before);
+        self.playlist.set_selection(new_ids);
+        self.status_message = format!("Pasted {} clip(s)", clips.len());
+    }
+
+    fn cut_selected_notes(&mut self) {
+        let CenterView::PianoRoll { clip_id } = self.center_view else {
+            return;
+        };
+        let ids: Vec<u64> = self
+            .piano_roll
+            .selected_note_ids()
+            .iter()
+            .copied()
+            .collect();
+        if ids.is_empty() {
+            return;
+        }
+        let notes = self.project.notes_for_clipboard(clip_id, &ids);
+        let count = notes.len();
+        if count == 0 {
+            return;
+        }
+        self.history.push_before(self.project.clone());
+        self.clipboard = EditClipboard::from_notes(&notes);
+        self.remove_notes_from_clip(clip_id, &ids);
+        self.piano_roll.clear_selection();
+        self.status_message = format!("Cut {count} note(s)");
+    }
+
+    fn cut_selected_clips(&mut self) {
+        let ids: Vec<u64> = self.playlist.selected_clip_ids().iter().copied().collect();
+        if ids.is_empty() {
+            return;
+        }
+        let clips = self.project.clips_for_clipboard(&ids);
+        let count = clips.len();
+        if count == 0 {
+            return;
+        }
+        self.history.push_before(self.project.clone());
+        self.clipboard = EditClipboard::Clips(clips);
+        self.remove_clips(&ids);
+        self.playlist.clear_selection();
+        self.status_message = format!("Cut {count} clip(s)");
     }
 
     fn open_clip(&mut self, clip_id: u64) {
@@ -302,10 +493,33 @@ impl DawApp {
                 CenterView::PianoRoll { .. } => self.delete_selected_notes(),
                 CenterView::Settings => {}
             },
+            Action::CopySelection => match self.center_view {
+                CenterView::Playlist => self.copy_selected_clips(),
+                CenterView::PianoRoll { .. } => self.copy_selected_notes(),
+                CenterView::Settings => {}
+            },
+            Action::CutSelection => match self.center_view {
+                CenterView::Playlist => self.cut_selected_clips(),
+                CenterView::PianoRoll { .. } => self.cut_selected_notes(),
+                CenterView::Settings => {}
+            },
+            Action::PasteSelection => match self.center_view {
+                CenterView::Playlist => self.paste_clips_at_playhead(),
+                CenterView::PianoRoll { clip_id } => self.paste_notes_at_playhead(clip_id),
+                CenterView::Settings => {}
+            },
             Action::DuplicateSelection => match self.center_view {
                 CenterView::Playlist => self.duplicate_selected_clips(),
                 CenterView::PianoRoll { .. } => self.duplicate_selected_notes(),
                 CenterView::Settings => {}
+            },
+            Action::Undo => match self.center_view {
+                CenterView::Settings => {}
+                _ => self.undo_edit(),
+            },
+            Action::Redo => match self.center_view {
+                CenterView::Settings => {}
+                _ => self.redo_edit(),
             },
             Action::SaveProject => self.save_project(),
             Action::LoadProject => self.load_project_from_disk(),
@@ -386,81 +600,88 @@ impl eframe::App for DawApp {
 
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
-            .show(ctx, |ui| {
-                match self.center_view {
-                    CenterView::Playlist => {
-                        let (open_clip, editor_request) = {
-                            let DawApp {
-                                playlist,
-                                project,
-                                engine,
-                                settings,
-                                catalog,
-                                ..
-                            } = self;
-                            playlist.show(
-                                ui,
-                                project,
-                                engine,
-                                catalog,
-                                settings.themes.colors(),
-                            );
-                            (
-                                playlist.take_open_clip_request(),
-                                playlist.take_plugin_editor_request(),
-                            )
-                        };
-                        if let Some(clip_id) = open_clip {
-                            self.open_clip(clip_id);
-                        }
-                        if let Some(request) = editor_request {
-                            self.handle_plugin_editor_request(ctx, frame, request);
-                        }
+            .show(ctx, |ui| match self.center_view {
+                CenterView::Playlist => {
+                    let (open_clip, editor_request) = {
+                        let DawApp {
+                            playlist,
+                            project,
+                            engine,
+                            settings,
+                            catalog,
+                            history,
+                            ..
+                        } = self;
+                        playlist.show(
+                            ui,
+                            project,
+                            engine,
+                            catalog,
+                            history,
+                            settings.themes.colors(),
+                        );
+                        (
+                            playlist.take_open_clip_request(),
+                            playlist.take_plugin_editor_request(),
+                        )
+                    };
+                    if let Some(clip_id) = open_clip {
+                        self.open_clip(clip_id);
                     }
-                    CenterView::PianoRoll { clip_id } => {
-                        if self.project.clip(clip_id).is_some() {
-                            let DawApp {
-                                piano_roll,
-                                project,
-                                engine,
-                                settings,
-                                ..
-                            } = self;
-                            piano_roll.show(
-                                ui,
-                                clip_id,
-                                project,
-                                engine,
-                                settings.themes.colors(),
-                            );
-                        } else {
-                            self.back_to_playlist();
-                        }
+                    if let Some(request) = editor_request {
+                        self.handle_plugin_editor_request(ctx, frame, request);
                     }
-                    CenterView::Settings => {
-                        ui.add_space(8.0);
-                        egui::Frame::central_panel(ui.style()).show(ui, |ui| {
-                            match self.settings_ui.show(
-                                ui,
-                                &mut self.settings.shortcuts,
-                                &mut self.settings.themes,
-                                &mut self.catalog,
-                                &mut self.settings.plugin_extra_paths,
-                            ) {
-                                Some(SettingsAction::Back) => self.close_settings(),
-                                Some(SettingsAction::ShortcutsChanged)
-                                | Some(SettingsAction::ThemeChanged) => self.save_settings(),
-                                Some(SettingsAction::PluginsChanged) => {
-                                    self.save_settings();
-                                    self.save_plugin_cache();
-                                    self.engine.invalidate_instruments();
-                                    self.instrument_errors.clear();
-                                    self.sync_instruments();
-                                }
-                                None => {}
+                }
+                CenterView::PianoRoll { clip_id } => {
+                    if self.project.clip(clip_id).is_some() {
+                        let DawApp {
+                            piano_roll,
+                            project,
+                            engine,
+                            settings,
+                            history,
+                            ..
+                        } = self;
+                        piano_roll.show(
+                            ui,
+                            clip_id,
+                            project,
+                            engine,
+                            history,
+                            settings.themes.colors(),
+                        );
+                    } else {
+                        self.back_to_playlist();
+                    }
+                }
+                CenterView::Settings => {
+                    ui.add_space(8.0);
+                    egui::Frame::central_panel(ui.style()).show(ui, |ui| {
+                        match self.settings_ui.show(
+                            ui,
+                            &mut self.settings.shortcuts,
+                            &mut self.settings.themes,
+                            &mut self.catalog,
+                            &mut self.settings.plugin_extra_paths,
+                            &mut self.settings.undo_limit,
+                        ) {
+                            Some(SettingsAction::Back) => self.close_settings(),
+                            Some(SettingsAction::ShortcutsChanged)
+                            | Some(SettingsAction::ThemeChanged) => self.save_settings(),
+                            Some(SettingsAction::EditingChanged) => {
+                                self.history.set_limit(self.settings.undo_limit);
+                                self.save_settings();
                             }
-                        });
-                    }
+                            Some(SettingsAction::PluginsChanged) => {
+                                self.save_settings();
+                                self.save_plugin_cache();
+                                self.engine.invalidate_instruments();
+                                self.instrument_errors.clear();
+                                self.sync_instruments();
+                            }
+                            None => {}
+                        }
+                    });
                 }
             });
 

@@ -76,13 +76,8 @@ impl HostedPlugin {
         let mut output_refs: [&mut [f32]; 2] = [&mut out_l[..frames], &mut out_r[..frames]];
 
         let result = {
-            let mut buffer = AudioBuffer::new(
-                &input_refs,
-                &mut output_refs,
-                frames,
-                &bus_in,
-                &bus_out,
-            );
+            let mut buffer =
+                AudioBuffer::new(&input_refs, &mut output_refs, frames, &bus_in, &bus_out);
             let mut context = ProcessContext {
                 sample_rate: *sample_rate,
                 max_block_size: MAX_BLOCK_FRAMES,
@@ -205,25 +200,19 @@ impl HostedPlugin {
 
     pub fn editor_is_resizable(&mut self) -> bool {
         match &mut self.instance {
-            PluginInstance::Clap(plugin) => plugin
-                .editor()
-                .map(|e| e.is_resizable())
-                .unwrap_or(false),
-            PluginInstance::Vst3(plugin) => plugin
-                .editor()
-                .map(|e| e.is_resizable())
-                .unwrap_or(false),
+            PluginInstance::Clap(plugin) => {
+                plugin.editor().map(|e| e.is_resizable()).unwrap_or(false)
+            }
+            PluginInstance::Vst3(plugin) => {
+                plugin.editor().map(|e| e.is_resizable()).unwrap_or(false)
+            }
         }
     }
 
     pub fn editor_set_size(&mut self, width: u32, height: u32) -> Option<(u32, u32)> {
         match &mut self.instance {
-            PluginInstance::Clap(plugin) => {
-                plugin.editor().and_then(|e| e.set_size(width, height))
-            }
-            PluginInstance::Vst3(plugin) => {
-                plugin.editor().and_then(|e| e.set_size(width, height))
-            }
+            PluginInstance::Clap(plugin) => plugin.editor().and_then(|e| e.set_size(width, height)),
+            PluginInstance::Vst3(plugin) => plugin.editor().and_then(|e| e.set_size(width, height)),
         }
     }
 
@@ -258,7 +247,6 @@ impl HostedPlugin {
         }
         .encode())
     }
-
 }
 
 /// Load from catalog metadata and activate at `sample_rate`.
@@ -322,7 +310,10 @@ pub fn load_and_activate(
     if let Some(bytes) = state {
         // Best-effort: a corrupt / outdated blob must not silence the track.
         if let Err(error) = apply_state_blob(&mut instance, entry.format, bytes) {
-            eprintln!("motif: plugin state restore failed ({name}): {error}", name = entry.name);
+            eprintln!(
+                "motif: plugin state restore failed ({name}): {error}",
+                name = entry.name
+            );
         }
     }
 

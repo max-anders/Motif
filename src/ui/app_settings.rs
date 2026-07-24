@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::model::{clamp_undo_limit, DEFAULT_UNDO_LIMIT};
+
 use super::shortcuts::{ShortcutRegistry, StoredBinding};
 use super::theme::{Theme, ThemeCatalog, DEFAULT_THEME_NAME};
 
@@ -18,10 +20,16 @@ struct SettingsFile {
     themes: Vec<Theme>,
     #[serde(default)]
     plugin_extra_paths: Vec<PathBuf>,
+    #[serde(default = "default_undo_limit")]
+    undo_limit: usize,
 }
 
 fn default_active_theme() -> String {
     DEFAULT_THEME_NAME.to_string()
+}
+
+fn default_undo_limit() -> usize {
+    DEFAULT_UNDO_LIMIT
 }
 
 #[derive(Debug, Clone)]
@@ -29,6 +37,7 @@ pub struct AppSettings {
     pub shortcuts: ShortcutRegistry,
     pub themes: ThemeCatalog,
     pub plugin_extra_paths: Vec<PathBuf>,
+    pub undo_limit: usize,
 }
 
 impl Default for AppSettings {
@@ -37,6 +46,7 @@ impl Default for AppSettings {
             shortcuts: ShortcutRegistry::defaults(),
             themes: ThemeCatalog::default(),
             plugin_extra_paths: Vec::new(),
+            undo_limit: DEFAULT_UNDO_LIMIT,
         }
     }
 }
@@ -50,8 +60,7 @@ impl AppSettings {
     }
 
     pub fn from_json(json: &str) -> Result<Self, String> {
-        let file: SettingsFile =
-            serde_json::from_str(json).map_err(|error| error.to_string())?;
+        let file: SettingsFile = serde_json::from_str(json).map_err(|error| error.to_string())?;
 
         let mut shortcuts = if file.bindings.is_empty() {
             ShortcutRegistry::defaults()
@@ -66,6 +75,7 @@ impl AppSettings {
             shortcuts,
             themes,
             plugin_extra_paths: file.plugin_extra_paths,
+            undo_limit: clamp_undo_limit(file.undo_limit),
         })
     }
 
@@ -76,6 +86,7 @@ impl AppSettings {
             active_theme,
             themes,
             plugin_extra_paths: self.plugin_extra_paths.clone(),
+            undo_limit: clamp_undo_limit(self.undo_limit),
         };
         let json = serde_json::to_string_pretty(&file).map_err(|error| error.to_string())?;
         fs::write(path, json).map_err(|error| error.to_string())

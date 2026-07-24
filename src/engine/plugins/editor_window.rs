@@ -17,10 +17,10 @@ use std::os::raw::{c_int, c_long, c_uint};
 use std::ptr;
 
 use x11::xlib::{
-    self, Atom, ClientMessage, ConfigureNotify, DestroyNotify, Display, ExposureMask,
-    FocusChangeMask, InputHint, PBaseSize, PMinSize, PSize, PropertyChangeMask,
-    StructureNotifyMask, SubstructureNotifyMask, Window, XClientMessageEvent, XConfigureEvent,
-    XEvent, XSetWindowAttributes, CWBackPixel, CWBorderPixel, CWEventMask,
+    self, Atom, CWBackPixel, CWBorderPixel, CWEventMask, ClientMessage, ConfigureNotify,
+    DestroyNotify, Display, ExposureMask, FocusChangeMask, InputHint, PBaseSize, PMinSize, PSize,
+    PropertyChangeMask, StructureNotifyMask, SubstructureNotifyMask, Window, XClientMessageEvent,
+    XConfigureEvent, XEvent, XSetWindowAttributes,
 };
 
 const DEFAULT_WIDTH: c_uint = 800;
@@ -139,13 +139,7 @@ impl EditorParentWindow {
         let wm_protocols = intern_atom(display, b"WM_PROTOCOLS");
         let wm_delete = intern_atom(display, b"WM_DELETE_WINDOW");
 
-        change_prop8(
-            display,
-            window,
-            net_name,
-            utf8,
-            title.as_bytes(),
-        );
+        change_prop8(display, window, net_name, utf8, title.as_bytes());
         let types = [type_dialog, type_utility];
         change_prop_atom(display, window, net_type, &types);
 
@@ -275,7 +269,13 @@ unsafe fn intern_atom(display: *mut Display, name: &[u8]) -> Atom {
     xlib::XInternAtom(display, c.as_ptr(), xlib::False)
 }
 
-unsafe fn change_prop8(display: *mut Display, window: Window, property: Atom, typ: Atom, data: &[u8]) {
+unsafe fn change_prop8(
+    display: *mut Display,
+    window: Window,
+    property: Atom,
+    typ: Atom,
+    data: &[u8],
+) {
     xlib::XChangeProperty(
         display,
         window,

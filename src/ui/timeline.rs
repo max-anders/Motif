@@ -1,8 +1,51 @@
-use egui::{Pos2, Rect, Response, Ui, Vec2};
+use std::hash::Hash;
+
+use egui::containers::scroll_area::ScrollBarVisibility;
+use egui::style::ScrollStyle;
+use egui::{Pos2, Rect, Response, ScrollArea, Ui, Vec2};
 
 use crate::engine::DawEngine;
 use crate::model::{Project, SNAP_BEATS};
 use crate::ui::theme::ThemeColors;
+
+/// egui's default floating bars fade to invisible when idle. DAW editors need
+/// always-opaque, space-taking bars so scroll position stays readable.
+pub fn with_solid_scrollbars<R>(
+    ui: &mut Ui,
+    theme: &ThemeColors,
+    add_contents: impl FnOnce(&mut Ui) -> R,
+) -> R {
+    let previous_scroll = ui.style().spacing.scroll;
+    let previous_visuals = ui.visuals().clone();
+    {
+        let style = ui.style_mut();
+        let mut scroll = ScrollStyle::solid();
+        // Slightly wider than egui's 6px solid default for easier grabbing.
+        scroll.bar_width = 10.0;
+        scroll.handle_min_length = 24.0;
+        style.spacing.scroll = scroll;
+
+        style.visuals.extreme_bg_color = theme.scrollbar_track;
+        style.visuals.widgets.inactive.bg_fill = theme.scrollbar_handle;
+        style.visuals.widgets.inactive.weak_bg_fill = theme.scrollbar_handle;
+        style.visuals.widgets.hovered.bg_fill = theme.scrollbar_handle_hovered;
+        style.visuals.widgets.hovered.weak_bg_fill = theme.scrollbar_handle_hovered;
+        style.visuals.widgets.active.bg_fill = theme.scrollbar_handle_active;
+        style.visuals.widgets.active.weak_bg_fill = theme.scrollbar_handle_active;
+    }
+    let result = add_contents(ui);
+    ui.style_mut().spacing.scroll = previous_scroll;
+    ui.style_mut().visuals = previous_visuals;
+    result
+}
+
+/// Shared ScrollArea config for playlist and piano-roll canvases.
+pub fn daw_editor_scroll_area(id_salt: impl Hash) -> ScrollArea {
+    ScrollArea::both()
+        .id_salt(id_salt)
+        .auto_shrink([false, false])
+        .scroll_bar_visibility(ScrollBarVisibility::AlwaysVisible)
+}
 
 pub const TIMELINE_GUTTER_WIDTH: f32 = 56.0;
 pub const RULER_HEIGHT: f32 = 26.0;
@@ -23,10 +66,7 @@ pub fn ruler_rect(full: Rect) -> Rect {
 }
 
 pub fn timeline_body_rect(full: Rect) -> Rect {
-    Rect::from_min_max(
-        Pos2::new(full.left(), full.top() + RULER_HEIGHT),
-        full.max,
-    )
+    Rect::from_min_max(Pos2::new(full.left(), full.top() + RULER_HEIGHT), full.max)
 }
 
 pub fn timeline_x(full: Rect, beat: f32, metrics: TimelineMetrics) -> f32 {
@@ -257,10 +297,7 @@ pub fn draw_playhead(
     }
     let x = timeline_x(body, local_beat, metrics);
     painter.line_segment(
-        [
-            Pos2::new(x, ruler.top()),
-            Pos2::new(x, body.bottom()),
-        ],
+        [Pos2::new(x, ruler.top()), Pos2::new(x, body.bottom())],
         egui::Stroke::new(2.0_f32, theme.playhead),
     );
     painter.circle_filled(Pos2::new(x, ruler.center().y), 4.0, theme.playhead);
@@ -342,7 +379,9 @@ pub fn handle_timeline_playhead_pointer(
     if *dragging_playhead {
         if response.dragged() {
             seek_from_pointer(body, pointer, metrics, engine, beat_offset);
-            response.ctx.set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+            response
+                .ctx
+                .set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
         }
         if response.drag_stopped() {
             *dragging_playhead = false;
@@ -356,8 +395,7 @@ pub fn handle_timeline_playhead_pointer(
 
     let shift_held = response.ctx.input(|input| input.modifiers.shift);
 
-    if is_ruler_timeline_pointer(ruler, press_pos) || is_ruler_timeline_pointer(ruler, pointer)
-    {
+    if is_ruler_timeline_pointer(ruler, press_pos) || is_ruler_timeline_pointer(ruler, pointer) {
         if response.drag_started_by(egui::PointerButton::Primary)
             && is_ruler_timeline_pointer(ruler, press_pos)
         {

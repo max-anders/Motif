@@ -4,7 +4,7 @@ use super::{Note, Project, SNAP_BEATS};
 
 pub const DEFAULT_CLIP_LENGTH_BEATS: f32 = 4.0;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MidiClip {
     pub id: u64,
     pub name: String,

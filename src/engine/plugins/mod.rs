@@ -10,7 +10,7 @@ pub use catalog::{CatalogEntry, PluginCatalog, PLUGIN_CACHE_FILE};
 pub use editor::PluginEditorHost;
 pub use host::{load_and_activate, HostedPlugin};
 
-#[cfg(target_os = "linux")]
-pub use editor_window::{init_xlib_threads, HostX11};
 #[cfg(not(target_os = "linux"))]
 pub use editor::HostX11;
+#[cfg(target_os = "linux")]
+pub use editor_window::{init_xlib_threads, HostX11};

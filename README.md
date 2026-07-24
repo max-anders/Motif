@@ -4,7 +4,7 @@ Open-source music sketchpad: piano roll, playlist, soft-synth piano, and CLAP/VS
 
 ## Status
 
-**Early but usable sketchpad** (2026-07-24): playlist + piano roll editing, transport, cpal playback (built-in piano and/or CLAP/VST3), plugin manager + editor windows (Linux X11/XWayland), `project.json` save/load, and Settings for shortcuts, themes, and plugin scan. Not a full DAW.
+**Early but usable sketchpad** (2026-07-24): playlist + piano roll editing with undo/redo, transport, cpal playback (built-in piano and/or CLAP/VST3), plugin manager + editor windows (Linux X11/XWayland), `project.json` save/load, and Settings for shortcuts, themes, plugins, and undo depth. Not a full DAW.
 
 | Area | State |
 |---|---|
@@ -12,13 +12,13 @@ Open-source music sketchpad: piano roll, playlist, soft-synth piano, and CLAP/VS
 | Per-track instruments (piano / CLAP / VST3) | Working (load off UI thread) |
 | Plugin manager (scan / cache) | Working (`plugin_cache.json` in CWD) |
 | Plugin editor GUI | Working on Linux (X11 / XWayland); not Wayland-native |
-| Piano roll (notes + key audition) | Working |
+| Piano roll (notes + key audition + copy/paste) | Working |
+| Undo / redo (clips + notes) | Working (depth in Settings → Editing) |
 | Transport + loop + BPM | Working |
 | Soft piano + plugin mix (`cpal`) | Working (UI continues if device open fails) |
 | Project save/load | Working (`project.json` in CWD; includes CLAP/VST3 state) |
-| Settings (shortcuts + themes + plugins) | Working (`settings.json` in CWD) |
-| VST2 / mixer / export | Not started |
-| Tests / undo / samples | Not started |
+| Settings (shortcuts + themes + plugins + editing) | Working (`settings.json` in CWD) |
+| VST2 / mixer / export / samples | Not started |
 | Platform support | **Linux** (developed & tested); Windows/macOS untested |
 
 It is **free and open source from minute zero**: public from the first commit, not opened up later after something polished existed behind closed doors.
@@ -105,13 +105,20 @@ cargo run --release
 - **Drag clip body** - move selected clip(s) on timeline
 - **Shift + drag clip body** - duplicate selection, then move the copies
 - **Drag clip edges** - resize clip length
-- **Delete / Backspace / Ctrl+X** - remove selected clip(s)
+- **Delete / Backspace** - remove selected clip(s)
+- **Ctrl/Cmd+C** - copy selected clip(s)
+- **Ctrl/Cmd+X** - cut selected clip(s)
+- **Ctrl/Cmd+V** - paste clips at the playhead (same tracks)
 - **Ctrl/Cmd+D** - duplicate selected clip(s) to the right by selection length (remappable)
+- **Ctrl/Cmd+Z** - undo last clip/note edit (remappable)
+- **Ctrl/Cmd+Shift+Z** - redo (remappable)
 - **Add track** - menu: Built-in Piano or a scanned CLAP/VST3 instrument
 - **Right-click track header** - open/close plugin editor (plugin tracks) or change instrument (searchable list)
 - **Left-click / drag ruler** - move playhead (snapped to 1/16)
 - **Shift + left-click** or **right-click empty timeline** - move playhead
 - **Wheel** - scroll; **Shift+Wheel** - horizontal scroll; **Ctrl/Cmd+Wheel** - zoom time
+- **Scrollbars** - always-visible solid bars (drag to scroll)
+- Track headers stay pinned on the left while the timeline scrolls horizontally (vertical scroll stays synced); the beat ruler stays pinned to the top
 
 ### Piano roll (clip editor)
 
@@ -125,10 +132,17 @@ cargo run --release
 - **Press / drag piano keys** - audition pitches (active track instrument)
 - **Left-click / drag ruler** - move playhead (mapped to arrangement time)
 - **Shift + left-click** or **right-click empty grid** - move playhead
-- **Delete / Backspace / Ctrl+X** - remove selected note(s)
+- **Delete / Backspace** - remove selected note(s)
+- **Ctrl/Cmd+C** - copy selected note(s)
+- **Ctrl/Cmd+X** - cut selected note(s)
+- **Ctrl/Cmd+V** - paste notes into the open clip at the playhead (works across clips)
 - **Ctrl/Cmd+D** - duplicate selected note(s) to the right by selection length (remappable)
+- **Ctrl/Cmd+Z** - undo last clip/note edit (remappable)
+- **Ctrl/Cmd+Shift+Z** - redo (remappable)
 - **Right-click note** - delete note
 - **Wheel** - scroll vertical; **Shift+Wheel** - horizontal; **Ctrl/Cmd+Wheel** - zoom time; **Alt+Wheel** - zoom keys
+- **Scrollbars** - always-visible solid bars (drag to scroll)
+- Piano keys stay pinned on the left while the grid scrolls horizontally (vertical scroll stays synced); the beat ruler stays pinned to the top
 
 ### Transport
 
@@ -138,7 +152,7 @@ cargo run --release
 - **Ctrl/Cmd+S** - save `project.json` (includes per-track CLAP/VST3 state; factory default; remappable)
 - **Ctrl/Cmd+O** - load `project.json` (restores plugin state after instruments load; factory default; remappable)
 - **Save / Load** buttons - same as the shortcuts above
-- **Settings** - themes, shortcut remapping, Plugin Manager (Rescan / extra paths); saved to `settings.json` + `plugin_cache.json`
+- **Settings** - themes, shortcut remapping (multiple keys per action, conflict Override), Plugin Manager (Rescan / extra paths), Editing (undo depth); saved to `settings.json` + `plugin_cache.json`
 - **Escape** - leave piano roll or Settings (factory default; remappable)
 
 ## Plugins (CLAP / VST3)

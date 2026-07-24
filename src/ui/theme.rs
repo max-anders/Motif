@@ -35,6 +35,16 @@ pub struct ThemeColors {
     #[serde(with = "color32_serde")]
     pub button_text: Color32,
 
+    // Editor scrollbars (solid ScrollArea in playlist / piano roll)
+    #[serde(default = "default_scrollbar_track", with = "color32_serde")]
+    pub scrollbar_track: Color32,
+    #[serde(default = "default_scrollbar_handle", with = "color32_serde")]
+    pub scrollbar_handle: Color32,
+    #[serde(default = "default_scrollbar_handle_hovered", with = "color32_serde")]
+    pub scrollbar_handle_hovered: Color32,
+    #[serde(default = "default_scrollbar_handle_active", with = "color32_serde")]
+    pub scrollbar_handle_active: Color32,
+
     // Timeline shared
     #[serde(with = "color32_serde")]
     pub ruler_bg: Color32,
@@ -105,11 +115,16 @@ pub struct ThemeColors {
     #[serde(with = "color32_serde")]
     pub note_fill_selected: Color32,
     #[serde(with = "color32_serde")]
-    pub note_fill_active: Color32,
-    #[serde(with = "color32_serde")]
     pub note_stroke: Color32,
     #[serde(with = "color32_serde")]
     pub note_stroke_selected: Color32,
+    /// Border for the note under the playhead while transport is playing.
+    #[serde(
+        default = "default_note_stroke_active",
+        alias = "note_fill_active",
+        with = "color32_serde"
+    )]
+    pub note_stroke_active: Color32,
     #[serde(with = "color32_serde")]
     pub note_velocity: Color32,
     #[serde(with = "color32_serde")]
@@ -133,6 +148,11 @@ impl ThemeColors {
             widget_bg_hovered: Color32::from_rgb(55, 55, 70),
             widget_bg_active: Color32::from_rgb(70, 90, 120),
             button_text: Color32::from_rgb(230, 230, 240),
+
+            scrollbar_track: default_scrollbar_track(),
+            scrollbar_handle: default_scrollbar_handle(),
+            scrollbar_handle_hovered: default_scrollbar_handle_hovered(),
+            scrollbar_handle_active: default_scrollbar_handle_active(),
 
             ruler_bg: Color32::from_rgb(28, 28, 34),
             gutter_bg: Color32::from_rgb(22, 22, 28),
@@ -168,9 +188,9 @@ impl ThemeColors {
             key_divider: Color32::from_rgb(70, 70, 85),
             note_fill: Color32::from_rgb(70, 130, 220),
             note_fill_selected: Color32::from_rgb(120, 190, 255),
-            note_fill_active: Color32::from_rgb(255, 180, 70),
             note_stroke: Color32::from_rgb(180, 210, 255),
             note_stroke_selected: Color32::WHITE,
+            note_stroke_active: default_note_stroke_active(),
             note_velocity: Color32::from_rgba_unmultiplied(255, 255, 255, 70),
             marquee_fill: Color32::from_rgba_unmultiplied(120, 180, 255, 40),
             marquee_stroke: Color32::from_rgb(160, 210, 255),
@@ -218,6 +238,18 @@ impl ThemeColors {
             ("Shell", "Widget hovered", &mut self.widget_bg_hovered),
             ("Shell", "Widget active", &mut self.widget_bg_active),
             ("Shell", "Button text", &mut self.button_text),
+            ("Shell", "Scrollbar track", &mut self.scrollbar_track),
+            ("Shell", "Scrollbar handle", &mut self.scrollbar_handle),
+            (
+                "Shell",
+                "Scrollbar handle hovered",
+                &mut self.scrollbar_handle_hovered,
+            ),
+            (
+                "Shell",
+                "Scrollbar handle active",
+                &mut self.scrollbar_handle_active,
+            ),
             ("Timeline", "Ruler background", &mut self.ruler_bg),
             ("Timeline", "Gutter background", &mut self.gutter_bg),
             ("Timeline", "Tick major (bar)", &mut self.tick_major),
@@ -228,17 +260,37 @@ impl ThemeColors {
             ("Timeline", "Grid bar", &mut self.grid_bar),
             ("Timeline", "Grid beat", &mut self.grid_beat),
             ("Timeline", "Grid sub-beat", &mut self.grid_subbeat),
-            ("Playlist", "Track header background", &mut self.track_header_bg),
+            (
+                "Playlist",
+                "Track header background",
+                &mut self.track_header_bg,
+            ),
             ("Playlist", "Track header text", &mut self.track_header_text),
             ("Playlist", "Lane background", &mut self.lane_bg),
             ("Playlist", "Clip fill", &mut self.clip_fill),
-            ("Playlist", "Clip fill selected", &mut self.clip_fill_selected),
+            (
+                "Playlist",
+                "Clip fill selected",
+                &mut self.clip_fill_selected,
+            ),
             ("Playlist", "Clip stroke", &mut self.clip_stroke),
-            ("Playlist", "Clip stroke selected", &mut self.clip_stroke_selected),
+            (
+                "Playlist",
+                "Clip stroke selected",
+                &mut self.clip_stroke_selected,
+            ),
             ("Playlist", "Clip label", &mut self.clip_label),
             ("Playlist", "Clip note preview", &mut self.clip_note_preview),
-            ("Piano roll", "Key row (black pitch)", &mut self.key_row_black),
-            ("Piano roll", "Key row (white pitch)", &mut self.key_row_white),
+            (
+                "Piano roll",
+                "Key row (black pitch)",
+                &mut self.key_row_black,
+            ),
+            (
+                "Piano roll",
+                "Key row (white pitch)",
+                &mut self.key_row_white,
+            ),
             ("Piano roll", "Keys background", &mut self.keys_bg),
             ("Piano roll", "White key", &mut self.white_key),
             ("Piano roll", "White key active", &mut self.white_key_active),
@@ -249,10 +301,22 @@ impl ThemeColors {
             ("Piano roll", "Black key border", &mut self.black_key_border),
             ("Piano roll", "Key divider", &mut self.key_divider),
             ("Piano roll", "Note fill", &mut self.note_fill),
-            ("Piano roll", "Note fill selected", &mut self.note_fill_selected),
-            ("Piano roll", "Note fill active", &mut self.note_fill_active),
+            (
+                "Piano roll",
+                "Note fill selected",
+                &mut self.note_fill_selected,
+            ),
             ("Piano roll", "Note stroke", &mut self.note_stroke),
-            ("Piano roll", "Note stroke selected", &mut self.note_stroke_selected),
+            (
+                "Piano roll",
+                "Note stroke selected",
+                &mut self.note_stroke_selected,
+            ),
+            (
+                "Piano roll",
+                "Note stroke active",
+                &mut self.note_stroke_active,
+            ),
             ("Piano roll", "Note velocity", &mut self.note_velocity),
             ("Piano roll", "Marquee fill", &mut self.marquee_fill),
             ("Piano roll", "Marquee stroke", &mut self.marquee_stroke),
@@ -409,6 +473,26 @@ impl ThemeCatalog {
             self.active_theme = DEFAULT_THEME_NAME.to_string();
         }
     }
+}
+
+fn default_note_stroke_active() -> Color32 {
+    Color32::from_rgb(255, 180, 70)
+}
+
+fn default_scrollbar_track() -> Color32 {
+    Color32::from_rgb(42, 42, 54)
+}
+
+fn default_scrollbar_handle() -> Color32 {
+    Color32::from_rgb(120, 120, 145)
+}
+
+fn default_scrollbar_handle_hovered() -> Color32 {
+    Color32::from_rgb(155, 155, 180)
+}
+
+fn default_scrollbar_handle_active() -> Color32 {
+    Color32::from_rgb(100, 170, 255)
 }
 
 mod color32_serde {

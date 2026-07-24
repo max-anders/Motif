@@ -76,8 +76,7 @@ impl PluginCatalog {
     }
 
     pub fn from_cache_json(json: &str) -> Result<Self, String> {
-        let file: CacheFile =
-            serde_json::from_str(json).map_err(|error| error.to_string())?;
+        let file: CacheFile = serde_json::from_str(json).map_err(|error| error.to_string())?;
         Ok(Self {
             entries: file.entries,
             scanned_at_unix: Some(file.scanned_at_unix),
@@ -93,8 +92,7 @@ impl PluginCatalog {
             extra_paths: self.extra_paths.clone(),
             entries: self.entries.clone(),
         };
-        let json =
-            serde_json::to_string_pretty(&file).map_err(|error| error.to_string())?;
+        let json = serde_json::to_string_pretty(&file).map_err(|error| error.to_string())?;
         fs::write(path, json).map_err(|error| error.to_string())
     }
 
@@ -102,11 +100,7 @@ impl PluginCatalog {
         self.entries.len()
     }
 
-    pub fn find(
-        &self,
-        format: PluginFormat,
-        unique_id: &str,
-    ) -> Option<&CatalogEntry> {
+    pub fn find(&self, format: PluginFormat, unique_id: &str) -> Option<&CatalogEntry> {
         self.entries
             .iter()
             .find(|entry| entry.format == format && entry.unique_id == unique_id)
@@ -199,7 +193,11 @@ fn is_yabridge_path(path: &Path) -> bool {
     })
 }
 
-fn keep_catalog_candidate(format: PluginFormat, category: PluginCategory, accepts_midi: bool) -> bool {
+fn keep_catalog_candidate(
+    format: PluginFormat,
+    category: PluginCategory,
+    accepts_midi: bool,
+) -> bool {
     match format {
         // truce-rack currently tags every VST3 as Effect; keep MIDI-capable modules.
         PluginFormat::Vst3 => {

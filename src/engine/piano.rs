@@ -1,12 +1,7 @@
 //! Soft additive piano voice mixer for the audio callback.
 
 const MAX_VOICES: usize = 32;
-const HARMONICS: [(f32, f32); 4] = [
-    (1.0, 1.0),
-    (2.0, 0.45),
-    (3.0, 0.22),
-    (4.0, 0.10),
-];
+const HARMONICS: [(f32, f32); 4] = [(1.0, 1.0), (2.0, 0.45), (3.0, 0.22), (4.0, 0.10)];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum VoiceStage {
@@ -76,7 +71,11 @@ impl PianoSynth {
         let phase_inc = freq / self.sample_rate;
 
         // Retrigger existing voice for this pitch if present.
-        if let Some(voice) = self.voices.iter_mut().find(|v| v.is_active() && v.pitch == pitch) {
+        if let Some(voice) = self
+            .voices
+            .iter_mut()
+            .find(|v| v.is_active() && v.pitch == pitch)
+        {
             voice.stage = VoiceStage::Attack;
             voice.phase = 0.0;
             voice.phase_inc = phase_inc;

@@ -5,7 +5,7 @@ use super::instrument::TrackInstrument;
 use super::serde_b64;
 use super::{Note, Project};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Track {
     pub id: u64,
     pub name: String,
@@ -13,11 +13,7 @@ pub struct Track {
     pub instrument: TrackInstrument,
     /// Opaque CLAP/VST3 state (RKST envelope). Restored after plugin activate.
     /// Kept off `TrackInstrument` so identity sync does not reload on every save.
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        with = "serde_b64"
-    )]
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "serde_b64")]
     pub plugin_state: Option<Vec<u8>>,
     pub clips: Vec<MidiClip>,
 }

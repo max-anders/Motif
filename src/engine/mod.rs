@@ -32,11 +32,7 @@ pub trait DawEngine {
 
     /// Load/unload per-track voices to match `project` instruments.
     /// Returns `(track_id, error)` pairs for failed loads.
-    fn sync_instruments(
-        &mut self,
-        project: &Project,
-        catalog: &Catalog,
-    ) -> Vec<(u64, String)>;
+    fn sync_instruments(&mut self, project: &Project, catalog: &Catalog) -> Vec<(u64, String)>;
 
     /// Copy live CLAP/VST3 state into each track's `plugin_state` before project save.
     fn capture_plugin_states(&mut self, project: &mut Project) {
