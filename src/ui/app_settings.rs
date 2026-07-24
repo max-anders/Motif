@@ -1,7 +1,7 @@
-//! Combined app settings persistence (`settings.json`): shortcuts + themes.
+//! Combined app settings persistence (`settings.json`): shortcuts + themes + plugin paths.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -16,6 +16,8 @@ struct SettingsFile {
     active_theme: String,
     #[serde(default)]
     themes: Vec<Theme>,
+    #[serde(default)]
+    plugin_extra_paths: Vec<PathBuf>,
 }
 
 fn default_active_theme() -> String {
@@ -26,6 +28,7 @@ fn default_active_theme() -> String {
 pub struct AppSettings {
     pub shortcuts: ShortcutRegistry,
     pub themes: ThemeCatalog,
+    pub plugin_extra_paths: Vec<PathBuf>,
 }
 
 impl Default for AppSettings {
@@ -33,6 +36,7 @@ impl Default for AppSettings {
         Self {
             shortcuts: ShortcutRegistry::defaults(),
             themes: ThemeCatalog::default(),
+            plugin_extra_paths: Vec::new(),
         }
     }
 }
@@ -58,7 +62,11 @@ impl AppSettings {
         shortcuts.ensure_default_actions();
 
         let themes = ThemeCatalog::from_stored(file.active_theme, file.themes);
-        Ok(Self { shortcuts, themes })
+        Ok(Self {
+            shortcuts,
+            themes,
+            plugin_extra_paths: file.plugin_extra_paths,
+        })
     }
 
     pub fn save_to_path(&self, path: &Path) -> Result<(), String> {
@@ -67,6 +75,7 @@ impl AppSettings {
             bindings: self.shortcuts.to_stored()?,
             active_theme,
             themes,
+            plugin_extra_paths: self.plugin_extra_paths.clone(),
         };
         let json = serde_json::to_string_pretty(&file).map_err(|error| error.to_string())?;
         fs::write(path, json).map_err(|error| error.to_string())

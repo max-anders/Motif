@@ -1,5 +1,6 @@
 use crate::model::Project;
 
+use super::plugins::PluginCatalog;
 use super::DawEngine;
 
 pub struct MockEngine {
@@ -75,11 +76,21 @@ impl DawEngine for MockEngine {
         }
     }
 
-    fn note_on(&mut self, _pitch: u8, _velocity: u8) {}
+    fn note_on(&mut self, _track_id: u64, _pitch: u8, _velocity: u8) {}
 
-    fn note_off(&mut self, _pitch: u8) {}
+    fn note_off(&mut self, _track_id: u64, _pitch: u8) {}
 
     fn all_notes_off(&mut self) {}
+
+    fn sync_instruments(
+        &mut self,
+        _project: &Project,
+        _catalog: &PluginCatalog,
+    ) -> Vec<(u64, String)> {
+        Vec::new()
+    }
+
+    fn invalidate_instruments(&mut self) {}
 
     fn schedule_project(&mut self, _project: &Project) {}
 }

@@ -1,12 +1,15 @@
 use serde::{Deserialize, Serialize};
 
 use super::clip::{MidiClip, DEFAULT_CLIP_LENGTH_BEATS};
+use super::instrument::TrackInstrument;
 use super::{Note, Project};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Track {
     pub id: u64,
     pub name: String,
+    #[serde(default)]
+    pub instrument: TrackInstrument,
     pub clips: Vec<MidiClip>,
 }
 

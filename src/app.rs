@@ -1,9 +1,10 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
 use eframe::egui;
 
-use crate::engine::{AudioEngine, DawEngine};
+use crate::engine::{AudioEngine, DawEngine, PluginCatalog, PLUGIN_CACHE_FILE};
 use crate::model::Project;
 use crate::ui::{
     Action, AppSettings, PianoRollUi, PlaylistUi, PollFilter, SettingsAction, SettingsUi,
@@ -29,6 +30,9 @@ pub struct DawApp {
     /// View to restore when leaving Settings (playlist or piano roll).
     settings_return: CenterView,
     settings: AppSettings,
+    catalog: PluginCatalog,
+    /// Per-track instrument load errors for playlist headers.
+    instrument_errors: HashMap<u64, String>,
     status_message: String,
 }
 
@@ -37,16 +41,22 @@ impl DawApp {
         let project = load_project().unwrap_or_default();
         let engine = AudioEngine::new(project.beats_per_second());
         let settings = AppSettings::load_or_defaults(&Self::settings_path());
+        let mut catalog = PluginCatalog::load_or_defaults(&Self::plugin_cache_path());
+        catalog.extra_paths = settings.plugin_extra_paths.clone();
+        if catalog.entries.is_empty() {
+            catalog.rescan();
+            let _ = catalog.save_to_path(&Self::plugin_cache_path());
+        }
         let status_message = if engine.audio_available() {
             String::from(
-                "Playlist: click empty lane to add clip, double-click clip to open piano roll. Wheel=scroll, Ctrl+Wheel=zoom H.",
+                "Playlist: Add track picks an instrument. Right-click track header to change. Double-click clip for piano roll.",
             )
         } else {
             let detail = engine.init_error().unwrap_or("unknown error");
             format!("Audio unavailable ({detail}). Transport still works silently.")
         };
 
-        Self {
+        let mut app = Self {
             project,
             engine,
             playlist: PlaylistUi::default(),
@@ -55,8 +65,12 @@ impl DawApp {
             center_view: CenterView::Playlist,
             settings_return: CenterView::Playlist,
             settings,
+            catalog,
+            instrument_errors: HashMap::new(),
             status_message,
-        }
+        };
+        app.sync_instruments();
+        app
     }
 
     fn project_path() -> PathBuf {
@@ -65,6 +79,33 @@ impl DawApp {
 
     fn settings_path() -> PathBuf {
         PathBuf::from(SETTINGS_FILE)
+    }
+
+    fn plugin_cache_path() -> PathBuf {
+        PathBuf::from(PLUGIN_CACHE_FILE)
+    }
+
+    fn sync_instruments(&mut self) {
+        let updates = self
+            .engine
+            .sync_instruments(&self.project, &self.catalog);
+        for (track_id, error) in updates {
+            if error.is_empty() {
+                self.instrument_errors.remove(&track_id);
+            } else {
+                self.instrument_errors.insert(track_id, error);
+            }
+        }
+        self.instrument_errors
+            .retain(|track_id, _| self.project.tracks.iter().any(|t| t.id == *track_id));
+        self.playlist
+            .set_instrument_errors(self.instrument_errors.clone());
+    }
+
+    fn save_plugin_cache(&mut self) {
+        if let Err(error) = self.catalog.save_to_path(&Self::plugin_cache_path()) {
+            self.status_message = format!("Plugin cache save failed: {error}");
+        }
     }
 
     fn save_settings(&mut self) {
@@ -102,6 +143,7 @@ impl DawApp {
                 self.piano_roll.release_audition(&mut self.engine);
                 self.piano_roll.clear_selection();
                 self.settings_ui.clear_capture();
+                self.sync_instruments();
                 self.status_message = format!("Loaded {PROJECT_FILE}");
             }
             Err(error) => self.status_message = format!("Load failed: {error}"),
@@ -243,6 +285,7 @@ impl eframe::App for DawApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let delta_seconds = ctx.input(|input| input.unstable_dt);
         let loop_end = self.project.loop_end_beats;
+        self.sync_instruments();
         self.engine.advance(delta_seconds, loop_end);
         self.engine.schedule_project(&self.project);
 
@@ -312,9 +355,16 @@ impl eframe::App for DawApp {
                                 project,
                                 engine,
                                 settings,
+                                catalog,
                                 ..
                             } = self;
-                            playlist.show(ui, project, engine, settings.themes.colors());
+                            playlist.show(
+                                ui,
+                                project,
+                                engine,
+                                catalog,
+                                settings.themes.colors(),
+                            );
                             playlist.take_open_clip_request()
                         };
                         if let Some(clip_id) = open_clip {
@@ -348,10 +398,19 @@ impl eframe::App for DawApp {
                                 ui,
                                 &mut self.settings.shortcuts,
                                 &mut self.settings.themes,
+                                &mut self.catalog,
+                                &mut self.settings.plugin_extra_paths,
                             ) {
                                 Some(SettingsAction::Back) => self.close_settings(),
                                 Some(SettingsAction::ShortcutsChanged)
                                 | Some(SettingsAction::ThemeChanged) => self.save_settings(),
+                                Some(SettingsAction::PluginsChanged) => {
+                                    self.save_settings();
+                                    self.save_plugin_cache();
+                                    self.engine.invalidate_instruments();
+                                    self.instrument_errors.clear();
+                                    self.sync_instruments();
+                                }
                                 None => {}
                             }
                         });

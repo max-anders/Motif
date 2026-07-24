@@ -2,7 +2,9 @@
 name = "motif"
 version = "0.1.0"
 edition = "2021"
-description = "Motif: open-source music sketchpad (piano roll + soft piano audio)"
+description = "Motif: open-source music sketchpad (piano roll + soft piano / CLAP-VST3)"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/max-anders/Motif"
 
 [dependencies]
 cpal = "0.15"
@@ -10,3 +12,4 @@ eframe = "0.31"
 egui = "0.31"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+truce-rack = { version = "1.1", features = ["clap", "vst3"] }

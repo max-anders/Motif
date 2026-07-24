@@ -74,6 +74,8 @@ pub struct PianoRollUi {
     marquee: Option<MarqueeDrag>,
     dragging_playhead: bool,
     audition_pitch: Option<u8>,
+    /// Track instrument used for keyboard / preview audition.
+    audition_track_id: u64,
     /// When true, audition is held by keyboard or note drag until pointer up.
     audition_held: bool,
     /// Wall-clock deadline for a one-shot create preview (`None` if held).
@@ -100,7 +102,7 @@ impl PianoRollUi {
 
     pub fn release_audition(&mut self, engine: &mut dyn DawEngine) {
         if let Some(pitch) = self.audition_pitch.take() {
-            engine.note_off(pitch);
+            engine.note_off(self.audition_track_id, pitch);
         }
         self.audition_held = false;
         self.audition_until = None;
@@ -117,6 +119,7 @@ impl Default for PianoRollUi {
             marquee: None,
             dragging_playhead: false,
             audition_pitch: None,
+            audition_track_id: 0,
             audition_held: false,
             audition_until: None,
             default_duration_beats: DEFAULT_NOTE_DURATION_BEATS,
@@ -142,6 +145,8 @@ impl PianoRollUi {
             };
             (clip.start_beats, clip.length_beats.max(4.0), project.beats_per_bar)
         };
+        self.audition_track_id = project.track_id_for_clip(clip_id).unwrap_or(0);
+        let track_id = self.audition_track_id;
         let viewport_rect = ui.available_rect_before_wrap();
         apply_piano_roll_wheel_controls(
             ui,
@@ -217,6 +222,7 @@ impl PianoRollUi {
 
                 tick_timed_audition(
                     engine,
+                    track_id,
                     &mut self.audition_pitch,
                     &mut self.audition_held,
                     &mut self.audition_until,
@@ -229,6 +235,7 @@ impl PianoRollUi {
                     keys_grid,
                     metrics,
                     engine,
+                    track_id,
                     &mut self.audition_pitch,
                     &mut self.audition_held,
                     &mut self.audition_until,
@@ -256,6 +263,7 @@ impl PianoRollUi {
                         project,
                         engine,
                         clip_start,
+                        track_id,
                         &mut self.selected_note_ids,
                         &mut self.active_drag,
                         &mut self.marquee,
@@ -542,18 +550,19 @@ fn draw_keyboard(
 
 fn set_audition_pitch(
     engine: &mut dyn DawEngine,
+    track_id: u64,
     audition_pitch: &mut Option<u8>,
     pitch: u8,
 ) {
     match *audition_pitch {
         Some(current) if current == pitch => {}
         Some(current) => {
-            engine.note_off(current);
-            engine.note_on(pitch, 100);
+            engine.note_off(track_id, current);
+            engine.note_on(track_id, pitch, 100);
             *audition_pitch = Some(pitch);
         }
         None => {
-            engine.note_on(pitch, 100);
+            engine.note_on(track_id, pitch, 100);
             *audition_pitch = Some(pitch);
         }
     }
@@ -561,12 +570,13 @@ fn set_audition_pitch(
 
 fn clear_audition(
     engine: &mut dyn DawEngine,
+    track_id: u64,
     audition_pitch: &mut Option<u8>,
     audition_held: &mut bool,
     audition_until: &mut Option<f64>,
 ) {
     if let Some(pitch) = audition_pitch.take() {
-        engine.note_off(pitch);
+        engine.note_off(track_id, pitch);
     }
     *audition_held = false;
     *audition_until = None;
@@ -574,6 +584,7 @@ fn clear_audition(
 
 fn tick_timed_audition(
     engine: &mut dyn DawEngine,
+    track_id: u64,
     audition_pitch: &mut Option<u8>,
     audition_held: &mut bool,
     audition_until: &mut Option<f64>,
@@ -584,32 +595,34 @@ fn tick_timed_audition(
     }
     if let Some(until) = *audition_until {
         if now >= until {
-            clear_audition(engine, audition_pitch, audition_held, audition_until);
+            clear_audition(engine, track_id, audition_pitch, audition_held, audition_until);
         }
     }
 }
 
 fn preview_pitch_briefly(
     engine: &mut dyn DawEngine,
+    track_id: u64,
     audition_pitch: &mut Option<u8>,
     audition_held: &mut bool,
     audition_until: &mut Option<f64>,
     pitch: u8,
     now: f64,
 ) {
-    set_audition_pitch(engine, audition_pitch, pitch);
+    set_audition_pitch(engine, track_id, audition_pitch, pitch);
     *audition_held = false;
     *audition_until = Some(now + NOTE_CREATE_PREVIEW_SECS);
 }
 
 fn hold_audition_pitch(
     engine: &mut dyn DawEngine,
+    track_id: u64,
     audition_pitch: &mut Option<u8>,
     audition_held: &mut bool,
     audition_until: &mut Option<f64>,
     pitch: u8,
 ) {
-    set_audition_pitch(engine, audition_pitch, pitch);
+    set_audition_pitch(engine, track_id, audition_pitch, pitch);
     *audition_held = true;
     *audition_until = None;
 }
@@ -621,6 +634,7 @@ fn handle_keyboard_audition(
     grid: Rect,
     metrics: ViewMetrics,
     engine: &mut dyn DawEngine,
+    track_id: u64,
     audition_pitch: &mut Option<u8>,
     audition_held: &mut bool,
     audition_until: &mut Option<f64>,
@@ -633,14 +647,14 @@ fn handle_keyboard_audition(
     if !primary_down {
         // Only release held keyboard/drag auditions; timed create previews keep ringing.
         if *audition_held {
-            clear_audition(engine, audition_pitch, audition_held, audition_until);
+            clear_audition(engine, track_id, audition_pitch, audition_held, audition_until);
         }
         return pointer.is_some_and(|pos| keys.contains(pos));
     }
 
     let Some(pointer) = pointer else {
         if *audition_held {
-            clear_audition(engine, audition_pitch, audition_held, audition_until);
+            clear_audition(engine, track_id, audition_pitch, audition_held, audition_until);
         }
         return false;
     };
@@ -656,6 +670,7 @@ fn handle_keyboard_audition(
 
     hold_audition_pitch(
         engine,
+        track_id,
         audition_pitch,
         audition_held,
         audition_until,
@@ -883,6 +898,7 @@ fn finish_active_drag(
     clip_id: u64,
     default_duration_beats: &mut f32,
     engine: &mut dyn DawEngine,
+    track_id: u64,
     audition_pitch: &mut Option<u8>,
     audition_held: &mut bool,
     audition_until: &mut Option<f64>,
@@ -894,7 +910,7 @@ fn finish_active_drag(
             }
         }
         if matches!(drag.mode, DragMode::Move) && *audition_held {
-            clear_audition(engine, audition_pitch, audition_held, audition_until);
+            clear_audition(engine, track_id, audition_pitch, audition_held, audition_until);
         }
     }
 }
@@ -904,6 +920,7 @@ fn audition_primary_drag_pitch(
     project: &Project,
     clip_id: u64,
     engine: &mut dyn DawEngine,
+    track_id: u64,
     audition_pitch: &mut Option<u8>,
     audition_held: &mut bool,
     audition_until: &mut Option<f64>,
@@ -920,6 +937,7 @@ fn audition_primary_drag_pitch(
     };
     hold_audition_pitch(
         engine,
+        track_id,
         audition_pitch,
         audition_held,
         audition_until,
@@ -936,6 +954,7 @@ fn handle_pointer(
     project: &mut Project,
     engine: &mut dyn DawEngine,
     clip_start_beats: f32,
+    track_id: u64,
     selected_note_ids: &mut HashSet<u64>,
     active_drag: &mut Option<ActiveDrag>,
     marquee: &mut Option<MarqueeDrag>,
@@ -963,6 +982,7 @@ fn handle_pointer(
                 clip_id,
                 default_duration_beats,
                 engine,
+                track_id,
                 audition_pitch,
                 audition_held,
                 audition_until,
@@ -989,6 +1009,7 @@ fn handle_pointer(
                         project,
                         clip_id,
                         engine,
+                        track_id,
                         audition_pitch,
                         audition_held,
                         audition_until,
@@ -1009,6 +1030,7 @@ fn handle_pointer(
                 clip_id,
                 default_duration_beats,
                 engine,
+                track_id,
                 audition_pitch,
                 audition_held,
                 audition_until,
@@ -1060,6 +1082,7 @@ fn handle_pointer(
                 set_single_selection(selected_note_ids, note.id);
                 preview_pitch_briefly(
                     engine,
+                    track_id,
                     audition_pitch,
                     audition_held,
                     audition_until,
@@ -1140,6 +1163,7 @@ fn handle_pointer(
                             project,
                             clip_id,
                             engine,
+                            track_id,
                             audition_pitch,
                             audition_held,
                             audition_until,
@@ -1182,6 +1206,7 @@ fn handle_pointer(
             clip_id,
             default_duration_beats,
             engine,
+            track_id,
             audition_pitch,
             audition_held,
             audition_until,

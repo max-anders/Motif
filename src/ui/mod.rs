@@ -1,4 +1,5 @@
 mod app_settings;
+mod instrument_menu;
 mod piano_roll;
 mod playlist;
 mod settings;

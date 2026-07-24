@@ -1,6 +1,10 @@
-//! Settings center view: shortcut remapping + theme colors.
+//! Settings center view: shortcut remapping + theme colors + plugin manager.
+
+use std::path::PathBuf;
 
 use egui::Ui;
+
+use crate::engine::PluginCatalog;
 
 use super::shortcuts::{CaptureOutcome, ShortcutRegistry};
 use super::theme::{ThemeCatalog, DEFAULT_THEME_NAME};
@@ -11,12 +15,14 @@ pub struct SettingsUi {
     capturing: Option<usize>,
     message: String,
     save_name: String,
+    extra_path_draft: String,
 }
 
 pub enum SettingsAction {
     Back,
     ShortcutsChanged,
     ThemeChanged,
+    PluginsChanged,
 }
 
 impl SettingsUi {
@@ -33,6 +39,8 @@ impl SettingsUi {
         ui: &mut Ui,
         shortcuts: &mut ShortcutRegistry,
         themes: &mut ThemeCatalog,
+        catalog: &mut PluginCatalog,
+        plugin_extra_paths: &mut Vec<PathBuf>,
     ) -> Option<SettingsAction> {
         let mut result = None;
 
@@ -58,6 +66,16 @@ impl SettingsUi {
                 ui.separator();
                 ui.add_space(8.0);
 
+                if let Some(action) =
+                    self.show_plugins_section(ui, catalog, plugin_extra_paths)
+                {
+                    result = Some(action);
+                }
+
+                ui.add_space(16.0);
+                ui.separator();
+                ui.add_space(8.0);
+
                 if let Some(action) = self.show_shortcuts_section(ui, shortcuts) {
                     result = Some(action);
                 }
@@ -66,6 +84,97 @@ impl SettingsUi {
         if !self.message.is_empty() {
             ui.add_space(6.0);
             ui.label(&self.message);
+        }
+
+        result
+    }
+
+    fn show_plugins_section(
+        &mut self,
+        ui: &mut Ui,
+        catalog: &mut PluginCatalog,
+        plugin_extra_paths: &mut Vec<PathBuf>,
+    ) -> Option<SettingsAction> {
+        let mut result = None;
+
+        ui.heading("Plugin Manager");
+        ui.label(
+            "Scan CLAP and VST3 instruments from standard OS paths (headless host; no plugin GUI yet).",
+        );
+        ui.add_space(6.0);
+
+        ui.horizontal(|ui| {
+            ui.label(format!("Instruments cached: {}", catalog.instrument_count()));
+            if let Some(ts) = catalog.scanned_at_unix {
+                ui.label(format!("Last scan (unix): {ts}"));
+            } else {
+                ui.label("Never scanned");
+            }
+            if ui.button("Rescan").clicked() {
+                catalog.extra_paths = plugin_extra_paths.clone();
+                catalog.rescan();
+                self.message = format!(
+                    "Scan complete: {} instrument(s)",
+                    catalog.instrument_count()
+                );
+                result = Some(SettingsAction::PluginsChanged);
+            }
+        });
+
+        if let Some(error) = &catalog.last_error {
+            ui.colored_label(ui.visuals().warn_fg_color, error);
+        }
+
+        ui.add_space(8.0);
+        ui.strong("Extra scan paths");
+        ui.label("One directory per line (optional). Saved with settings.");
+        for (index, path) in plugin_extra_paths.iter().enumerate() {
+            ui.label(format!("{}. {}", index + 1, path.display()));
+        }
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.extra_path_draft)
+                    .desired_width(320.0)
+                    .hint_text("/path/to/plugins"),
+            );
+            if ui.button("Add path").clicked() {
+                let draft = self.extra_path_draft.trim();
+                if !draft.is_empty() {
+                    plugin_extra_paths.push(PathBuf::from(draft));
+                    self.extra_path_draft.clear();
+                    catalog.extra_paths = plugin_extra_paths.clone();
+                    result = Some(SettingsAction::PluginsChanged);
+                }
+            }
+            if ui
+                .add_enabled(
+                    !plugin_extra_paths.is_empty(),
+                    egui::Button::new("Clear paths"),
+                )
+                .clicked()
+            {
+                plugin_extra_paths.clear();
+                catalog.extra_paths.clear();
+                result = Some(SettingsAction::PluginsChanged);
+            }
+        });
+
+        if catalog.instrument_count() > 0 {
+            ui.add_space(8.0);
+            ui.strong("Cached instruments");
+            egui::ScrollArea::vertical()
+                .id_salt("settings_plugin_list")
+                .max_height(180.0)
+                .show(ui, |ui| {
+                    for entry in &catalog.entries {
+                        ui.label(format!(
+                            "{} [{}] — {}",
+                            entry.name,
+                            entry.format_badge(),
+                            entry.vendor
+                        ));
+                    }
+                });
         }
 
         result

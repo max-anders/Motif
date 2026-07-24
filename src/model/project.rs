@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::clip::MidiClip;
+use super::instrument::TrackInstrument;
 use super::track::{migrate_notes_to_clip, Track};
 use super::Note;
 
@@ -44,7 +45,7 @@ impl Default for Project {
             next_clip_id: 2,
             next_track_id: 2,
         };
-        let track_id = project.add_track("Track 1");
+        let track_id = project.add_track("Track 1", TrackInstrument::BuiltInPiano);
         project.add_clip_to_track(track_id, 0.0, 4.0);
         project
     }
@@ -83,12 +84,13 @@ impl Project {
         self.next_track_id += 1;
     }
 
-    pub fn add_track(&mut self, name: &str) -> u64 {
+    pub fn add_track(&mut self, name: &str, instrument: TrackInstrument) -> u64 {
         let id = self.next_track_id();
         self.bump_track_id();
         self.tracks.push(Track {
             id,
             name: name.to_string(),
+            instrument,
             clips: Vec::new(),
         });
         id
@@ -301,6 +303,7 @@ impl Project {
         let track = Track {
             id: 1,
             name: String::from("Track 1"),
+            instrument: TrackInstrument::BuiltInPiano,
             clips: vec![clip],
         };
 

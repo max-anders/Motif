@@ -680,6 +680,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "clap-sys"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a76abbdb2907f6fd97fb6bc0b7be96b77d328f2dd9669d1075cc03369ed22154"
+
+[[package]]
 name = "clipboard-win"
 version = "5.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -697,6 +703,12 @@ dependencies = [
  "termcolor",
  "unicode-width",
 ]
+
+[[package]]
+name = "com-scrape-types"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5ce183b975b8fc736a20919c4002717255fbd867df575c792aeefa9a56a73ad0"
 
 [[package]]
 name = "combine"
@@ -826,6 +838,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9481c1c90cbf2ac953f07c8d4a58aa3945c425b7185c9154d67a65e4230da511"
 dependencies = [
  "cfg-if",
+]
+
+[[package]]
+name = "crossbeam-queue"
+version = "0.3.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "803d13fb3b09d88be9f4dbc29062c66b19bf7170867ceb746d2a8689bf6c7a26"
+dependencies = [
+ "crossbeam-utils",
 ]
 
 [[package]]
@@ -1951,6 +1972,7 @@ dependencies = [
  "egui",
  "serde",
  "serde_json",
+ "truce-rack",
 ]
 
 [[package]]
@@ -3316,6 +3338,55 @@ dependencies = [
 ]
 
 [[package]]
+name = "truce-rack"
+version = "1.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2161eab3e9a6810419d6cac952f32bb2d77a3b51f312c0bb27d5c3b55184c786"
+dependencies = [
+ "truce-rack-clap",
+ "truce-rack-core",
+ "truce-rack-vst3",
+]
+
+[[package]]
+name = "truce-rack-clap"
+version = "1.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "818030f21f39f73823e04dc3a04e9a5dd9449525564e538e88cb50c38612f36b"
+dependencies = [
+ "clap-sys",
+ "libloading",
+ "thiserror 2.0.19",
+ "truce-rack-core",
+]
+
+[[package]]
+name = "truce-rack-core"
+version = "1.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2e7619487400d8b49ff563d6594230d7a011f8ecdfb415cd6339f537c8daad77"
+dependencies = [
+ "bitflags 2.13.1",
+ "crossbeam-queue",
+ "smallvec",
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "truce-rack-vst3"
+version = "1.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8a97688ff4fc56de5b0c652a4b8f8f087cfc3d91e165cc5bf86e65ccce7c55ed"
+dependencies = [
+ "core-foundation 0.10.1",
+ "core-foundation-sys",
+ "libloading",
+ "thiserror 2.0.19",
+ "truce-rack-core",
+ "vst3",
+]
+
+[[package]]
 name = "ttf-parser"
 version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3394,6 +3465,15 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+
+[[package]]
+name = "vst3"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e31e3fe7a6f028ded8c5a9984cf283319e6dc63572c9b71da1d4ee9d71d3b6bf"
+dependencies = [
+ "com-scrape-types",
+]
 
 [[package]]
 name = "walkdir"

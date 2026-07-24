@@ -1,9 +1,12 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use egui::{Pos2, Rect, Response, Sense, Ui, Vec2};
 
-use crate::engine::DawEngine;
+use crate::engine::{DawEngine, PluginCatalog};
 use crate::model::{MidiClip, Project, SNAP_BEATS, DEFAULT_CLIP_LENGTH_BEATS, MAX_PITCH, MIN_PITCH};
+use crate::ui::instrument_menu::{
+    choice_to_instrument, show_instrument_picker, track_name_for_choice, InstrumentChoice,
+};
 use crate::ui::theme::ThemeColors;
 use crate::ui::timeline::{
     apply_horizontal_wheel_controls, draw_playhead, draw_ruler, draw_timeline_grid_lines,
@@ -49,6 +52,10 @@ pub struct PlaylistUi {
     open_clip_request: Option<u64>,
     /// True if pointer moved enough during drag to count as a drag, not a click.
     drag_moved: bool,
+    add_track_search: String,
+    change_instrument_search: String,
+    /// Last instrument load errors for display on lanes.
+    instrument_errors: HashMap<u64, String>,
 }
 
 impl Default for PlaylistUi {
@@ -61,6 +68,9 @@ impl Default for PlaylistUi {
             scroll_offset: Vec2::ZERO,
             open_clip_request: None,
             drag_moved: false,
+            add_track_search: String::new(),
+            change_instrument_search: String::new(),
+            instrument_errors: HashMap::new(),
         }
     }
 }
@@ -83,11 +93,16 @@ impl PlaylistUi {
         self.selected_clip_ids.extend(clip_ids);
     }
 
+    pub fn set_instrument_errors(&mut self, errors: HashMap<u64, String>) {
+        self.instrument_errors = errors;
+    }
+
     pub fn show(
         &mut self,
         ui: &mut Ui,
         project: &mut Project,
         engine: &mut dyn DawEngine,
+        catalog: &PluginCatalog,
         theme: &ThemeColors,
     ) {
         // CentralPanel uses Frame::NONE; paint the full panel so nothing shows through.
@@ -95,10 +110,18 @@ impl PlaylistUi {
             .rect_filled(ui.max_rect(), 0.0, theme.panel_bg);
 
         ui.horizontal(|ui| {
-            if ui.button("Add track").clicked() {
-                let number = project.tracks.len() + 1;
-                project.add_track(&format!("Track {number}"));
-            }
+            egui::menu::menu_button(ui, "Add track", |ui| {
+                if let Some(choice) =
+                    show_instrument_picker(ui, catalog, &mut self.add_track_search, "add_track")
+                {
+                    let number = project.tracks.len() + 1;
+                    let name = track_name_for_choice(&choice, number);
+                    let instrument = choice_to_instrument(choice);
+                    project.add_track(&name, instrument);
+                    self.add_track_search.clear();
+                    ui.close_menu();
+                }
+            });
         });
         ui.add_space(4.0);
 
@@ -177,6 +200,7 @@ impl PlaylistUi {
                         Pos2::new(body.left(), lane_top),
                         Pos2::new(body.right(), lane_top + LANE_HEIGHT),
                     );
+                    let error = self.instrument_errors.get(&track.id).cloned();
                     draw_lane(
                         &painter,
                         lane_rect,
@@ -185,8 +209,11 @@ impl PlaylistUi {
                         total_beats,
                         project.beats_per_bar,
                         track.name.as_str(),
+                        track.instrument.display_name(),
+                        track.instrument.format_badge(),
                         &track.clips,
                         &self.selected_clip_ids,
+                        error.as_deref(),
                         theme,
                     );
                 }
@@ -202,6 +229,42 @@ impl PlaylistUi {
                     true,
                     theme,
                 );
+
+                // Track header context menus (change instrument).
+                let track_ids: Vec<u64> = project.tracks.iter().map(|t| t.id).collect();
+                for (index, track_id) in track_ids.into_iter().enumerate() {
+                    let lane_top = body.top() + index as f32 * LANE_HEIGHT;
+                    let header = Rect::from_min_max(
+                        Pos2::new(body.left(), lane_top),
+                        Pos2::new(body.left() + TRACK_HEADER_WIDTH, lane_top + LANE_HEIGHT),
+                    );
+                    let id = ui.id().with(("track_header", track_id));
+                    let header_response = ui.interact(header, id, Sense::click());
+                    header_response.context_menu(|ui| {
+                        ui.label("Change instrument");
+                        ui.separator();
+                        if let Some(choice) = show_instrument_picker(
+                            ui,
+                            catalog,
+                            &mut self.change_instrument_search,
+                            &format!("chg_{track_id}"),
+                        ) {
+                            let rename = match &choice {
+                                InstrumentChoice::Plugin(entry) => Some(entry.name.clone()),
+                                InstrumentChoice::BuiltInPiano => None,
+                            };
+                            let instrument = choice_to_instrument(choice);
+                            if let Some(track) = project.track_mut(track_id) {
+                                if let Some(name) = rename {
+                                    track.name = name;
+                                }
+                                track.instrument = instrument;
+                            }
+                            self.change_instrument_search.clear();
+                            ui.close_menu();
+                        }
+                    });
+                }
             });
 
         self.scroll_offset = output.state.offset;
@@ -223,8 +286,11 @@ fn draw_lane(
     total_beats: f32,
     beats_per_bar: f32,
     track_name: &str,
+    instrument_name: &str,
+    format_badge: Option<&str>,
     clips: &[MidiClip],
     selected: &HashSet<u64>,
+    load_error: Option<&str>,
     theme: &ThemeColors,
 ) {
     let header = Rect::from_min_max(
@@ -233,12 +299,30 @@ fn draw_lane(
     );
     painter.rect_filled(header, 0.0, theme.track_header_bg);
     painter.text(
-        Pos2::new(header.left() + 6.0, header.center().y),
+        Pos2::new(header.left() + 6.0, header.top() + 14.0),
         egui::Align2::LEFT_CENTER,
         track_name,
         egui::FontId::proportional(12.0),
         theme.track_header_text,
     );
+    let badge = format_badge.unwrap_or("Piano");
+    let sub = format!("{badge} · {instrument_name}");
+    painter.text(
+        Pos2::new(header.left() + 6.0, header.top() + 30.0),
+        egui::Align2::LEFT_CENTER,
+        truncate_label(&sub, 22),
+        egui::FontId::proportional(10.0),
+        theme.text_muted,
+    );
+    if let Some(error) = load_error {
+        painter.text(
+            Pos2::new(header.left() + 6.0, header.bottom() - 12.0),
+            egui::Align2::LEFT_CENTER,
+            truncate_label(error, 24),
+            egui::FontId::proportional(9.0),
+            theme.accent_warning,
+        );
+    }
 
     let timeline_lane = Rect::from_min_max(
         Pos2::new(lane.left() + TRACK_HEADER_WIDTH, lane.top()),
@@ -294,6 +378,16 @@ fn draw_lane(
         [Pos2::new(lane.left(), lane.bottom()), Pos2::new(lane.right(), lane.bottom())],
         egui::Stroke::new(1.0_f32, theme.separator),
     );
+}
+
+fn truncate_label(text: &str, max_chars: usize) -> String {
+    let count = text.chars().count();
+    if count <= max_chars {
+        text.to_string()
+    } else {
+        let trimmed: String = text.chars().take(max_chars.saturating_sub(1)).collect();
+        format!("{trimmed}...")
+    }
 }
 
 fn clip_block_rect(timeline: Rect, lane: Rect, clip: &MidiClip, metrics: TimelineMetrics) -> Rect {
