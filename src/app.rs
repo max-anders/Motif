@@ -39,7 +39,7 @@ impl DawApp {
         let settings = AppSettings::load_or_defaults(&Self::settings_path());
         let status_message = if engine.audio_available() {
             String::from(
-                "Playlist: click empty lane to add clip, click clip to open piano roll. Wheel=scroll, Ctrl+Wheel=zoom H.",
+                "Playlist: click empty lane to add clip, double-click clip to open piano roll. Wheel=scroll, Ctrl+Wheel=zoom H.",
             )
         } else {
             let detail = engine.init_error().unwrap_or("unknown error");

@@ -90,8 +90,9 @@ cargo run --release
 ### Playlist (default view)
 
 - **Left-click empty lane** - create a MIDI clip (4 beats)
-- **Left-click clip** - open piano roll for that clip
-- **Ctrl/Cmd + left-click clip** - toggle multi-select (does not open)
+- **Left-click clip** - select clip
+- **Double-click clip** - open piano roll for that clip
+- **Ctrl/Cmd + left-click clip** - toggle multi-select
 - **Drag clip body** - move selected clip(s) on timeline
 - **Shift + drag clip body** - duplicate selection, then move the copies
 - **Drag clip edges** - resize clip length

@@ -196,16 +196,6 @@ impl ShortcutRegistry {
         }
     }
 
-    /// Parse bindings from a JSON object that may also contain theme fields.
-    pub fn from_settings_value(value: &serde_json::Value) -> Result<Self, String> {
-        let bindings = value
-            .get("bindings")
-            .ok_or_else(|| "missing bindings".to_string())?;
-        let stored: Vec<StoredBinding> =
-            serde_json::from_value(bindings.clone()).map_err(|error| error.to_string())?;
-        Self::from_stored(stored)
-    }
-
     pub fn to_stored(&self) -> Result<Vec<StoredBinding>, String> {
         let mut stored = Vec::with_capacity(self.bindings.len());
         for (action, binding) in &self.bindings {
@@ -242,7 +232,7 @@ impl ShortcutRegistry {
                 self.bindings.push((action, binding));
             }
         }
-    }
+     }
 
     pub fn reset_defaults(&mut self) {
         *self = Self::defaults();

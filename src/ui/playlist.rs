@@ -32,7 +32,7 @@ struct ClipOriginal {
 
 #[derive(Debug, Clone)]
 struct ClipDrag {
-    /// Primary clip under the pointer (resize target / open-on-click id).
+    /// Primary clip under the pointer (resize target / open-on-double-click id).
     clip_id: u64,
     mode: ClipDragMode,
     pointer_start_beats: f32,
@@ -423,7 +423,6 @@ fn handle_clip_pointer(
                 if !*drag_moved {
                     selected.clear();
                     selected.insert(drag.clip_id);
-                    *open_clip_request = Some(drag.clip_id);
                 }
             }
             *drag_moved = false;
@@ -460,7 +459,6 @@ fn handle_clip_pointer(
             if !*drag_moved {
                 selected.clear();
                 selected.insert(drag.clip_id);
-                *open_clip_request = Some(drag.clip_id);
             }
             *active_drag = None;
             *drag_moved = false;
@@ -573,10 +571,38 @@ fn handle_clip_pointer(
             } else {
                 selected.clear();
                 selected.insert(clip.id);
-                *open_clip_request = Some(clip.id);
             }
         }
     }
+
+    if response.double_clicked_by(egui::PointerButton::Primary) && body.contains(pointer) {
+        if let Some(clip_id) = hit_test_clip_id(body, project, pointer, metrics) {
+            selected.clear();
+            selected.insert(clip_id);
+            *open_clip_request = Some(clip_id);
+        }
+    }
+}
+
+fn hit_test_clip_id(
+    body: Rect,
+    project: &Project,
+    pos: Pos2,
+    metrics: TimelineMetrics,
+) -> Option<u64> {
+    let track_index = ((pos.y - body.top()) / LANE_HEIGHT).floor() as usize;
+    if track_index >= project.tracks.len() {
+        return None;
+    }
+    let lane = lane_rect_for_track(body, track_index);
+    hit_test_clip(
+        body,
+        lane,
+        &project.tracks[track_index].clips,
+        pos,
+        metrics,
+    )
+    .map(|clip| clip.id)
 }
 
 fn apply_clip_drag(project: &mut Project, drag: &ClipDrag, current_beats: f32) {

@@ -12,5 +12,4 @@ pub use piano_roll::PianoRollUi;
 pub use playlist::PlaylistUi;
 pub use settings::{SettingsAction, SettingsUi};
 pub use shortcuts::{Action, PollFilter, SETTINGS_FILE};
-pub use theme::ThemeColors;
 pub use transport::TransportUi;
