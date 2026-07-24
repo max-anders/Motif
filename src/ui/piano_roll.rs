@@ -92,6 +92,11 @@ impl PianoRollUi {
         self.selected_note_ids.clear();
     }
 
+    pub fn set_selection(&mut self, note_ids: impl IntoIterator<Item = u64>) {
+        self.selected_note_ids.clear();
+        self.selected_note_ids.extend(note_ids);
+    }
+
     pub fn release_audition(&mut self, engine: &mut dyn DawEngine) {
         if let Some(pitch) = self.audition_pitch.take() {
             engine.note_off(pitch);
@@ -259,15 +264,23 @@ impl PianoRollUi {
                     );
                 }
 
+                // Keep scrolled content out of the sticky piano / ruler strips so
+                // notes and grid never paint under (or through) the pinned chrome.
+                let timeline_clip = Rect::from_min_max(
+                    Pos2::new(sticky_keys.right(), sticky_ruler.bottom()),
+                    content.max,
+                );
+                let timeline_painter = painter.with_clip_rect(timeline_clip);
+
                 draw_grid(
-                    &painter,
+                    &timeline_painter,
                     grid,
                     metrics,
                     total_beats,
                     beats_per_bar,
                 );
                 draw_notes(
-                    &painter,
+                    &timeline_painter,
                     grid,
                     metrics,
                     &clip_notes,
@@ -275,7 +288,7 @@ impl PianoRollUi {
                     if playhead_visible { local_playhead } else { -1.0 },
                 );
                 if let Some(marquee) = &self.marquee {
-                    draw_marquee(&painter, marquee.rect());
+                    draw_marquee(&timeline_painter, marquee.rect());
                 }
 
                 // Sticky chrome on top of scrolled content.
@@ -295,8 +308,14 @@ impl PianoRollUi {
                     total_beats,
                     beats_per_bar,
                 );
+                // Playhead last, clipped to the right of the piano keys so it stays
+                // above notes/ruler and never draws behind the pinned keyboard.
+                let playhead_clip = Rect::from_min_max(
+                    Pos2::new(sticky_keys.right(), sticky_ruler.top()),
+                    content.max,
+                );
                 draw_playhead(
-                    &painter,
+                    &painter.with_clip_rect(playhead_clip),
                     sticky_ruler,
                     grid,
                     metrics.timeline(),
@@ -1055,6 +1074,25 @@ fn handle_pointer(
                 set_single_selection(selected_note_ids, note.id);
             }
 
+            // Shift+Move: leave originals, drag duplicates (same as playlist clips).
+            let mut primary_id = note.id;
+            if matches!(mode, DragMode::Move) && shift_held {
+                let source_ids: Vec<u64> = selected_note_ids.iter().copied().collect();
+                let new_ids =
+                    project.duplicate_notes_in_clip(clip_id, &source_ids, 0.0, 0);
+                if let Some(mapped_primary) = source_ids
+                    .iter()
+                    .position(|id| *id == note.id)
+                    .and_then(|index| new_ids.get(index).copied())
+                {
+                    primary_id = mapped_primary;
+                } else if let Some(first) = new_ids.first().copied() {
+                    primary_id = first;
+                }
+                selected_note_ids.clear();
+                selected_note_ids.extend(new_ids);
+            }
+
             let originals = match mode {
                 DragMode::Move => project
                     .clip(clip_id)
@@ -1066,11 +1104,15 @@ fn handle_pointer(
                             .collect()
                     })
                     .unwrap_or_default(),
-                DragMode::ResizeStart | DragMode::ResizeEnd => vec![note.clone()],
+                DragMode::ResizeStart | DragMode::ResizeEnd => project
+                    .clip(clip_id)
+                    .and_then(|clip| clip.note(primary_id).copied())
+                    .into_iter()
+                    .collect(),
             };
 
             *active_drag = Some(ActiveDrag {
-                note_id: note.id,
+                note_id: primary_id,
                 mode,
                 pointer_start_beats: x_to_beat(grid, press_pos.x, timeline),
                 pointer_start_pitch: y_to_pitch(grid, press_pos.y, metrics) as i32,

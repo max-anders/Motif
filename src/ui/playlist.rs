@@ -24,12 +24,19 @@ enum ClipDragMode {
 }
 
 #[derive(Debug, Clone)]
+struct ClipOriginal {
+    clip_id: u64,
+    start_beats: f32,
+    length_beats: f32,
+}
+
+#[derive(Debug, Clone)]
 struct ClipDrag {
+    /// Primary clip under the pointer (resize target / open-on-click id).
     clip_id: u64,
     mode: ClipDragMode,
     pointer_start_beats: f32,
-    original_start: f32,
-    original_length: f32,
+    originals: Vec<ClipOriginal>,
 }
 
 pub struct PlaylistUi {
@@ -69,6 +76,11 @@ impl PlaylistUi {
 
     pub fn clear_selection(&mut self) {
         self.selected_clip_ids.clear();
+    }
+
+    pub fn set_selection(&mut self, clip_ids: impl IntoIterator<Item = u64>) {
+        self.selected_clip_ids.clear();
+        self.selected_clip_ids.extend(clip_ids);
     }
 
     pub fn show(
@@ -157,16 +169,6 @@ impl PlaylistUi {
                     project.beats_per_bar,
                 );
 
-                let playhead = engine.current_beats();
-                draw_playhead(
-                    &painter,
-                    ruler,
-                    body,
-                    metrics,
-                    playhead,
-                    true,
-                );
-
                 for (index, track) in project.tracks.iter().enumerate() {
                     let lane_top = body.top() + index as f32 * LANE_HEIGHT;
                     let lane_rect = Rect::from_min_max(
@@ -185,6 +187,17 @@ impl PlaylistUi {
                         &self.selected_clip_ids,
                     );
                 }
+
+                // Draw after lanes/clips so the playhead stays on top.
+                let playhead = engine.current_beats();
+                draw_playhead(
+                    &painter,
+                    ruler,
+                    body,
+                    metrics,
+                    playhead,
+                    true,
+                );
             });
 
         self.scroll_offset = output.state.offset;
@@ -227,9 +240,11 @@ fn draw_lane(
         lane.max,
     );
     painter.rect_filled(timeline_lane, 0.0, Color32::from_rgb(22, 22, 28));
+    // Use `lane` (same left as body/ruler), not `timeline_lane`: timeline_x already
+    // offsets by TIMELINE_GUTTER_WIDTH / TRACK_HEADER_WIDTH.
     draw_timeline_grid_lines(
         painter,
-        timeline_lane,
+        lane,
         metrics,
         total_beats,
         beats_per_bar,
@@ -291,15 +306,21 @@ fn draw_clip_note_preview(painter: &egui::Painter, clip_rect: Rect, clip: &MidiC
     let preview_top = clip_rect.top() + 20.0;
     let preview_height = (clip_rect.height() - 24.0).max(8.0);
     let pitch_span = (MAX_PITCH - MIN_PITCH + 1) as f32;
+    let length = clip.length_beats.max(SNAP_BEATS);
+    // Clip notes to the block so resize does not paint past the edges.
+    let clipped = painter.with_clip_rect(clip_rect);
 
     for note in &clip.notes {
-        let rel_start = note.start_beats / clip.length_beats.max(SNAP_BEATS);
-        let rel_end = note.end_beats() / clip.length_beats.max(SNAP_BEATS);
+        if note.start_beats >= length {
+            continue;
+        }
+        let rel_start = note.start_beats / length;
+        let rel_end = note.end_beats().min(length) / length;
         let x0 = clip_rect.left() + 4.0 + rel_start * (clip_rect.width() - 8.0);
         let x1 = clip_rect.left() + 4.0 + rel_end * (clip_rect.width() - 8.0);
         let pitch_norm = (note.pitch as f32 - MIN_PITCH as f32) / pitch_span;
         let y = preview_top + (1.0 - pitch_norm) * preview_height;
-        painter.rect_filled(
+        clipped.rect_filled(
             Rect::from_min_max(
                 Pos2::new(x0, y),
                 Pos2::new(x1.max(x0 + 2.0), y + 3.0),
@@ -335,6 +356,36 @@ fn clip_resize_mode(bounds: Rect, pointer_x: f32) -> Option<ClipDragMode> {
     }
 }
 
+fn update_clip_resize_hover_cursor(
+    response: &Response,
+    body: Rect,
+    project: &Project,
+    metrics: TimelineMetrics,
+) {
+    let Some(hover) = response.hover_pos() else {
+        return;
+    };
+    if !body.contains(hover) {
+        return;
+    }
+    let track_index = ((hover.y - body.top()) / LANE_HEIGHT).floor() as usize;
+    if track_index >= project.tracks.len() {
+        return;
+    }
+    let lane = lane_rect_for_track(body, track_index);
+    let Some(clip) =
+        hit_test_clip(body, lane, &project.tracks[track_index].clips, hover, metrics)
+    else {
+        return;
+    };
+    let bounds = clip_block_rect(body, lane, clip, metrics);
+    if clip_resize_mode(bounds, hover.x).is_some() {
+        response
+            .ctx
+            .set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+    }
+}
+
 fn lane_rect_for_track(body: Rect, track_index: usize) -> Rect {
     let lane_top = body.top() + track_index as f32 * LANE_HEIGHT;
     Rect::from_min_max(
@@ -353,6 +404,8 @@ fn handle_clip_pointer(
     open_clip_request: &mut Option<u64>,
     drag_moved: &mut bool,
 ) {
+    update_clip_resize_hover_cursor(response, body, project, metrics);
+
     let Some(pointer) = response.interact_pointer_pos() else {
         if response.drag_stopped() {
             if let Some(drag) = active_drag.take() {
@@ -371,11 +424,25 @@ fn handle_clip_pointer(
         .ctx
         .input(|input| input.pointer.press_origin())
         .unwrap_or(pointer);
+    let (shift_held, ctrl_or_cmd) = response.ctx.input(|input| {
+        (
+            input.modifiers.shift,
+            input.modifiers.ctrl || input.modifiers.command || input.modifiers.mac_cmd,
+        )
+    });
 
     if let Some(drag) = active_drag.clone() {
         if response.dragged() {
             *drag_moved = true;
             let current_beats = x_to_beat(body, pointer.x, metrics);
+            if matches!(
+                drag.mode,
+                ClipDragMode::ResizeStart | ClipDragMode::ResizeEnd
+            ) {
+                response
+                    .ctx
+                    .set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+            }
             apply_clip_drag(project, &drag, current_beats);
         }
         if response.drag_stopped() {
@@ -405,17 +472,65 @@ fn handle_clip_pointer(
     if response.drag_started_by(egui::PointerButton::Primary)
         && is_timeline_pointer(lane, press_pos)
     {
-        if let Some(clip) = hit_test_clip(body, lane, &project.tracks[track_index].clips, press_pos, metrics).cloned() {
+        if let Some(clip) =
+            hit_test_clip(body, lane, &project.tracks[track_index].clips, press_pos, metrics)
+                .cloned()
+        {
             let bounds = clip_block_rect(body, lane, &clip, metrics);
             let mode = clip_resize_mode(bounds, press_pos.x).unwrap_or(ClipDragMode::Move);
-            selected.clear();
-            selected.insert(clip.id);
+
+            let already_selected = selected.contains(&clip.id);
+            if !already_selected {
+                selected.clear();
+                selected.insert(clip.id);
+            }
+
+            let mut primary_id = clip.id;
+            // Shift+Move: leave originals, drag duplicates (same as piano-roll notes).
+            if matches!(mode, ClipDragMode::Move) && shift_held {
+                let source_ids: Vec<u64> = selected.iter().copied().collect();
+                let new_ids = project.duplicate_clips(&source_ids, 0.0);
+                if let Some(mapped_primary) = source_ids
+                    .iter()
+                    .position(|id| *id == clip.id)
+                    .and_then(|index| new_ids.get(index).copied())
+                {
+                    primary_id = mapped_primary;
+                } else if let Some(first) = new_ids.first().copied() {
+                    primary_id = first;
+                }
+                selected.clear();
+                selected.extend(new_ids);
+            }
+
+            let originals = match mode {
+                ClipDragMode::Move => selected
+                    .iter()
+                    .filter_map(|id| {
+                        project.clip(*id).map(|c| ClipOriginal {
+                            clip_id: c.id,
+                            start_beats: c.start_beats,
+                            length_beats: c.length_beats,
+                        })
+                    })
+                    .collect(),
+                ClipDragMode::ResizeStart | ClipDragMode::ResizeEnd => project
+                    .clip(primary_id)
+                    .map(|c| {
+                        vec![ClipOriginal {
+                            clip_id: c.id,
+                            start_beats: c.start_beats,
+                            length_beats: c.length_beats,
+                        }]
+                    })
+                    .unwrap_or_default(),
+            };
+
             *active_drag = Some(ClipDrag {
-                clip_id: clip.id,
+                clip_id: primary_id,
                 mode,
                 pointer_start_beats: x_to_beat(body, press_pos.x, metrics),
-                original_start: clip.start_beats,
-                original_length: clip.length_beats,
+                originals,
             });
             return;
         }
@@ -423,7 +538,9 @@ fn handle_clip_pointer(
         // Empty lane: create clip
         if is_timeline_pointer(lane, press_pos) {
             let start = Project::snap_beats(x_to_beat(body, press_pos.x, metrics).max(0.0));
-            if let Some(clip_id) = project.add_clip_to_track(track_id, start, DEFAULT_CLIP_LENGTH_BEATS) {
+            if let Some(clip_id) =
+                project.add_clip_to_track(track_id, start, DEFAULT_CLIP_LENGTH_BEATS)
+            {
                 selected.clear();
                 selected.insert(clip_id);
             }
@@ -434,36 +551,73 @@ fn handle_clip_pointer(
         && !response.dragged()
         && is_timeline_pointer(lane, pointer)
     {
-        if let Some(clip) = hit_test_clip(body, lane, &project.tracks[track_index].clips, pointer, metrics) {
-            selected.clear();
-            selected.insert(clip.id);
-            *open_clip_request = Some(clip.id);
+        if let Some(clip) =
+            hit_test_clip(body, lane, &project.tracks[track_index].clips, pointer, metrics)
+        {
+            if ctrl_or_cmd {
+                // Toggle multi-select without opening (parity with selection editing).
+                if !selected.remove(&clip.id) {
+                    selected.insert(clip.id);
+                }
+            } else {
+                selected.clear();
+                selected.insert(clip.id);
+                *open_clip_request = Some(clip.id);
+            }
         }
     }
 }
 
 fn apply_clip_drag(project: &mut Project, drag: &ClipDrag, current_beats: f32) {
-    let Some(clip) = project.clip_mut(drag.clip_id) else {
-        return;
-    };
-
     match drag.mode {
         ClipDragMode::Move => {
-            let delta = Project::snap_beats(current_beats - drag.pointer_start_beats);
-            let new_start = (drag.original_start + delta).max(0.0);
-            clip.set_start_beats(new_start);
+            let Some(primary) = drag
+                .originals
+                .iter()
+                .find(|original| original.clip_id == drag.clip_id)
+            else {
+                return;
+            };
+            let raw_delta = current_beats - drag.pointer_start_beats;
+            let mut snapped_delta =
+                Project::snap_beats(primary.start_beats + raw_delta).max(0.0) - primary.start_beats;
+            let min_start = drag
+                .originals
+                .iter()
+                .map(|original| original.start_beats)
+                .fold(f32::INFINITY, f32::min);
+            if min_start + snapped_delta < 0.0 {
+                snapped_delta = -min_start;
+            }
+            for original in &drag.originals {
+                if let Some(clip) = project.clip_mut(original.clip_id) {
+                    clip.set_start_beats((original.start_beats + snapped_delta).max(0.0));
+                }
+            }
         }
         ClipDragMode::ResizeStart => {
+            let Some(original) = drag.originals.first() else {
+                return;
+            };
+            let Some(clip) = project.clip_mut(drag.clip_id) else {
+                return;
+            };
             let new_start = Project::snap_beats(current_beats.max(0.0));
-            let end = drag.original_start + drag.original_length;
+            let end = original.start_beats + original.length_beats;
             let clamped_start = new_start.min(end - SNAP_BEATS);
             clip.set_start_beats(clamped_start);
             clip.set_length_beats(end - clamped_start);
         }
         ClipDragMode::ResizeEnd => {
+            let Some(original) = drag.originals.first() else {
+                return;
+            };
+            let Some(clip) = project.clip_mut(drag.clip_id) else {
+                return;
+            };
             let new_end = Project::snap_beats(current_beats.max(0.0));
-            clip.set_start_beats(drag.original_start);
-            clip.set_length_beats((new_end - drag.original_start).max(SNAP_BEATS));
+            clip.set_start_beats(original.start_beats);
+            clip.set_length_beats((new_end - original.start_beats).max(SNAP_BEATS));
         }
     }
 }

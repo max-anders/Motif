@@ -165,6 +165,119 @@ impl Project {
         }
     }
 
+    /// Duplicate notes inside a clip. Returns new note ids in the same order as `note_ids`
+    /// (skipping missing ids). Pitch/start offsets are applied after cloning.
+    pub fn duplicate_notes_in_clip(
+        &mut self,
+        clip_id: u64,
+        note_ids: &[u64],
+        delta_beats: f32,
+        delta_pitch: i32,
+    ) -> Vec<u64> {
+        let Some(clip) = self.clip(clip_id) else {
+            return Vec::new();
+        };
+        let templates: Vec<Note> = note_ids
+            .iter()
+            .filter_map(|id| clip.note(*id).copied())
+            .collect();
+        if templates.is_empty() {
+            return Vec::new();
+        }
+
+        let mut new_ids = Vec::with_capacity(templates.len());
+        for template in templates {
+            let id = self.next_note_id();
+            self.bump_note_id();
+            let pitch = Self::clamp_pitch(template.pitch as i32 + delta_pitch);
+            let start = (template.start_beats + delta_beats).max(0.0);
+            if let Some(clip) = self.clip_mut(clip_id) {
+                clip.add_note_with_id(id, pitch, start, template.duration_beats);
+                if let Some(note) = clip.note_mut(id) {
+                    note.velocity = template.velocity;
+                }
+                new_ids.push(id);
+            }
+        }
+        new_ids
+    }
+
+    /// Deep-copy clips (new clip + note ids) onto the same tracks, offset in time.
+    /// Returns new clip ids in input order (skipping missing ids).
+    pub fn duplicate_clips(&mut self, clip_ids: &[u64], delta_beats: f32) -> Vec<u64> {
+        #[derive(Clone)]
+        struct ClipTemplate {
+            track_id: u64,
+            name: String,
+            start_beats: f32,
+            length_beats: f32,
+            notes: Vec<Note>,
+        }
+
+        let mut templates = Vec::with_capacity(clip_ids.len());
+        for &clip_id in clip_ids {
+            let Some(track_id) = self.track_id_for_clip(clip_id) else {
+                continue;
+            };
+            let Some(clip) = self.clip(clip_id) else {
+                continue;
+            };
+            templates.push(ClipTemplate {
+                track_id,
+                name: clip.name.clone(),
+                start_beats: clip.start_beats,
+                length_beats: clip.length_beats,
+                notes: clip.notes.clone(),
+            });
+        }
+
+        let mut new_ids = Vec::with_capacity(templates.len());
+        for template in templates {
+            let clip_id = self.next_clip_id();
+            self.bump_clip_id();
+            let mut notes = Vec::with_capacity(template.notes.len());
+            for note in template.notes {
+                let id = self.next_note_id();
+                self.bump_note_id();
+                notes.push(Note {
+                    id,
+                    pitch: note.pitch,
+                    start_beats: note.start_beats,
+                    duration_beats: note.duration_beats,
+                    velocity: note.velocity,
+                });
+            }
+            let clip = MidiClip {
+                id: clip_id,
+                name: format!("{} copy", template.name),
+                start_beats: Self::snap_beats((template.start_beats + delta_beats).max(0.0)),
+                length_beats: template.length_beats,
+                notes,
+            };
+            if let Some(track) = self.track_mut(template.track_id) {
+                track.clips.push(clip);
+                new_ids.push(clip_id);
+            }
+        }
+        new_ids
+    }
+
+    /// Beat span of a time selection: `max(end) - min(start)`, snapped, at least one grid step.
+    pub fn selection_span_beats(ranges: impl IntoIterator<Item = (f32, f32)>) -> f32 {
+        let mut min_start = f32::INFINITY;
+        let mut max_end = f32::NEG_INFINITY;
+        let mut any = false;
+        for (start, end) in ranges {
+            any = true;
+            min_start = min_start.min(start);
+            max_end = max_end.max(end);
+        }
+        if !any {
+            return SNAP_BEATS;
+        }
+        Self::snap_beats((max_end - min_start).max(SNAP_BEATS))
+    }
+
     pub fn track_id_for_clip(&self, clip_id: u64) -> Option<u64> {
         for track in &self.tracks {
             if track.clip(clip_id).is_some() {

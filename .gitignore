@@ -4,8 +4,9 @@
 # Local Cursor agent cockpit (private workflow — not the public contract)
 .cursor/
 
-# Personal sketch saved by the app (cwd project file)
+# Personal sketch / app prefs saved by the app (cwd)
 /project.json
+/settings.json
 
 # Secrets / local env (future-proof)
 .env

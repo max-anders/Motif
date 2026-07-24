@@ -4,7 +4,7 @@ Open-source music sketchpad: piano roll, playlist, and a soft-synth piano over a
 
 ## Status
 
-**Early but usable sketchpad** (2026-07-24): playlist + piano roll editing, transport, cpal soft-piano playback, and `project.json` save/load. Not a full DAW.
+**Early but usable sketchpad** (2026-07-24): playlist + piano roll editing, transport, cpal soft-piano playback, `project.json` save/load, and Settings shortcut remapping. Not a full DAW.
 
 | Area | State |
 |---|---|
@@ -13,6 +13,7 @@ Open-source music sketchpad: piano roll, playlist, and a soft-synth piano over a
 | Transport + loop + BPM | Working |
 | Soft piano audio (`cpal`) | Working (UI continues if device open fails) |
 | Project save/load | Working (`project.json` in CWD) |
+| Settings (shortcut remapping) | Working (`settings.json` in CWD) |
 | Tests / undo / samples / mixer / export | Not started |
 
 It is **free and open source from minute zero**: public from the first commit, not opened up later after something polished existed behind closed doors.
@@ -90,9 +91,12 @@ cargo run --release
 
 - **Left-click empty lane** - create a MIDI clip (4 beats)
 - **Left-click clip** - open piano roll for that clip
-- **Drag clip body** - move clip on timeline
+- **Ctrl/Cmd + left-click clip** - toggle multi-select (does not open)
+- **Drag clip body** - move selected clip(s) on timeline
+- **Shift + drag clip body** - duplicate selection, then move the copies
 - **Drag clip edges** - resize clip length
-- **Delete / Backspace / Ctrl+X** - remove selected clip
+- **Delete / Backspace / Ctrl+X** - remove selected clip(s)
+- **Ctrl/Cmd+D** - duplicate selected clip(s) to the right by selection length (remappable)
 - **Add track** - new track lane
 - **Left-click / drag ruler** - move playhead (snapped to 1/16)
 - **Shift + left-click** or **right-click empty timeline** - move playhead
@@ -100,15 +104,18 @@ cargo run --release
 
 ### Piano roll (clip editor)
 
-- **Back to playlist** - return to arrangement
+- **Back to playlist** or **Escape** - return to arrangement
 - **Left-click empty grid** - add a note (1 beat, snapped to 1/16)
 - **Left-click note** - select note
-- **Drag note body** - move pitch/start
+- **Drag empty grid** - marquee multi-select
+- **Drag note body** - move selected note(s) (pitch/start)
+- **Shift + drag note body** - duplicate selection, then move the copies
 - **Drag left/right edge** - resize note
 - **Press / drag piano keys** - audition pitches (soft piano)
 - **Left-click / drag ruler** - move playhead (mapped to arrangement time)
 - **Shift + left-click** or **right-click empty grid** - move playhead
 - **Delete / Backspace / Ctrl+X** - remove selected note(s)
+- **Ctrl/Cmd+D** - duplicate selected note(s) to the right by selection length (remappable)
 - **Right-click note** - delete note
 - **Wheel** - scroll vertical; **Shift+Wheel** - horizontal; **Ctrl/Cmd+Wheel** - zoom time; **Alt+Wheel** - zoom keys
 
@@ -116,8 +123,12 @@ cargo run --release
 
 - **Play / Pause** - play arrangement notes through the soft piano (playhead loops)
 - **Stop** - stop, silence, and return to start
-- **Space** - play/pause
-- **Save / Load** - writes `project.json` in the project directory
+- **Space** - play/pause (factory default; remappable)
+- **Ctrl/Cmd+S** - save `project.json` (factory default; remappable)
+- **Ctrl/Cmd+O** - load `project.json` (factory default; remappable)
+- **Save / Load** buttons - same as the shortcuts above
+- **Settings** - open Settings; remap shortcuts (saved to `settings.json`)
+- **Escape** - leave piano roll or Settings (factory default; remappable)
 
 ## Architecture
 
