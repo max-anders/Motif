@@ -40,15 +40,16 @@ use vst3::Steinberg::Vst::{
     AudioBusBuffers, AudioBusBuffers__type0, Event, Event_::EventTypes_, Event__type0,
     IAudioProcessor, IAudioProcessorTrait, IComponent, IComponentTrait, IConnectionPoint,
     IConnectionPointTrait, IEditController, IEditControllerTrait, IEventList, IEventListTrait,
-    IParameterChanges, NoteOffEvent, NoteOnEvent, ParameterInfo as Vst3ParameterInfo,
-    ParameterInfo_::ParameterFlags_, PolyPressureEvent, ProcessContext as Vst3ProcessContext,
-    ProcessContext_::StatesAndFlags_, ProcessData, ProcessModes_, ProcessSetup,
-    SymbolicSampleSizes_, ViewType,
+    IHostApplication, IHostApplicationTrait, IParameterChanges, NoteOffEvent, NoteOnEvent,
+    ParameterInfo as Vst3ParameterInfo, ParameterInfo_::ParameterFlags_, PolyPressureEvent,
+    ProcessContext as Vst3ProcessContext, ProcessContext_::StatesAndFlags_, ProcessData,
+    ProcessModes_, ProcessSetup, String128, SymbolicSampleSizes_, ViewType,
 };
 use vst3::Steinberg::{
-    IBStream, IBStreamTrait, IPlugView, IPlugViewTrait, IPluginBaseTrait, IPluginFactory,
-    IPluginFactoryTrait, PClassInfo, PClassInfo_, TUID, ViewRect, kPlatformTypeHWND,
-    kPlatformTypeNSView, kPlatformTypeX11EmbedWindowID, kResultOk, kResultTrue,
+    FUnknown, IBStream, IBStreamTrait, IPlugView, IPlugViewTrait, IPluginBaseTrait, IPluginFactory,
+    IPluginFactoryTrait, PClassInfo, PClassInfo_, TUID, ViewRect, kInvalidArgument, kNoInterface,
+    kPlatformTypeHWND, kPlatformTypeNSView, kPlatformTypeX11EmbedWindowID, kResultOk, kResultTrue,
+    tresult,
 };
 #[cfg(target_os = "linux")]
 use vst3::Steinberg::IPlugFrame;
@@ -522,6 +523,10 @@ pub struct Vst3Plugin {
 
     // Hold the module open for the lifetime of the instance.
     _module: LoadedModule,
+    /// Host context handed to `initialize`. Kept alive so a plugin that stored
+    /// the context pointer (without its own AddRef) can't dereference freed
+    /// memory later.
+    _host_context: ComPtr<IHostApplication>,
     component: ComPtr<IComponent>,
     processor: ComPtr<IAudioProcessor>,
     controller: ComPtr<IEditController>,
@@ -550,6 +555,49 @@ pub struct Vst3Plugin {
     run_loop: Option<std::sync::Arc<std::sync::Mutex<run_loop::RunLoopState>>>,
 }
 
+/// Minimal `IHostApplication` handed to every plugin as its `initialize`
+/// context.
+///
+/// Passing a NULL context to `IPluginBase::initialize` crashes plugins that
+/// dereference the host context without a null-check during init — LSP-Plugins
+/// query `IHostApplication` off the context and segfault on NULL. We only need
+/// to be a valid, non-NULL COM object that answers `getName`. `createInstance`
+/// (host-created `IMessage`/`IAttributeList`) is declined; plugins that need it
+/// fall back to their own objects.
+struct HostApplication;
+
+impl Class for HostApplication {
+    type Interfaces = (IHostApplication,);
+}
+
+impl IHostApplicationTrait for HostApplication {
+    unsafe fn getName(&self, name: *mut String128) -> tresult {
+        if name.is_null() {
+            return kInvalidArgument;
+        }
+        let out = unsafe { &mut *name };
+        out.fill(0);
+        // NUL-terminated UTF-16, leaving room for the terminator.
+        let limit = out.len() - 1;
+        for (slot, unit) in out.iter_mut().take(limit).zip("Motif".encode_utf16()) {
+            *slot = unit;
+        }
+        kResultOk
+    }
+
+    unsafe fn createInstance(
+        &self,
+        _cid: *mut TUID,
+        _iid: *mut TUID,
+        obj: *mut *mut std::ffi::c_void,
+    ) -> tresult {
+        if !obj.is_null() {
+            unsafe { *obj = ptr::null_mut() };
+        }
+        kNoInterface
+    }
+}
+
 impl Vst3Plugin {
     fn load_from(info: &PluginInfo) -> Result<Self> {
         let module = unsafe { LoadedModule::open(&info.path) }?;
@@ -570,10 +618,20 @@ impl Vst3Plugin {
             })?;
         let component = component_ptr;
 
-        // Initialize the component. Many plugins accept a NULL
-        // context (hosts only need to supply IHostApplication for
-        // plugins that look it up via queryInterface).
-        if unsafe { component.initialize(ptr::null_mut()) } != kResultOk {
+        // Build a minimal host context. A NULL context crashes plugins that
+        // dereference `IHostApplication` during init without a null-check
+        // (e.g. LSP-Plugins segfaults inside `initialize`). We keep the COM
+        // object alive for the plugin's lifetime in `_host_context`.
+        let host_context = ComWrapper::new(HostApplication)
+            .to_com_ptr::<IHostApplication>()
+            .ok_or_else(|| Error::LoadFailed {
+                path: info.path.clone(),
+                reason: "failed to create host IHostApplication context".into(),
+            })?;
+        let context_arg = host_context.as_com_ref().as_ptr().cast::<FUnknown>();
+
+        // Initialize the component with the host context.
+        if unsafe { component.initialize(context_arg) } != kResultOk {
             return Err(Error::LoadFailed {
                 path: info.path.clone(),
                 reason: "IComponent::initialize returned non-OK".into(),
@@ -600,7 +658,7 @@ impl Vst3Plugin {
                     path: info.path.clone(),
                     reason: "factory.createInstance(IEditController) returned NULL".into(),
                 })?;
-            if unsafe { ctrl_ptr.initialize(ptr::null_mut()) } != kResultOk {
+            if unsafe { ctrl_ptr.initialize(context_arg) } != kResultOk {
                 return Err(Error::LoadFailed {
                     path: info.path.clone(),
                     reason: "IEditController::initialize returned non-OK".into(),
@@ -658,6 +716,7 @@ impl Vst3Plugin {
             layouts: vec![BusLayout::stereo()],
             active_layout: None,
             _module: module,
+            _host_context: host_context,
             component,
             processor,
             controller,

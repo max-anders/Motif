@@ -6,7 +6,7 @@ use egui::containers::scroll_area::ScrollBarVisibility;
 use egui::{Align, Id, Layout, Pos2, Rect, RichText, Sense, Stroke, Ui, UiBuilder, Vec2};
 
 use crate::engine::{DawEngine, DecodedAudio, PluginCatalog, PluginRef};
-use crate::model::{Device, EditHistory, Project, Track};
+use crate::model::{Device, EditHistory, Project, Track, TrackInstrument};
 use crate::ui::automation::AutomationUi;
 use crate::ui::instrument_menu::{
     choice_to_instrument, show_effect_picker, show_instrument_picker, InstrumentChoice,
@@ -26,6 +26,9 @@ use crate::ui::timeline::{
 const TILE_WIDTH: f32 = 146.0;
 const TILE_HEIGHT: f32 = 74.0;
 const TILE_ROUNDING: f32 = 4.0;
+const TILE_INNER_MARGIN: f32 = 6.0;
+const TILE_CONTENT_WIDTH: f32 = TILE_WIDTH - TILE_INNER_MARGIN * 2.0;
+const TILE_CONTENT_HEIGHT: f32 = TILE_HEIGHT - TILE_INNER_MARGIN * 2.0;
 const TILE_GAP: f32 = 8.0;
 const STRIP_HEADER_HEIGHT: f32 = 28.0;
 const STRIP_PADDING: f32 = 8.0;
@@ -531,12 +534,14 @@ impl DevicesUi {
 
         match layout {
             ChainLayout::Page => {
+                ui.add_space(STRIP_PADDING);
                 egui::ScrollArea::vertical()
                     .id_salt(("devices_fx_grid", track.id))
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         ui.spacing_mut().item_spacing = Vec2::new(TILE_GAP, TILE_GAP);
                         ui.horizontal_wrapped(|ui| {
+                            ui.add_space(STRIP_PADDING);
                             self.paint_device_chain_tiles(
                                 ui,
                                 project,
@@ -551,6 +556,7 @@ impl DevicesUi {
                     });
             }
             ChainLayout::Strip => {
+                ui.add_space(STRIP_PADDING);
                 egui::ScrollArea::horizontal()
                     .id_salt(("devices_fx_strip", track.id))
                     .auto_shrink([false, false])
@@ -558,6 +564,7 @@ impl DevicesUi {
                     .show(ui, |ui| {
                         ui.spacing_mut().item_spacing = Vec2::new(TILE_GAP, TILE_GAP);
                         ui.horizontal(|ui| {
+                            ui.add_space(STRIP_PADDING);
                             self.paint_device_chain_tiles(
                                 ui,
                                 project,
@@ -590,9 +597,11 @@ impl DevicesUi {
             ui,
             project,
             track,
+            engine,
             catalog,
             history,
             &mut self.change_instrument_search,
+            &mut self.plugin_editor_request,
             track.id,
             theme,
         );
@@ -677,75 +686,139 @@ fn instrument_tile(
     ui: &mut Ui,
     project: &mut Project,
     track: &Track,
+    engine: &dyn DawEngine,
     catalog: &PluginCatalog,
     history: &mut EditHistory,
     change_instrument_search: &mut String,
+    plugin_editor_request: &mut Option<PluginEditorRequest>,
     track_id: u64,
     theme: &ThemeColors,
 ) {
-    let size = Vec2::new(TILE_WIDTH, TILE_HEIGHT);
-    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    let is_plugin = matches!(track.instrument, TrackInstrument::Plugin { .. });
+    let editor_open = engine.plugin_editor_is_open(PluginRef::instrument(track_id));
+    let slot_ready = engine.plugin_slot_ready(PluginRef::instrument(track_id));
+    let track_name = track.name.clone();
 
-    let painter = ui.painter();
-    painter.rect_filled(rect, TILE_ROUNDING, theme.widget_bg_active);
-    painter.rect_stroke(
-        rect,
-        TILE_ROUNDING,
-        Stroke::new(1.0_f32, theme.accent),
-        egui::StrokeKind::Inside,
+    let (tile_response, mut tile_ui) = device_tile_shell(
+        ui,
+        theme.widget_bg_active,
+        theme.accent,
+        ("devices_instrument_tile", track_id),
     );
-
-    let content_rect = rect.shrink(6.0);
-    let mut content_ui = ui.new_child(
-        UiBuilder::new()
-            .id_salt(("devices_instrument_content", track_id))
-            .max_rect(content_rect)
-            .layout(Layout::top_down(Align::LEFT)),
-    );
-    content_ui.set_clip_rect(content_rect);
-    content_ui.label(RichText::new("Instrument").color(theme.text_muted).small());
-    content_ui.label(
+    tile_ui.label(RichText::new("Instrument").color(theme.text_muted).small());
+    tile_ui.label(
         RichText::new(truncate_label(track.instrument.display_name(), 16))
             .color(theme.track_header_text)
             .strong()
             .small(),
     );
-    content_ui.label(
+    tile_ui.label(
         RichText::new(track.instrument.format_badge().unwrap_or("Piano"))
             .color(theme.text_muted)
             .small()
             .monospace(),
     );
-
-    response.on_hover_text("Right-click to change instrument").context_menu(|ui| {
-        ui.label("Change instrument");
-        ui.separator();
-        if let Some(choice) = show_instrument_picker(
-            ui,
-            catalog,
-            change_instrument_search,
-            &format!("devfx_chg_{track_id}"),
-            false,
-            MENU_LIST_MAX_HEIGHT,
-        ) {
-            let rename = match &choice {
-                InstrumentChoice::Plugin(entry) => Some(entry.name.clone()),
-                InstrumentChoice::BuiltInPiano => None,
-            };
-            let instrument = choice_to_instrument(choice);
-            history.push_before(project.clone());
-            if let Some(track) = project.track_mut(track_id) {
-                if let Some(name) = rename {
-                    track.name = name;
+    tile_ui.with_layout(Layout::bottom_up(Align::LEFT), |ui| {
+        if is_plugin {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 3.0;
+                let label = if editor_open {
+                    "Close"
+                } else if slot_ready {
+                    "Edit"
+                } else {
+                    "..."
+                };
+                if ui
+                    .add_enabled(editor_open || slot_ready, egui::Button::new(label).small())
+                    .on_hover_text(if editor_open {
+                        "Close plugin editor"
+                    } else if slot_ready {
+                        "Open plugin editor"
+                    } else {
+                        "Loading..."
+                    })
+                    .clicked()
+                {
+                    *plugin_editor_request = Some(if editor_open {
+                        PluginEditorRequest::Close {
+                            track_id,
+                            device_id: None,
+                        }
+                    } else {
+                        PluginEditorRequest::Open {
+                            track_id,
+                            device_id: None,
+                            title: track_name,
+                        }
+                    });
                 }
-                // New instrument identity -- drop prior plugin blob.
-                track.plugin_state = None;
-                track.instrument = instrument;
-            }
-            change_instrument_search.clear();
-            ui.close_menu();
+            });
         }
     });
+
+    tile_response
+        .on_hover_text("Right-click to change instrument")
+        .context_menu(|ui| {
+            ui.label("Change instrument");
+            ui.separator();
+            if let Some(choice) = show_instrument_picker(
+                ui,
+                catalog,
+                change_instrument_search,
+                &format!("devfx_chg_{track_id}"),
+                false,
+                MENU_LIST_MAX_HEIGHT,
+            ) {
+                let rename = match &choice {
+                    InstrumentChoice::Plugin(entry) => Some(entry.name.clone()),
+                    InstrumentChoice::BuiltInPiano => None,
+                };
+                let instrument = choice_to_instrument(choice);
+                history.push_before(project.clone());
+                if let Some(track) = project.track_mut(track_id) {
+                    if let Some(name) = rename {
+                        track.name = name;
+                    }
+                    // New instrument identity -- drop prior plugin blob.
+                    track.plugin_state = None;
+                    track.instrument = instrument;
+                }
+                change_instrument_search.clear();
+                ui.close_menu();
+            }
+        });
+}
+
+fn device_tile_shell(
+    ui: &mut Ui,
+    fill: egui::Color32,
+    stroke: egui::Color32,
+    id_salt: impl std::hash::Hash,
+) -> (egui::Response, Ui) {
+    let (rect, response) = ui.allocate_exact_size(
+        Vec2::new(TILE_WIDTH, TILE_HEIGHT),
+        Sense::click_and_drag(),
+    );
+    ui.painter().rect_filled(rect, TILE_ROUNDING, fill);
+    ui.painter().rect_stroke(
+        rect,
+        TILE_ROUNDING,
+        Stroke::new(1.0_f32, stroke),
+        egui::StrokeKind::Inside,
+    );
+
+    let content_rect = rect.shrink(TILE_INNER_MARGIN);
+    let mut content_ui = ui.new_child(
+        UiBuilder::new()
+            .id_salt(id_salt)
+            .max_rect(content_rect)
+            .layout(Layout::top_down(Align::LEFT)),
+    );
+    content_ui.set_clip_rect(content_rect);
+    content_ui.set_min_size(Vec2::new(TILE_CONTENT_WIDTH, TILE_CONTENT_HEIGHT));
+    content_ui.set_max_size(Vec2::new(TILE_CONTENT_WIDTH, TILE_CONTENT_HEIGHT));
+    (response, content_ui)
 }
 
 fn device_tile_contents(
@@ -762,74 +835,70 @@ fn device_tile_contents(
     } else {
         theme.widget_bg_active
     };
-    egui::Frame::new()
-        .fill(fill)
-        .stroke(Stroke::new(1.0_f32, theme.separator))
-        .corner_radius(TILE_ROUNDING)
-        .inner_margin(6.0)
-        .show(ui, |ui| {
-            ui.set_min_size(Vec2::new(TILE_WIDTH - 12.0, 0.0));
-            ui.set_max_width(TILE_WIDTH - 12.0);
-            ui.vertical(|ui| {
-                ui.label(
-                    RichText::new(truncate_label(&device.name, 16))
-                        .color(theme.track_header_text)
-                        .strong()
-                        .small(),
-                );
-                ui.label(
-                    RichText::new(device.format_badge())
-                        .color(theme.text_muted)
-                        .small()
-                        .monospace(),
-                );
-                if let Some(status) = status {
-                    ui.label(
-                        RichText::new(truncate_label(status, 22))
-                            .color(theme.accent_warning)
-                            .small(),
-                    );
-                }
-                ui.add_space(2.0);
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 3.0;
-                    if ms_toggle_button(ui, "Byp", device.bypassed, theme) {
-                        action = DeviceTileAction::ToggleBypass;
-                    }
-                    if ui
-                        .small_button("x")
-                        .on_hover_text("Remove device")
-                        .clicked()
-                    {
-                        action = DeviceTileAction::Remove;
-                    }
-                    let label = if editor_open {
-                        "Close"
-                    } else if slot_ready {
-                        "Edit"
-                    } else {
-                        "..."
-                    };
-                    if ui
-                        .add_enabled(editor_open || slot_ready, egui::Button::new(label).small())
-                        .on_hover_text(if editor_open {
-                            "Close plugin editor"
-                        } else if slot_ready {
-                            "Open plugin editor"
-                        } else {
-                            "Loading..."
-                        })
-                        .clicked()
-                    {
-                        action = if editor_open {
-                            DeviceTileAction::CloseEditor
-                        } else {
-                            DeviceTileAction::OpenEditor
-                        };
-                    }
-                });
-            });
+    let (_, mut tile_ui) = device_tile_shell(
+        ui,
+        fill,
+        theme.separator,
+        ("device_tile", device.id),
+    );
+    tile_ui.label(
+        RichText::new(truncate_label(&device.name, 16))
+            .color(theme.track_header_text)
+            .strong()
+            .small(),
+    );
+    tile_ui.label(
+        RichText::new(device.format_badge())
+            .color(theme.text_muted)
+            .small()
+            .monospace(),
+    );
+    if let Some(status) = status {
+        tile_ui.label(
+            RichText::new(truncate_label(status, 22))
+                .color(theme.accent_warning)
+                .small(),
+        );
+    }
+    tile_ui.with_layout(Layout::bottom_up(Align::LEFT), |ui| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 3.0;
+            if ms_toggle_button(ui, "Byp", device.bypassed, theme) {
+                action = DeviceTileAction::ToggleBypass;
+            }
+            if ui
+                .small_button("x")
+                .on_hover_text("Remove device")
+                .clicked()
+            {
+                action = DeviceTileAction::Remove;
+            }
+            let label = if editor_open {
+                "Close"
+            } else if slot_ready {
+                "Edit"
+            } else {
+                "..."
+            };
+            if ui
+                .add_enabled(editor_open || slot_ready, egui::Button::new(label).small())
+                .on_hover_text(if editor_open {
+                    "Close plugin editor"
+                } else if slot_ready {
+                    "Open plugin editor"
+                } else {
+                    "Loading..."
+                })
+                .clicked()
+            {
+                action = if editor_open {
+                    DeviceTileAction::CloseEditor
+                } else {
+                    DeviceTileAction::OpenEditor
+                };
+            }
         });
+    });
     action
 }
 
@@ -840,22 +909,28 @@ fn add_fx_tile(
     add_fx_search: &mut String,
     track_id: u64,
 ) {
-    ui.menu_button("+ Add FX", |ui| {
-        if let Some(entry) =
-            show_effect_picker(
-                ui,
-                catalog,
-                add_fx_search,
-                &format!("devfx_add_{track_id}"),
-                false,
-                MENU_LIST_MAX_HEIGHT,
-            )
-        {
-            project.add_device(track_id, entry.format, &entry.unique_id, &entry.name);
-            add_fx_search.clear();
-            ui.close_menu();
-        }
-    });
+    ui.allocate_ui_with_layout(
+        Vec2::new(TILE_WIDTH, TILE_HEIGHT),
+        Layout::top_down(Align::Center),
+        |ui| {
+            ui.centered_and_justified(|ui| {
+                ui.menu_button("+ Add FX", |ui| {
+                    if let Some(entry) = show_effect_picker(
+                        ui,
+                        catalog,
+                        add_fx_search,
+                        &format!("devfx_add_{track_id}"),
+                        false,
+                        MENU_LIST_MAX_HEIGHT,
+                    ) {
+                        project.add_device(track_id, entry.format, &entry.unique_id, &entry.name);
+                        add_fx_search.clear();
+                        ui.close_menu();
+                    }
+                });
+            });
+        },
+    );
 }
 
 fn truncate_label(text: &str, max_chars: usize) -> String {

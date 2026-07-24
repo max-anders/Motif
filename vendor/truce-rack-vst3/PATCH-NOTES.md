@@ -30,6 +30,23 @@ ignores all mouse and keyboard input.
 
 Non-Linux platforms are unchanged.
 
+## Second patch: non-NULL host context on `initialize`
+
+Upstream passes `ptr::null_mut()` as the context to `IPluginBase::initialize`
+for both the component and the edit controller. Plugins that dereference the
+host `IHostApplication` during init without a NULL-check crash on this - e.g.
+LSP-Plugins segfaults (`SEGV_MAPERR`) deep inside `lsp-plugins.so` during
+`initialize`.
+
+- New `HostApplication` COM object implements `IHostApplication`
+  (`getName` -> "Motif"; `createInstance` declines with `kNoInterface`).
+- `load_from` builds one `ComWrapper::new(HostApplication)` and passes it to
+  both `initialize` calls.
+- The `ComPtr<IHostApplication>` is stored in `Vst3Plugin._host_context` so the
+  object outlives any pointer the plugin may retain.
+
+This is cross-platform (not Linux-gated).
+
 ## Re-syncing after an upstream bump
 
 If upstream adds real run-loop support, drop this vendored copy and the

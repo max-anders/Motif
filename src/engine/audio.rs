@@ -695,6 +695,12 @@ pub struct AudioEngine {
     sample_rate: f32,
     /// UI-side handles to the same plugin instances the audio thread mixes.
     plugin_slots: HashMap<u64, Arc<Mutex<HostedPlugin>>>,
+    /// Parameter metadata enumerated once at load time. Cached so per-frame
+    /// automation sync never has to take the RT-shared plugin mutex (a blocking
+    /// `lock()` there starves the audio callback's `try_lock()` -> dropouts).
+    plugin_params: HashMap<u64, Arc<Vec<PluginParamInfo>>>,
+    /// Same, for insert-FX devices keyed by `(track_id, device_id)`.
+    device_params: HashMap<(u64, u64), Arc<Vec<PluginParamInfo>>>,
     /// Open native plugin editor windows (UI thread).
     editor_host: PluginEditorHost,
     track_meters: Arc<Mutex<Vec<(u64, f32, f32)>>>,
@@ -749,6 +755,8 @@ impl AudioEngine {
                     command_tx: Some(tx),
                     sample_rate,
                     plugin_slots: HashMap::new(),
+                    plugin_params: HashMap::new(),
+                    device_params: HashMap::new(),
                     editor_host: PluginEditorHost::default(),
                     track_meters,
                     master_meter,
@@ -788,6 +796,8 @@ impl AudioEngine {
                 command_tx: None,
                 sample_rate: 48_000.0,
                 plugin_slots: HashMap::new(),
+                plugin_params: HashMap::new(),
+                device_params: HashMap::new(),
                 editor_host: PluginEditorHost::default(),
                 track_meters,
                 master_meter,
@@ -986,11 +996,13 @@ impl AudioEngine {
     fn drop_plugin_slot(&mut self, track_id: u64) {
         self.editor_host.close(PluginRef::instrument(track_id));
         self.plugin_slots.remove(&track_id);
+        self.plugin_params.remove(&track_id);
     }
 
     fn drop_device_slot(&mut self, track_id: u64, device_id: u64) {
         self.editor_host.close(PluginRef::device(track_id, device_id));
         self.device_slots.remove(&(track_id, device_id));
+        self.device_params.remove(&(track_id, device_id));
     }
 
     fn spawn_device_load(
@@ -1038,8 +1050,11 @@ impl AudioEngine {
                     }
                     match result {
                         Ok(plugin) => {
+                            // Enumerate params once, before sharing with the RT thread.
+                            let params = Arc::new(plugin.parameters());
                             self.device_slots
                                 .insert((track_id, device_id), Arc::new(Mutex::new(plugin)));
+                            self.device_params.insert((track_id, device_id), params);
                             errors.push((track_id, device_id, String::new()));
                         }
                         Err(error) => {
@@ -1083,9 +1098,12 @@ impl AudioEngine {
                     self.pending_loads.remove(&track_id);
                     match result {
                         Ok(plugin) => {
+                            // Enumerate params once, before sharing with the RT thread.
+                            let params = Arc::new(plugin.parameters());
                             let slot = Arc::new(Mutex::new(plugin));
                             self.drop_plugin_slot(track_id);
                             self.plugin_slots.insert(track_id, Arc::clone(&slot));
+                            self.plugin_params.insert(track_id, params);
                             self.synced_instruments.insert(track_id, instrument);
                             updates.push((track_id, String::new()));
                             self.send(AudioCommand::SetVoice {
@@ -1111,18 +1129,20 @@ impl AudioEngine {
         updates
     }
 
+    /// Cached parameter metadata for a slot (enumerated once at load time).
+    /// Never touches the RT-shared plugin mutex, so it is safe to call from
+    /// per-frame UI paths.
+    fn cached_params(&self, track_id: u64, device_id: Option<u64>) -> Option<&Arc<Vec<PluginParamInfo>>> {
+        match device_id {
+            None => self.plugin_params.get(&track_id),
+            Some(device_id) => self.device_params.get(&(track_id, device_id)),
+        }
+    }
+
     pub fn plugin_parameters(&self, track_id: u64, device_id: Option<u64>) -> Vec<PluginParamInfo> {
-        let slot = match device_id {
-            None => self.plugin_slots.get(&track_id),
-            Some(device_id) => self.device_slots.get(&(track_id, device_id)),
-        };
-        let Some(slot) = slot else {
-            return Vec::new();
-        };
-        let Ok(guard) = slot.lock() else {
-            return Vec::new();
-        };
-        guard.parameters()
+        self.cached_params(track_id, device_id)
+            .map(|params| params.as_ref().clone())
+            .unwrap_or_default()
     }
 
     fn param_info_for_target(
@@ -1137,9 +1157,10 @@ impl AudioEngine {
                 param_id,
             } => (Some(*device_id), *param_id),
         };
-        self.plugin_parameters(track_id, device_id)
-            .into_iter()
+        self.cached_params(track_id, device_id)?
+            .iter()
             .find(|param| param.id == param_id)
+            .cloned()
     }
 
     pub fn sync_automation(&mut self, project: &Project) {
@@ -1580,9 +1601,11 @@ impl DawEngine for AudioEngine {
     fn invalidate_instruments(&mut self) {
         self.editor_host.close_all();
         self.plugin_slots.clear();
+        self.plugin_params.clear();
         self.synced_instruments.clear();
         self.pending_loads.clear();
         self.device_slots.clear();
+        self.device_params.clear();
         self.device_chain_sig.clear();
         self.device_chain_dirty.clear();
         self.pending_device_loads.clear();
