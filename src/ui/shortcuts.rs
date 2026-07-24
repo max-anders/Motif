@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 pub const SETTINGS_FILE: &str = "settings.json";
 
 /// Named app command triggered by a shortcut.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Action {
     TogglePlayback,
@@ -20,12 +20,82 @@ pub enum Action {
     DuplicateSelection,
     Undo,
     Redo,
-    SaveProject,
-    LoadProject,
+    /// Save current project (or Save As when untitled).
+    Save,
+    /// Open project via native file dialog.
+    Open,
+    /// Save As via native file dialog.
+    SaveProjectAs,
+    /// Start a new empty project.
+    NewProject,
+    /// Open the in-app Recent Projects loader.
+    OpenProjectBrowser,
     BackToPlaylist,
 }
 
+impl<'de> Deserialize<'de> for Action {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        match raw.as_str() {
+            "toggle_playback" => Ok(Self::TogglePlayback),
+            "delete_selection" => Ok(Self::DeleteSelection),
+            "copy_selection" => Ok(Self::CopySelection),
+            "cut_selection" => Ok(Self::CutSelection),
+            "paste_selection" => Ok(Self::PasteSelection),
+            "duplicate_selection" => Ok(Self::DuplicateSelection),
+            "undo" => Ok(Self::Undo),
+            "redo" => Ok(Self::Redo),
+            "save" | "save_project" => Ok(Self::Save),
+            "open" | "load_project" => Ok(Self::Open),
+            "save_project_as" => Ok(Self::SaveProjectAs),
+            "new_project" => Ok(Self::NewProject),
+            "open_project_browser" => Ok(Self::OpenProjectBrowser),
+            "back_to_playlist" => Ok(Self::BackToPlaylist),
+            other => Err(serde::de::Error::unknown_variant(
+                other,
+                &[
+                    "toggle_playback",
+                    "delete_selection",
+                    "copy_selection",
+                    "cut_selection",
+                    "paste_selection",
+                    "duplicate_selection",
+                    "undo",
+                    "redo",
+                    "save",
+                    "open",
+                    "save_project_as",
+                    "new_project",
+                    "open_project_browser",
+                    "back_to_playlist",
+                ],
+            )),
+        }
+    }
+}
+
 impl Action {
+    /// All actions in Settings / docs order (includes actions with no factory binding).
+    pub const ALL: [Self; 14] = [
+        Self::TogglePlayback,
+        Self::DeleteSelection,
+        Self::CopySelection,
+        Self::CutSelection,
+        Self::PasteSelection,
+        Self::DuplicateSelection,
+        Self::Undo,
+        Self::Redo,
+        Self::NewProject,
+        Self::Open,
+        Self::Save,
+        Self::SaveProjectAs,
+        Self::OpenProjectBrowser,
+        Self::BackToPlaylist,
+    ];
+
     pub fn label(self) -> &'static str {
         match self {
             Self::TogglePlayback => "Play / Pause",
@@ -36,8 +106,11 @@ impl Action {
             Self::DuplicateSelection => "Duplicate selection",
             Self::Undo => "Undo",
             Self::Redo => "Redo",
-            Self::SaveProject => "Save project",
-            Self::LoadProject => "Load project",
+            Self::Save => "Save",
+            Self::Open => "Open...",
+            Self::SaveProjectAs => "Save As...",
+            Self::NewProject => "New project",
+            Self::OpenProjectBrowser => "Projects...",
             Self::BackToPlaylist => "Back / close",
         }
     }
@@ -224,13 +297,15 @@ impl ShortcutRegistry {
                     Action::Redo,
                     Binding::Key(Chord::ctrl_or_cmd_shift(Key::Z)),
                 ),
+                (Action::Save, Binding::Key(Chord::ctrl_or_cmd(Key::S))),
+                (Action::Open, Binding::Key(Chord::ctrl_or_cmd(Key::O))),
                 (
-                    Action::SaveProject,
-                    Binding::Key(Chord::ctrl_or_cmd(Key::S)),
+                    Action::SaveProjectAs,
+                    Binding::Key(Chord::ctrl_or_cmd_shift(Key::S)),
                 ),
                 (
-                    Action::LoadProject,
-                    Binding::Key(Chord::ctrl_or_cmd(Key::O)),
+                    Action::NewProject,
+                    Binding::Key(Chord::ctrl_or_cmd(Key::N)),
                 ),
                 (
                     Action::BackToPlaylist,
@@ -301,9 +376,9 @@ impl ShortcutRegistry {
             .map(|(index, (action, binding))| (index, *action, *binding))
     }
 
-    /// Distinct actions in registry order (first occurrence wins).
+    /// Distinct actions in Settings order. Includes factory actions even with no binding yet.
     pub fn actions_in_order(&self) -> Vec<Action> {
-        let mut seen = Vec::new();
+        let mut seen: Vec<Action> = Action::ALL.to_vec();
         for (action, _) in &self.bindings {
             if !seen.contains(action) {
                 seen.push(*action);

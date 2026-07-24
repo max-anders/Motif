@@ -1,17 +1,19 @@
 use std::collections::HashMap;
-use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use eframe::egui;
 
 use crate::engine::{AudioEngine, DawEngine, PluginCatalog, PLUGIN_CACHE_FILE};
-use crate::model::{EditClipboard, EditHistory, Project};
-use crate::ui::{
-    Action, AppSettings, PianoRollUi, PlaylistUi, PluginEditorRequest, PollFilter, SettingsAction,
-    SettingsUi, TransportUi, SETTINGS_FILE,
+use crate::model::{
+    clear_recovery, ensure_motif_extension, format_unix_time, legacy_project_path,
+    load_project_from, load_recovery_meta, load_recovery_project, project_display_name,
+    projects_dir, push_recent, save_project_to, write_recovery, EditClipboard, EditHistory,
+    Project, PROJECT_EXTENSION, RecoveryMeta,
 };
-
-const PROJECT_FILE: &str = "project.json";
+use crate::ui::{
+    Action, AppSettings, PianoRollUi, PlaylistUi, PluginEditorRequest, PollFilter,
+    ProjectBrowserAction, ProjectBrowserUi, SettingsAction, SettingsUi, TransportUi, SETTINGS_FILE,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CenterView {
@@ -22,10 +24,15 @@ enum CenterView {
 
 pub struct DawApp {
     project: Project,
+    /// Last explicitly saved (or loaded) project state for dirty detection.
+    saved_snapshot: Project,
+    current_path: Option<PathBuf>,
+    project_name: String,
     engine: AudioEngine,
     playlist: PlaylistUi,
     piano_roll: PianoRollUi,
     settings_ui: SettingsUi,
+    project_browser: ProjectBrowserUi,
     center_view: CenterView,
     /// View to restore when leaving Settings (playlist or piano roll).
     settings_return: CenterView,
@@ -38,37 +45,52 @@ pub struct DawApp {
     /// Snapshot undo/redo for clip and note edits.
     history: EditHistory,
     status_message: String,
+    autosave_accum: f32,
+    pending_recovery: Option<RecoveryMeta>,
+    show_project_browser: bool,
+    /// Confirm discard when New is requested while dirty.
+    confirm_new_discard: bool,
+    /// Force dirty (e.g. after restoring a recovery backup that has no clean disk match).
+    dirty_forced: bool,
 }
 
 impl DawApp {
     pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
-        let project = load_project().unwrap_or_default();
-        let engine = AudioEngine::new(project.beats_per_second());
         let settings = AppSettings::load_or_defaults(&Self::settings_path());
         let mut catalog = PluginCatalog::load_or_defaults(&Self::plugin_cache_path());
         catalog.extra_paths = settings.plugin_extra_paths.clone();
-        // Do not rescan here — scanning CLAP/VST3 paths blocks the UI thread and trips
-        // the desktop "not responding" dialog. Empty cache: user rescans from Settings.
+
+        let pending_recovery = load_recovery_meta();
+        let (project, current_path, show_browser, status_message) =
+            Self::startup_project(&settings, pending_recovery.is_some());
+
+        let engine = AudioEngine::new(project.beats_per_second());
         let status_message = if !engine.audio_available() {
             let detail = engine.init_error().unwrap_or("unknown error");
             format!("Audio unavailable ({detail}). Transport still works silently.")
-        } else if catalog.entries.is_empty() {
-            String::from(
-                "No plugin cache yet. Open Settings -> Plugin Manager -> Rescan, or add a Built-in Piano track.",
-            )
+        } else if pending_recovery.is_some() {
+            String::from("Unsaved recovery found — choose Restore or Discard.")
         } else {
-            String::from(
-                "Playlist: Add track picks an instrument. Right-click track header for editor / change instrument. Double-click clip for piano roll.",
-            )
+            status_message
         };
 
+        let project_name = current_path
+            .as_ref()
+            .map(|p| project_display_name(p))
+            .unwrap_or_else(|| String::from("Untitled"));
+        let saved_snapshot = project.clone();
         let undo_limit = settings.undo_limit;
+
         let mut app = Self {
             project,
+            saved_snapshot,
+            current_path,
+            project_name,
             engine,
             playlist: PlaylistUi::default(),
             piano_roll: PianoRollUi::default(),
             settings_ui: SettingsUi::default(),
+            project_browser: ProjectBrowserUi::default(),
             center_view: CenterView::Playlist,
             settings_return: CenterView::Playlist,
             settings,
@@ -77,13 +99,84 @@ impl DawApp {
             clipboard: EditClipboard::Empty,
             history: EditHistory::new(undo_limit),
             status_message,
+            autosave_accum: 0.0,
+            pending_recovery,
+            show_project_browser: show_browser,
+            confirm_new_discard: false,
+            dirty_forced: false,
         };
         app.sync_instruments();
         app
     }
 
-    fn project_path() -> PathBuf {
-        PathBuf::from(PROJECT_FILE)
+    /// Choose initial project: recovery deferral, recent, legacy CWD, or empty + browser.
+    fn startup_project(
+        settings: &AppSettings,
+        has_recovery: bool,
+    ) -> (Project, Option<PathBuf>, bool, String) {
+        if has_recovery {
+            // Keep a blank session until the user restores or discards.
+            return (
+                Project::default(),
+                None,
+                false,
+                String::from("Recovery pending"),
+            );
+        }
+
+        if let Some(path) = settings.recent_projects.first() {
+            if path.exists() {
+                match load_project_from(path) {
+                    Ok(project) => {
+                        return (
+                            project,
+                            Some(path.clone()),
+                            false,
+                            format!("Opened {}", path.display()),
+                        );
+                    }
+                    Err(error) => {
+                        return (
+                            Project::default(),
+                            None,
+                            true,
+                            format!("Recent open failed: {error}"),
+                        );
+                    }
+                }
+            }
+        }
+
+        let legacy = legacy_project_path();
+        if legacy.exists() {
+            match load_project_from(&legacy) {
+                Ok(project) => {
+                    return (
+                        project,
+                        Some(legacy),
+                        false,
+                        String::from("Loaded legacy project.json"),
+                    );
+                }
+                Err(error) => {
+                    return (
+                        Project::default(),
+                        None,
+                        true,
+                        format!("Legacy load failed: {error}"),
+                    );
+                }
+            }
+        }
+
+        (
+            Project::default(),
+            None,
+            true,
+            String::from(
+                "New project. Use File -> Save As to choose a .motif path, or open a recent project.",
+            ),
+        )
     }
 
     fn settings_path() -> PathBuf {
@@ -92,6 +185,10 @@ impl DawApp {
 
     fn plugin_cache_path() -> PathBuf {
         PathBuf::from(PLUGIN_CACHE_FILE)
+    }
+
+    fn dirty(&self) -> bool {
+        self.dirty_forced || self.project != self.saved_snapshot
     }
 
     fn sync_instruments(&mut self) {
@@ -126,7 +223,7 @@ impl DawApp {
     fn save_settings(&mut self) {
         match self.settings.save_to_path(&Self::settings_path()) {
             Ok(()) => {
-                self.status_message = format!("Settings saved to {SETTINGS_FILE}");
+                // Quiet success for frequent autosave-related writes; only announce explicit saves.
             }
             Err(error) => {
                 self.status_message = format!("Settings save failed: {error}");
@@ -134,36 +231,325 @@ impl DawApp {
         }
     }
 
-    fn save_project(&mut self) {
-        self.engine.capture_plugin_states(&mut self.project);
-        match serde_json::to_string_pretty(&self.project) {
-            Ok(json) => match fs::write(Self::project_path(), json) {
-                Ok(()) => self.status_message = format!("Saved to {PROJECT_FILE}"),
-                Err(error) => self.status_message = format!("Save failed: {error}"),
-            },
-            Err(error) => self.status_message = format!("Serialize failed: {error}"),
+    fn remember_recent(&mut self, path: PathBuf) {
+        push_recent(&mut self.settings.recent_projects, path);
+        self.save_settings();
+    }
+
+    fn mark_clean(&mut self) {
+        self.saved_snapshot = self.project.clone();
+        self.dirty_forced = false;
+        self.autosave_accum = 0.0;
+        let _ = clear_recovery();
+    }
+
+    fn apply_loaded_project(&mut self, project: Project, path: Option<PathBuf>) {
+        self.engine.stop();
+        self.engine.all_notes_off();
+        self.engine.set_beats_per_second(project.beats_per_second());
+        self.project = project;
+        self.saved_snapshot = self.project.clone();
+        self.dirty_forced = false;
+        self.history.clear();
+        self.center_view = CenterView::Playlist;
+        self.settings_return = CenterView::Playlist;
+        self.playlist.clear_selection();
+        self.piano_roll.release_audition(&mut self.engine);
+        self.piano_roll.clear_selection();
+        self.settings_ui.clear_capture();
+        self.current_path = path.clone();
+        self.project_name = path
+            .as_ref()
+            .map(|p| project_display_name(p))
+            .unwrap_or_else(|| String::from("Untitled"));
+        self.autosave_accum = 0.0;
+        self.confirm_new_discard = false;
+        self.sync_instruments();
+    }
+
+    fn save(&mut self) {
+        if self.current_path.is_some() {
+            self.save_to_current_path();
+        } else {
+            self.save_as();
         }
     }
 
-    fn load_project_from_disk(&mut self) {
-        match load_project() {
-            Ok(project) => {
-                self.engine.stop();
-                self.engine.all_notes_off();
-                self.engine.set_beats_per_second(project.beats_per_second());
-                self.project = project;
-                self.history.clear();
-                self.center_view = CenterView::Playlist;
-                self.settings_return = CenterView::Playlist;
-                self.playlist.clear_selection();
-                self.piano_roll.release_audition(&mut self.engine);
-                self.piano_roll.clear_selection();
-                self.settings_ui.clear_capture();
-                self.sync_instruments();
-                self.status_message = format!("Loaded {PROJECT_FILE}");
+    fn save_to_current_path(&mut self) {
+        let Some(path) = self.current_path.clone() else {
+            self.save_as();
+            return;
+        };
+        self.engine.capture_plugin_states(&mut self.project);
+        match save_project_to(&path, &self.project) {
+            Ok(()) => {
+                self.project_name = project_display_name(&path);
+                self.mark_clean();
+                self.remember_recent(path.clone());
+                self.status_message = format!("Saved {}", path.display());
             }
-            Err(error) => self.status_message = format!("Load failed: {error}"),
+            Err(error) => self.status_message = format!("Save failed: {error}"),
         }
+    }
+
+    fn save_as(&mut self) {
+        let start_dir = projects_dir().ok();
+        let mut dialog = rfd::FileDialog::new()
+            .add_filter("Motif project", &[PROJECT_EXTENSION])
+            .set_file_name(format!("{}.{}", self.project_name, PROJECT_EXTENSION));
+        if let Some(dir) = start_dir {
+            dialog = dialog.set_directory(dir);
+        }
+        let Some(path) = dialog.save_file() else {
+            self.status_message = String::from("Save As cancelled");
+            return;
+        };
+        let path = ensure_motif_extension(path);
+        self.engine.capture_plugin_states(&mut self.project);
+        match save_project_to(&path, &self.project) {
+            Ok(()) => {
+                self.current_path = Some(path.clone());
+                self.project_name = project_display_name(&path);
+                self.mark_clean();
+                self.remember_recent(path.clone());
+                self.status_message = format!("Saved {}", path.display());
+            }
+            Err(error) => self.status_message = format!("Save As failed: {error}"),
+        }
+    }
+
+    fn open_dialog(&mut self) {
+        let start_dir = projects_dir().ok();
+        let mut dialog =
+            rfd::FileDialog::new().add_filter("Motif project", &[PROJECT_EXTENSION, "json"]);
+        if let Some(dir) = start_dir {
+            dialog = dialog.set_directory(dir);
+        }
+        let Some(path) = dialog.pick_file() else {
+            self.status_message = String::from("Open cancelled");
+            return;
+        };
+        self.open_path(&path);
+    }
+
+    fn open_path(&mut self, path: &Path) {
+        match load_project_from(path) {
+            Ok(project) => {
+                self.apply_loaded_project(project, Some(path.to_path_buf()));
+                self.remember_recent(path.to_path_buf());
+                let _ = clear_recovery();
+                self.pending_recovery = None;
+                self.status_message = format!("Opened {}", path.display());
+            }
+            Err(error) => self.status_message = format!("Open failed: {error}"),
+        }
+    }
+
+    fn request_new_project(&mut self) {
+        if self.dirty() {
+            self.confirm_new_discard = true;
+        } else {
+            self.new_project();
+        }
+    }
+
+    fn new_project(&mut self) {
+        self.apply_loaded_project(Project::default(), None);
+        let _ = clear_recovery();
+        self.pending_recovery = None;
+        self.status_message = String::from("New project");
+    }
+
+    fn write_recovery_backup(&mut self) {
+        self.engine.capture_plugin_states(&mut self.project);
+        match write_recovery(
+            &self.project,
+            self.current_path.as_deref(),
+            &self.project_name,
+        ) {
+            Ok(()) => self.status_message = String::from("Recovery saved"),
+            Err(error) => self.status_message = format!("Recovery save failed: {error}"),
+        }
+    }
+
+    fn tick_autosave(&mut self, delta_seconds: f32) {
+        if !self.settings.autosave_enabled || !self.dirty() {
+            self.autosave_accum = 0.0;
+            return;
+        }
+        self.autosave_accum += delta_seconds;
+        let interval = self.settings.autosave_interval_secs.max(30) as f32;
+        if self.autosave_accum >= interval {
+            self.autosave_accum = 0.0;
+            self.write_recovery_backup();
+        }
+    }
+
+    fn restore_recovery(&mut self) {
+        let meta = match self.pending_recovery.take() {
+            Some(meta) => meta,
+            None => return,
+        };
+        match load_recovery_project() {
+            Ok(project) => {
+                let path = meta.original_path.filter(|p| p.exists());
+                self.apply_loaded_project(project, path);
+                // Restored content is unsaved until the user Saves.
+                self.dirty_forced = true;
+                self.project_name = meta.project_name;
+                self.status_message = String::from("Restored recovery - save to keep");
+            }
+            Err(error) => {
+                self.pending_recovery = Some(meta);
+                self.status_message = format!("Restore failed: {error}");
+            }
+        }
+    }
+
+    fn discard_recovery(&mut self) {
+        let _ = clear_recovery();
+        self.pending_recovery = None;
+        // After discard, offer the normal startup path (recent / empty + browser).
+        let (project, path, show_browser, status) =
+            Self::startup_project(&self.settings, false);
+        self.apply_loaded_project(project, path);
+        self.show_project_browser = show_browser;
+        self.status_message = if status.starts_with("Opened") || status.starts_with("Loaded") {
+            format!("Discarded recovery. {status}")
+        } else {
+            String::from("Discarded recovery")
+        };
+    }
+
+    fn update_window_title(&self, ctx: &egui::Context) {
+        let dirty_mark = if self.dirty() { " *" } else { "" };
+        let title = format!("Motif - {}{dirty_mark}", self.project_name);
+        ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
+    }
+
+    fn show_recovery_modal(&mut self, ctx: &egui::Context) {
+        let Some(meta) = self.pending_recovery.clone() else {
+            return;
+        };
+        let when = format_unix_time(meta.saved_at_unix);
+        let name = meta.project_name.clone();
+        let mut restore = false;
+        let mut discard = false;
+
+        egui::Window::new("Recover unsaved project")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.label(format!(
+                    "Motif found unsaved changes from {when} ({name})."
+                ));
+                ui.label("Restore them, or discard the recovery backup?");
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Restore").clicked() {
+                        restore = true;
+                    }
+                    if ui.button("Discard").clicked() {
+                        discard = true;
+                    }
+                });
+            });
+
+        if restore {
+            self.restore_recovery();
+        } else if discard {
+            self.discard_recovery();
+        }
+    }
+
+    fn show_new_discard_modal(&mut self, ctx: &egui::Context) {
+        if !self.confirm_new_discard {
+            return;
+        }
+        let mut confirm = false;
+        let mut cancel = false;
+        egui::Window::new("Discard unsaved changes?")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.label("The current project has unsaved changes. Start a new project anyway?");
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Discard and new").clicked() {
+                        confirm = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        if confirm {
+            self.confirm_new_discard = false;
+            self.new_project();
+        } else if cancel {
+            self.confirm_new_discard = false;
+        }
+    }
+
+    fn handle_project_browser_action(&mut self, action: ProjectBrowserAction) {
+        match action {
+            ProjectBrowserAction::New => self.request_new_project(),
+            ProjectBrowserAction::OpenPath(path) => self.open_path(&path),
+            ProjectBrowserAction::OpenDialog => self.open_dialog(),
+            ProjectBrowserAction::RemoveRecent(path) => {
+                self.settings.recent_projects.retain(|p| p != &path);
+                self.save_settings();
+                self.status_message = format!("Removed {} from recent", path.display());
+            }
+            ProjectBrowserAction::Close => {}
+        }
+    }
+
+    fn show_file_menu(&mut self, ui: &mut egui::Ui) {
+        ui.menu_button("File", |ui| {
+            if ui.button("New").clicked() {
+                self.request_new_project();
+                ui.close_menu();
+            }
+            if ui.button("Open...").clicked() {
+                self.open_dialog();
+                ui.close_menu();
+            }
+            ui.menu_button("Open Recent", |ui| {
+                if self.settings.recent_projects.is_empty() {
+                    ui.weak("No recent projects");
+                } else {
+                    let recent = self.settings.recent_projects.clone();
+                    for path in recent {
+                        let label = format!(
+                            "{} — {}",
+                            project_display_name(&path),
+                            path.display()
+                        );
+                        let enabled = path.exists();
+                        if ui.add_enabled(enabled, egui::Button::new(label)).clicked() {
+                            self.open_path(&path);
+                            ui.close_menu();
+                        }
+                    }
+                }
+            });
+            if ui.button("Projects...").clicked() {
+                self.show_project_browser = true;
+                ui.close_menu();
+            }
+            ui.separator();
+            if ui.button("Save").clicked() {
+                self.save();
+                ui.close_menu();
+            }
+            if ui.button("Save As...").clicked() {
+                self.save_as();
+                ui.close_menu();
+            }
+        });
     }
 
     fn prune_ui_after_history(&mut self) {
@@ -562,6 +948,13 @@ impl DawApp {
     }
 
     fn dispatch_action(&mut self, action: Action) {
+        // Block project shortcuts while recovery / discard modals are up.
+        if self.pending_recovery.is_some() || self.confirm_new_discard {
+            if matches!(action, Action::BackToPlaylist) {
+                // Escape does not dismiss recovery (must choose Restore/Discard).
+            }
+            return;
+        }
         match action {
             Action::TogglePlayback => self.engine.toggle_playback(),
             Action::DeleteSelection => match self.center_view {
@@ -597,8 +990,11 @@ impl DawApp {
                 CenterView::Settings => {}
                 _ => self.redo_edit(),
             },
-            Action::SaveProject => self.save_project(),
-            Action::LoadProject => self.load_project_from_disk(),
+            Action::Save => self.save(),
+            Action::Open => self.open_dialog(),
+            Action::SaveProjectAs => self.save_as(),
+            Action::NewProject => self.request_new_project(),
+            Action::OpenProjectBrowser => self.show_project_browser = true,
             Action::BackToPlaylist => match self.center_view {
                 CenterView::Settings => self.close_settings(),
                 CenterView::PianoRoll { .. } => self.back_to_playlist(),
@@ -623,7 +1019,13 @@ impl eframe::App for DawApp {
             self.dispatch_action(Action::TogglePlayback);
         }
 
-        let poll_filter = if self.settings_ui.is_capturing() {
+        if self.pending_recovery.is_none() && !self.confirm_new_discard {
+            self.tick_autosave(delta_seconds);
+        }
+
+        let poll_filter = if self.pending_recovery.is_some() || self.confirm_new_discard {
+            PollFilter::None
+        } else if self.settings_ui.is_capturing() {
             PollFilter::None
         } else if matches!(self.center_view, CenterView::Settings) {
             PollFilter::NavigationOnly
@@ -635,6 +1037,7 @@ impl eframe::App for DawApp {
         }
 
         self.settings.themes.colors().apply_to_context(ctx);
+        self.update_window_title(ctx);
 
         egui::TopBottomPanel::top("transport_panel").show(ctx, |ui| {
             ui.heading("Motif");
@@ -658,17 +1061,18 @@ impl eframe::App for DawApp {
                     }
                     CenterView::Playlist => {}
                 }
-                if ui.button("Save project").clicked() {
-                    self.save_project();
-                }
-                if ui.button("Load project").clicked() {
-                    self.load_project_from_disk();
-                }
+
+                self.show_file_menu(ui);
+
                 if !matches!(self.center_view, CenterView::Settings)
                     && ui.button("Settings").clicked()
                 {
                     self.open_settings();
                 }
+
+                let dirty_mark = if self.dirty() { " *" } else { "" };
+                ui.label(format!("{}{dirty_mark}", self.project_name));
+
                 if let CenterView::PianoRoll { clip_id } = self.center_view {
                     if let Some(clip) = self.project.clip(clip_id) {
                         ui.label(format!("Editing: {}", clip.name));
@@ -747,11 +1151,15 @@ impl eframe::App for DawApp {
                             &mut self.settings.plugin_extra_paths,
                             &mut self.settings.plugin_keys,
                             &mut self.settings.undo_limit,
+                            &mut self.settings.autosave_enabled,
+                            &mut self.settings.autosave_interval_secs,
+                            &mut self.settings.recent_projects,
                         ) {
                             Some(SettingsAction::Back) => self.close_settings(),
                             Some(SettingsAction::ShortcutsChanged)
                             | Some(SettingsAction::ThemeChanged)
-                            | Some(SettingsAction::PluginKeysChanged) => self.save_settings(),
+                            | Some(SettingsAction::PluginKeysChanged)
+                            | Some(SettingsAction::ProjectChanged) => self.save_settings(),
                             Some(SettingsAction::EditingChanged) => {
                                 self.history.set_limit(self.settings.undo_limit);
                                 self.save_settings();
@@ -769,13 +1177,27 @@ impl eframe::App for DawApp {
                 }
             });
 
+        if self.pending_recovery.is_some() {
+            self.show_recovery_modal(ctx);
+        } else {
+            self.show_new_discard_modal(ctx);
+            if let Some(action) = self.project_browser.show(
+                ctx,
+                &mut self.show_project_browser,
+                &self.settings.recent_projects,
+            ) {
+                self.handle_project_browser_action(action);
+            }
+        }
+
         ctx.request_repaint();
     }
-}
 
-fn load_project() -> Result<Project, Box<dyn std::error::Error>> {
-    let json = fs::read_to_string(DawApp::project_path())?;
-    Ok(Project::from_json(&json)?)
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        if self.dirty() && self.settings.autosave_enabled {
+            self.write_recovery_backup();
+        }
+    }
 }
 
 #[cfg(target_os = "linux")]

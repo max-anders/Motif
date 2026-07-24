@@ -1,4 +1,4 @@
-//! Combined app settings persistence (`settings.json`): shortcuts + themes + plugin paths.
+//! Combined app settings persistence (`settings.json`): shortcuts + themes + plugin paths + project prefs.
 
 use std::collections::HashMap;
 use std::fs;
@@ -6,7 +6,9 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::model::{clamp_undo_limit, DEFAULT_UNDO_LIMIT};
+use crate::model::{
+    clamp_undo_limit, DEFAULT_AUTOSAVE_INTERVAL_SECS, DEFAULT_UNDO_LIMIT,
+};
 
 use super::shortcuts::{ShortcutRegistry, StoredBinding};
 use super::theme::{Theme, ThemeCatalog, DEFAULT_THEME_NAME};
@@ -25,6 +27,12 @@ struct SettingsFile {
     undo_limit: usize,
     #[serde(default)]
     plugin_keys: PluginKeySettings,
+    #[serde(default = "default_autosave_enabled")]
+    autosave_enabled: bool,
+    #[serde(default = "default_autosave_interval")]
+    autosave_interval_secs: u32,
+    #[serde(default)]
+    recent_projects: Vec<PathBuf>,
 }
 
 fn default_active_theme() -> String {
@@ -37,6 +45,14 @@ fn default_undo_limit() -> usize {
 
 fn default_forward_transport() -> bool {
     true
+}
+
+fn default_autosave_enabled() -> bool {
+    true
+}
+
+fn default_autosave_interval() -> u32 {
+    DEFAULT_AUTOSAVE_INTERVAL_SECS
 }
 
 /// Keyboard routing between plugin editor windows and Motif.
@@ -90,6 +106,9 @@ pub struct AppSettings {
     pub plugin_extra_paths: Vec<PathBuf>,
     pub undo_limit: usize,
     pub plugin_keys: PluginKeySettings,
+    pub autosave_enabled: bool,
+    pub autosave_interval_secs: u32,
+    pub recent_projects: Vec<PathBuf>,
 }
 
 impl Default for AppSettings {
@@ -100,6 +119,9 @@ impl Default for AppSettings {
             plugin_extra_paths: Vec::new(),
             undo_limit: DEFAULT_UNDO_LIMIT,
             plugin_keys: PluginKeySettings::default(),
+            autosave_enabled: true,
+            autosave_interval_secs: DEFAULT_AUTOSAVE_INTERVAL_SECS,
+            recent_projects: Vec::new(),
         }
     }
 }
@@ -130,6 +152,9 @@ impl AppSettings {
             plugin_extra_paths: file.plugin_extra_paths,
             undo_limit: clamp_undo_limit(file.undo_limit),
             plugin_keys: file.plugin_keys,
+            autosave_enabled: file.autosave_enabled,
+            autosave_interval_secs: file.autosave_interval_secs.max(30),
+            recent_projects: file.recent_projects,
         })
     }
 
@@ -142,6 +167,9 @@ impl AppSettings {
             plugin_extra_paths: self.plugin_extra_paths.clone(),
             undo_limit: clamp_undo_limit(self.undo_limit),
             plugin_keys: self.plugin_keys.clone(),
+            autosave_enabled: self.autosave_enabled,
+            autosave_interval_secs: self.autosave_interval_secs.max(30),
+            recent_projects: self.recent_projects.clone(),
         };
         let json = serde_json::to_string_pretty(&file).map_err(|error| error.to_string())?;
         fs::write(path, json).map_err(|error| error.to_string())

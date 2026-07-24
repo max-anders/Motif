@@ -6,7 +6,9 @@
 
 # Personal sketch / app prefs saved by the app (cwd)
 /project.json
+/*.motif
 /settings.json
+/plugin_cache.json
 
 # Secrets / local env (future-proof)
 .env

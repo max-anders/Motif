@@ -4,7 +4,7 @@ Open-source music sketchpad: piano roll, playlist, soft-synth piano, and CLAP/VS
 
 ## Status
 
-**Early but usable sketchpad** (2026-07-24): playlist + piano roll editing with undo/redo, transport, cpal playback (built-in piano and/or CLAP/VST3), plugin manager + editor windows (Linux X11/XWayland), `project.json` save/load, and Settings for shortcuts, themes, plugins, and undo depth. Not a full DAW.
+**Early but usable sketchpad** (2026-07-24): playlist + piano roll editing with undo/redo, transport, cpal playback (built-in piano and/or CLAP/VST3), plugin manager + editor windows (Linux X11/XWayland), multi-project `.motif` save/open with recent list + recovery autosave, and Settings for shortcuts, themes, plugins, editing, and project prefs. Not a full DAW.
 
 | Area | State |
 |---|---|
@@ -16,8 +16,8 @@ Open-source music sketchpad: piano roll, playlist, soft-synth piano, and CLAP/VS
 | Undo / redo (clips + notes) | Working (depth in Settings → Editing) |
 | Transport + loop + BPM | Working |
 | Soft piano + plugin mix (`cpal`) | Working (UI continues if device open fails) |
-| Project save/load | Working (`project.json` in CWD; includes CLAP/VST3 state) |
-| Settings (shortcuts + themes + plugins + editing) | Working (`settings.json` in CWD) |
+| Project save/load | Working (`.motif` files; recent projects; recovery autosave) |
+| Settings (shortcuts + themes + plugins + editing + project) | Working (`settings.json` in CWD) |
 | VST2 / mixer / export / samples | Not started |
 | Platform support | **Linux** (developed & tested); Windows/macOS untested |
 
@@ -149,11 +149,22 @@ cargo run --release
 - **Play / Pause** - play arrangement notes through each track's instrument (playhead loops)
 - **Stop** - stop, silence, and return to start
 - **Space** - play/pause (factory default; remappable)
-- **Ctrl/Cmd+S** - save `project.json` (includes per-track CLAP/VST3 state; factory default; remappable)
-- **Ctrl/Cmd+O** - load `project.json` (restores plugin state after instruments load; factory default; remappable)
-- **Save / Load** buttons - same as the shortcuts above
-- **Settings** - themes, shortcut remapping (multiple keys per action, conflict Override), Plugin Manager (Rescan / extra paths), Editing (undo depth); saved to `settings.json` + `plugin_cache.json`
+- **File** menu - New / Open... / Open Recent / Projects... / Save / Save As...
+- **Ctrl/Cmd+N** - new project (remappable)
+- **Ctrl/Cmd+O** - open `.motif` via native file dialog (remappable)
+- **Ctrl/Cmd+S** - save (or Save As when untitled; includes per-track CLAP/VST3 state; remappable)
+- **Ctrl/Cmd+Shift+S** - Save As... (remappable)
+- **Projects...** - in-app Recent Projects loader
+- Window title and toolbar show the project name with `*` when unsaved
+- **Settings** - themes, shortcut remapping (multiple keys per action, conflict Override), Plugin Manager (Rescan / extra paths), Editing (undo depth), Project (autosave recovery interval, recent list); saved to `settings.json` + `plugin_cache.json`
 - **Escape** - leave piano roll or Settings (factory default; remappable)
+
+### Projects (`.motif`)
+
+- Projects are JSON with a small versioned envelope, saved as `*.motif` (default folder: `~/.local/share/motif/projects` on Linux).
+- Legacy bare `project.json` in the working directory still opens on startup if present.
+- **Auto-save** writes a crash-recovery backup on an interval (default 3 minutes; Settings → Project). It never overwrites your saved file. On next launch Motif offers Restore or Discard.
+- `settings.json` and `plugin_cache.json` stay in the working directory (app prefs / plugin scan cache, not project data).
 
 ## Plugins (CLAP / VST3)
 

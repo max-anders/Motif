@@ -36,14 +36,16 @@ enum SettingsSection {
     Plugins,
     Shortcuts,
     Editing,
+    Project,
 }
 
 impl SettingsSection {
-    const ALL: [Self; 4] = [
+    const ALL: [Self; 5] = [
         Self::Theme,
         Self::Plugins,
         Self::Shortcuts,
         Self::Editing,
+        Self::Project,
     ];
 
     fn label(self) -> &'static str {
@@ -52,6 +54,7 @@ impl SettingsSection {
             Self::Plugins => "Plugins",
             Self::Shortcuts => "Shortcuts",
             Self::Editing => "Editing",
+            Self::Project => "Project",
         }
     }
 }
@@ -76,6 +79,7 @@ pub enum SettingsAction {
     /// Only plugin keyboard-routing prefs changed (no rescan/reload needed).
     PluginKeysChanged,
     EditingChanged,
+    ProjectChanged,
 }
 
 impl SettingsUi {
@@ -97,6 +101,9 @@ impl SettingsUi {
         plugin_extra_paths: &mut Vec<PathBuf>,
         plugin_keys: &mut PluginKeySettings,
         undo_limit: &mut usize,
+        autosave_enabled: &mut bool,
+        autosave_interval_secs: &mut u32,
+        recent_projects: &mut Vec<PathBuf>,
     ) -> Option<SettingsAction> {
         let mut result = None;
 
@@ -182,6 +189,16 @@ impl SettingsUi {
                                         result = Some(action);
                                     }
                                 }
+                                SettingsSection::Project => {
+                                    if let Some(action) = self.show_project_section(
+                                        ui,
+                                        autosave_enabled,
+                                        autosave_interval_secs,
+                                        recent_projects,
+                                    ) {
+                                        result = Some(action);
+                                    }
+                                }
                             });
                     },
                 );
@@ -223,6 +240,83 @@ impl SettingsUi {
         ui.label(format!(
             "Range {MIN_UNDO_LIMIT}-{MAX_UNDO_LIMIT}. Default is 50."
         ));
+
+        result
+    }
+
+    fn show_project_section(
+        &mut self,
+        ui: &mut Ui,
+        autosave_enabled: &mut bool,
+        autosave_interval_secs: &mut u32,
+        recent_projects: &mut Vec<PathBuf>,
+    ) -> Option<SettingsAction> {
+        let mut result = None;
+
+        ui.heading("Project");
+        ui.label(
+            "Projects save as .motif files (JSON). Auto-save writes a crash-recovery backup \
+             on an interval without overwriting your saved file; Motif offers to restore it on next launch.",
+        );
+        ui.add_space(8.0);
+
+        if ui
+            .checkbox(autosave_enabled, "Enable auto-save recovery")
+            .changed()
+        {
+            result = Some(SettingsAction::ProjectChanged);
+        }
+
+        ui.horizontal(|ui| {
+            ui.label("Recovery interval (minutes)");
+            let mut minutes = (*autosave_interval_secs as f32 / 60.0).max(0.5);
+            let response = ui.add(
+                egui::DragValue::new(&mut minutes)
+                    .range(0.5..=60.0)
+                    .speed(0.25)
+                    .fixed_decimals(1),
+            );
+            if response.changed() {
+                *autosave_interval_secs = (minutes * 60.0).round().max(30.0) as u32;
+                result = Some(SettingsAction::ProjectChanged);
+            }
+        });
+        ui.label(format!(
+            "Current: {} seconds (minimum 30). Default is 3 minutes.",
+            *autosave_interval_secs
+        ));
+
+        ui.add_space(10.0);
+        ui.strong("Default projects folder");
+        match crate::model::projects_dir() {
+            Ok(dir) => {
+                ui.monospace(dir.display().to_string());
+                ui.horizontal(|ui| {
+                    if ui.button("Open folder").clicked() {
+                        let _ = open_folder_in_file_manager(&dir);
+                    }
+                });
+            }
+            Err(error) => {
+                ui.colored_label(ui.visuals().warn_fg_color, error);
+            }
+        }
+
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            ui.label(format!("Recent projects: {}", recent_projects.len()));
+            if ui
+                .add_enabled(
+                    !recent_projects.is_empty(),
+                    egui::Button::new("Clear recent projects"),
+                )
+                .clicked()
+            {
+                recent_projects.clear();
+                self.message = "Cleared recent projects".into();
+                result = Some(SettingsAction::ProjectChanged);
+            }
+        });
 
         result
     }
@@ -688,4 +782,36 @@ fn path_contains_yabridge(path: &Path) -> bool {
             .to_str()
             .is_some_and(|s| s.eq_ignore_ascii_case("yabridge"))
     })
+}
+
+fn open_folder_in_file_manager(path: &Path) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(path)
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| format!("xdg-open failed: {error}"))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(path)
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| format!("open failed: {error}"))
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .arg(path)
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| format!("explorer failed: {error}"))
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    {
+        let _ = path;
+        Err("open folder not supported on this platform".into())
+    }
 }

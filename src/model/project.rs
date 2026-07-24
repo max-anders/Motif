@@ -416,10 +416,17 @@ impl Project {
     }
 
     pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
+        // Versioned envelope (current on-disk format for .motif files).
+        if let Ok(envelope) = serde_json::from_str::<super::persistence::ProjectEnvelope>(json) {
+            return Ok(envelope.project);
+        }
+
+        // Bare Project (pre-envelope project.json / early saves).
         if let Ok(project) = serde_json::from_str::<Self>(json) {
             return Ok(project);
         }
 
+        // Flat-notes legacy before tracks/clips.
         let legacy: LegacyProject = serde_json::from_str(json)?;
         let clip = migrate_notes_to_clip(legacy.notes, legacy.loop_end_beats);
         let track = Track {
