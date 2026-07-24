@@ -451,7 +451,10 @@ pub struct ClapPlugin {
     layouts: Vec<BusLayout>,
     active_layout: Option<BusLayout>,
     plugin: *const clap_plugin,
-    library: LoadedLibrary,
+    // `ManuallyDrop` so the leak-on-unload path (see `Drop`) can keep the dylib
+    // mapped: unloading it would pull a still-running editor UI thread's code
+    // out from under it and segfault.
+    library: std::mem::ManuallyDrop<LoadedLibrary>,
     bundle_path: PathBuf,
     started_processing: bool,
     /// Cached `clap.params` extension. NULL if the plugin doesn't
@@ -465,6 +468,11 @@ pub struct ClapPlugin {
     gui_ext: *const clap_plugin_gui,
     /// Whether the editor has been `create`d but not yet
     /// `destroy`ed — `clap.gui` separates the two lifecycles.
+    /// A created editor may be shown or hidden any number of times
+    /// before it is finally destroyed at unload.
+    gui_created: bool,
+    /// Whether the editor is currently shown (mapped) as opposed to
+    /// hidden. Tracks the host-visible open/close state.
     gui_open: bool,
     /// Running `steady_time` counter — CLAP wants a monotonically
     /// increasing sample-count across activations.
@@ -569,12 +577,13 @@ impl ClapPlugin {
             layouts: vec![BusLayout::stereo()],
             active_layout: None,
             plugin,
-            library,
+            library: std::mem::ManuallyDrop::new(library),
             bundle_path,
             started_processing: false,
             params_ext,
             state_ext,
             gui_ext,
+            gui_created: false,
             gui_open: false,
             steady_time: 0,
             pending_param_changes: Vec::new(),
@@ -585,6 +594,17 @@ impl ClapPlugin {
             #[cfg(target_os = "linux")]
             posix_fd_ext,
         })
+    }
+}
+
+impl ClapPlugin {
+    /// Whether this plugin's editor cannot be torn down in-process without
+    /// crashing (LSP-Plugins, lsp-plugins #577). Hosts use this to leak the
+    /// editor's parent window on unload instead of destroying it. See
+    /// [`editor_teardown_is_unsafe`].
+    #[must_use]
+    pub fn editor_teardown_is_unsafe(&self) -> bool {
+        editor_teardown_is_unsafe(&self.info)
     }
 }
 
@@ -600,15 +620,51 @@ unsafe fn lookup_extension<T>(plugin: *const clap_plugin, id: &CStr) -> *const T
     raw.cast::<T>()
 }
 
+/// Whether a plugin's editor cannot be torn down in-process without crashing.
+///
+/// LSP-Plugins run their CLAP editor on a dedicated UI thread that the host has
+/// no way to join; `gui.destroy`/`plugin.destroy` race that thread's `XFlush`
+/// and segfault the whole process (lsp-plugins #577). Such instances are leaked
+/// on unload instead of destroyed (see [`Drop`]). Matched by the stable
+/// `in.lsp-plug.*` plugin-id namespace and the LSP vendor string so both the
+/// current and future LSP plugins are covered without a per-plugin list.
+fn editor_teardown_is_unsafe(info: &PluginInfo) -> bool {
+    if info.unique_id.starts_with("in.lsp-plug.") {
+        return true;
+    }
+    let vendor = info.vendor.to_ascii_lowercase();
+    vendor.contains("linux studio plugins") || vendor == "lsp"
+}
+
 impl Drop for ClapPlugin {
     fn drop(&mut self) {
-        if !self.plugin.is_null() {
-            if self.gui_open
-                && let Some(destroy) = unsafe { (*self.gui_ext).destroy }
-            {
-                unsafe { destroy(self.plugin) };
-                self.gui_open = false;
+        // Leak-on-unload safety valve. Some plugins (LSP-Plugins, lsp-plugins
+        // #577) run their editor on a dedicated UI thread that the host cannot
+        // join: once the editor has been `create`d, calling `gui.destroy` — or
+        // even `plugin.destroy` while that thread is live — dereferences the
+        // being-torn-down X connection and segfaults the WHOLE process. There is
+        // no in-process way to tear such an editor down safely, so once an editor
+        // was created we deliberately LEAK this instance instead of destroying
+        // it: skip every teardown call and keep the dylib mapped (via
+        // `ManuallyDrop`) so the still-running thread's code stays valid until the
+        // process exits. This trades a bounded per-instance leak for never
+        // crashing the DAW when such an FX/instrument is removed from the rack.
+        // Only plugins whose editor was actually created AND that are known to
+        // have the un-joinable UI-thread bug are leaked; well-behaved editors
+        // (JUCE/Vital etc.) still tear down cleanly.
+        if self.gui_created && editor_teardown_is_unsafe(&self.info) {
+            #[cfg(target_os = "linux")]
+            if let Some(host) = self.host.take() {
+                // The plugin still holds this host pointer; leak it too so the
+                // UI thread's host callbacks keep pointing at live memory.
+                std::mem::forget(host);
             }
+            // `self.library` is ManuallyDrop and is intentionally never dropped
+            // here, so the dylib stays loaded. `self.plugin` is leaked.
+            return;
+        }
+
+        if !self.plugin.is_null() {
             if self.started_processing
                 && let Some(stop) = unsafe { (*self.plugin).stop_processing }
             {
@@ -626,7 +682,8 @@ impl Drop for ClapPlugin {
         if let Ok(entry) = self.library.entry() {
             unsafe { entry.deinit() };
         }
-        // `library` drops here, unloading the dylib.
+        // Drop the dylib handle now that all plugin teardown is done.
+        unsafe { std::mem::ManuallyDrop::drop(&mut self.library) };
         let _ = &self.bundle_path; // keep PathBuf alive for diagnostics
     }
 }
@@ -885,30 +942,38 @@ impl truce_rack_core::editor::PluginEditor for ClapPlugin {
         if self.gui_ext.is_null() {
             return Err(Error::Other("clap.gui extension absent".into()));
         }
-        let api = platform_api();
-        let create = unsafe { (*self.gui_ext).create }
-            .ok_or_else(|| Error::Other("clap.gui missing `create`".into()))?;
-        if !unsafe { create(self.plugin, api.as_ptr(), false) } {
-            return Err(Error::Other("clap.gui::create returned false".into()));
-        }
-        let window = handle_to_clap_window(parent);
-        if let Some(set_parent) = unsafe { (*self.gui_ext).set_parent }
-            && !unsafe { set_parent(self.plugin, &raw const window) }
-        {
-            if let Some(destroy) = unsafe { (*self.gui_ext).destroy } {
-                unsafe { destroy(self.plugin) };
+        // The editor is created once and then shown/hidden across the plugin's
+        // life. `close()` only hides it (see the note there), so a re-open must
+        // NOT call `gui.create` again — it just re-shows the existing editor.
+        // Calling create twice leaks the first editor and, on some plugins,
+        // re-parents into a stale window.
+        if !self.gui_created {
+            let api = platform_api();
+            let create = unsafe { (*self.gui_ext).create }
+                .ok_or_else(|| Error::Other("clap.gui missing `create`".into()))?;
+            if !unsafe { create(self.plugin, api.as_ptr(), false) } {
+                return Err(Error::Other("clap.gui::create returned false".into()));
             }
-            return Err(Error::Other("clap.gui::set_parent returned false".into()));
-        }
-        // set_scale AFTER set_parent, and only for a non-identity scale. Some
-        // clap-juce-extensions plugins (e.g. Vital) crash inside guiSetScale ->
-        // EditorWrapperComponent::resizeHostWindow() when a scale is applied
-        // before the editor is embedded (there is no host window to resize yet).
-        // JUCE also does its own DPI handling, so a 1.0 scale is a no-op we skip.
-        if (scale - 1.0).abs() > f64::EPSILON {
-            if let Some(set_scale) = unsafe { (*self.gui_ext).set_scale } {
-                let _ = unsafe { set_scale(self.plugin, scale) };
+            let window = handle_to_clap_window(parent);
+            if let Some(set_parent) = unsafe { (*self.gui_ext).set_parent }
+                && !unsafe { set_parent(self.plugin, &raw const window) }
+            {
+                if let Some(destroy) = unsafe { (*self.gui_ext).destroy } {
+                    unsafe { destroy(self.plugin) };
+                }
+                return Err(Error::Other("clap.gui::set_parent returned false".into()));
             }
+            // set_scale AFTER set_parent, and only for a non-identity scale. Some
+            // clap-juce-extensions plugins (e.g. Vital) crash inside guiSetScale ->
+            // EditorWrapperComponent::resizeHostWindow() when a scale is applied
+            // before the editor is embedded (there is no host window to resize yet).
+            // JUCE also does its own DPI handling, so a 1.0 scale is a no-op we skip.
+            if (scale - 1.0).abs() > f64::EPSILON {
+                if let Some(set_scale) = unsafe { (*self.gui_ext).set_scale } {
+                    let _ = unsafe { set_scale(self.plugin, scale) };
+                }
+            }
+            self.gui_created = true;
         }
         if let Some(show) = unsafe { (*self.gui_ext).show } {
             let _ = unsafe { show(self.plugin) };
@@ -921,11 +986,17 @@ impl truce_rack_core::editor::PluginEditor for ClapPlugin {
         if !self.gui_open {
             return;
         }
+        // Only HIDE on close; never `gui.destroy` here. Destroying the editor
+        // while the plugin is kept loaded is what crashes the host: plugins that
+        // run their editor on a dedicated UI thread (LSP-Plugins) tear that
+        // thread down inside `gui.destroy` while it is still calling XFlush on
+        // the window, segfaulting the whole process (lsp-plugins #577). Hiding
+        // is safe and is the correct DAW lifecycle anyway — the user toggles the
+        // editor open/closed many times; the editor is only truly destroyed when
+        // the plugin itself is unloaded (see `Drop`). Vital/JUCE plugins are
+        // equally happy being hidden and re-shown.
         if let Some(hide) = unsafe { (*self.gui_ext).hide } {
             let _ = unsafe { hide(self.plugin) };
-        }
-        if let Some(destroy) = unsafe { (*self.gui_ext).destroy } {
-            unsafe { destroy(self.plugin) };
         }
         self.gui_open = false;
     }

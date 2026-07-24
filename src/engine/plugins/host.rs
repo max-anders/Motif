@@ -322,6 +322,9 @@ impl HostedPlugin {
         Ok(())
     }
 
+    /// Fully tear down the editor (used at plugin unload). For CLAP this hides
+    /// the GUI (the real destroy/leak happens in the plugin's `Drop`); for VST3
+    /// this detaches and releases the view.
     pub fn close_editor(&mut self) {
         let editor = match &mut self.instance {
             PluginInstance::Clap(plugin) => plugin.editor(),
@@ -330,6 +333,44 @@ impl HostedPlugin {
         if let Some(editor) = editor {
             let editor: &mut dyn PluginEditor = editor;
             editor.close();
+        }
+    }
+
+    /// Courtesy-hide the editor GUI without tearing it down (used when the user
+    /// closes the editor window but the plugin stays loaded). CLAP hides its
+    /// window; VST3 has no separate hide (the parent window is unmapped instead).
+    pub fn hide_editor(&mut self) {
+        let editor = match &mut self.instance {
+            PluginInstance::Clap(plugin) => plugin.editor(),
+            PluginInstance::Vst3(plugin) => plugin.editor(),
+        };
+        if let Some(editor) = editor {
+            let editor: &mut dyn PluginEditor = editor;
+            editor.hide();
+        }
+    }
+
+    /// Re-show a previously hidden editor GUI (used when re-opening an editor
+    /// whose parent window was kept alive). Counterpart to [`Self::hide_editor`].
+    pub fn show_editor(&mut self) {
+        let editor = match &mut self.instance {
+            PluginInstance::Clap(plugin) => plugin.editor(),
+            PluginInstance::Vst3(plugin) => plugin.editor(),
+        };
+        if let Some(editor) = editor {
+            let editor: &mut dyn PluginEditor = editor;
+            editor.show();
+        }
+    }
+
+    /// Whether unloading this plugin must leak its editor's parent window
+    /// instead of destroying it (LSP-Plugins run an un-joinable editor thread;
+    /// destroying the window under it crashes the host). Only CLAP plugins with
+    /// the known bug return true.
+    pub fn editor_teardown_leaks_window(&self) -> bool {
+        match &self.instance {
+            PluginInstance::Clap(plugin) => plugin.editor_teardown_is_unsafe(),
+            PluginInstance::Vst3(_) => false,
         }
     }
 

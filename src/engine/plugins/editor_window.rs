@@ -93,6 +93,13 @@ pub struct EditorParentWindow {
     close_keycode: c_uint,
     /// Whether Space is currently grabbed and reported as `TogglePlayback`.
     forward_transport: bool,
+    /// When true, `Drop` neither destroys the window nor closes the Display:
+    /// the window and connection are leaked for the rest of the process. Set for
+    /// plugins whose editor thread cannot be joined (LSP, lsp-plugins #577) —
+    /// destroying the window while that thread still flushes to it produces an
+    /// async `BadWindow` that crashes the host. Bounded cost: one window + fd per
+    /// such editor, reclaimed at process exit.
+    leak_on_drop: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -259,6 +266,7 @@ impl EditorParentWindow {
             close_binding,
             close_keycode,
             forward_transport,
+            leak_on_drop: false,
         })
     }
 
@@ -302,6 +310,35 @@ impl EditorParentWindow {
 
     pub fn x11_window_id(&self) -> u64 {
         self.window as u64
+    }
+
+    /// Map (show) the window. Used when re-opening an editor whose window was
+    /// kept alive but hidden (see the editor host's hide/show lifecycle).
+    pub fn show(&self) {
+        unsafe {
+            xlib::XMapRaised(self.display, self.window);
+            xlib::XFlush(self.display);
+        }
+    }
+
+    /// Unmap (hide) the window without destroying it. Closing an editor hides
+    /// its window rather than tearing it down, so the plugin's editor (and, for
+    /// plugins like LSP that run their own editor thread, that thread's X
+    /// references) stay valid until the plugin itself is unloaded.
+    pub fn hide(&self) {
+        unsafe {
+            xlib::XUnmapWindow(self.display, self.window);
+            xlib::XFlush(self.display);
+        }
+    }
+
+    /// Mark this window to be leaked (never destroyed) on drop. Required for
+    /// plugins whose editor thread cannot be joined (LSP, lsp-plugins #577);
+    /// destroying the window under the live thread crashes the host. Set once at
+    /// editor-open time so every drop path (explicit removal, HashMap teardown,
+    /// app exit) honours it. See [`Self::leak_on_drop`].
+    pub fn set_leak_on_drop(&mut self, leak: bool) {
+        self.leak_on_drop = leak;
     }
 
     pub fn resize(&self, width: u32, height: u32) -> Result<(), String> {
@@ -388,6 +425,11 @@ impl EditorParentWindow {
 
 impl Drop for EditorParentWindow {
     fn drop(&mut self) {
+        // Leak-on-drop: keep the window and connection alive so a plugin editor
+        // thread that cannot be joined (LSP) never touches a destroyed window.
+        if self.leak_on_drop {
+            return;
+        }
         unsafe {
             if !self.display.is_null() && self.window != 0 {
                 xlib::XDestroyWindow(self.display, self.window);

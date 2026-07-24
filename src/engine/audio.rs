@@ -1208,13 +1208,14 @@ impl AudioEngine {
     }
 
     fn drop_plugin_slot(&mut self, track_id: u64) {
-        self.editor_host.close(PluginRef::instrument(track_id));
+        self.editor_host.remove(PluginRef::instrument(track_id));
         self.plugin_slots.remove(&track_id);
         self.plugin_params.remove(&track_id);
     }
 
     fn drop_device_slot(&mut self, track_id: u64, device_id: u64) {
-        self.editor_host.close(PluginRef::device(track_id, device_id));
+        self.editor_host
+            .remove(PluginRef::device(track_id, device_id));
         self.device_slots.remove(&(track_id, device_id));
         self.device_params.remove(&(track_id, device_id));
     }

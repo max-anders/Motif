@@ -1,6 +1,6 @@
 # Motif
 
-Open-source music sketchpad: piano roll, playlist, soft-synth piano, and CLAP/VST3 instruments (optional native editor windows) over a real audio engine.
+Experimental music sketchpad: piano roll, playlist, soft-synth piano, and CLAP/VST3 instruments (optional native editor windows) over a real audio engine.
 
 ## Status
 
@@ -22,44 +22,25 @@ Open-source music sketchpad: piano roll, playlist, soft-synth piano, and CLAP/VS
 | VST2 / export | Not started |
 | Platform support | **Linux** (developed & tested); Windows/macOS untested |
 
-It is **free and open source from minute zero**: public from the first commit, not opened up later after something polished existed behind closed doors.
+The repository is public from the first commit so progress is visible early — not a closed preview opened up later.
 
-## Open-source philosophy
+## Source and licensing
 
-This is a personal experiment being built in the open from day one — not a product that went public after a private beta.
+This is an experimental sketchpad I am building because existing DAWs do not let me customize the workflow I want — especially the piano roll and the sketch loop. The comparison point is not "the next Bitwig"; it is whether Motif becomes the fastest place for me to sketch melodies and arrange ideas.
 
-The repo is public from the start. No closed preview, no "open sourcing later" roadmap. If you are reading this early, you are seeing it almost as it is being born.
+The repository is **public while the project is in active development**. You can watch it evolve, report bugs, and share ideas. **Long-term licensing, distribution, and commercialization have not been decided yet.**
 
-The early versions may be rough and experimental. I iterate quickly in public; not every path is reviewed to production standards yet. The goal is to explore ideas, test workflows, and see what kind of creative tool can emerge.
+Early versions are rough. I iterate quickly in public; not every path is reviewed to production standards. This is not a promise that every feature request will land, and there is no community-driven product roadmap. I develop at my own pace.
 
-This is not a promise that every feature request will be implemented, and it is not a community-driven product roadmap.
+**Using the code today:** No open-source license is attached yet. You may browse the source on GitHub, but copying, modifying, or redistributing it requires permission until a license is announced. If you want to experiment or contribute substantial work, open an issue or discussion first.
 
-The project has a vision and a direction. I develop it **at my own pace** — no release schedule, no feature backlog driven by outside pressure.
-
-If you want to help without writing code: **consider donating**. Money does not buy roadmap votes or priority features, but it does help keep this sustainable as a free, open project built on my time.
-
-If you think something can be improved:
-
-- Improve it.
-- Experiment with it.
-- Submit changes.
-- Share your ideas.
-
-Contributions are welcome, but acceptance is not guaranteed. A contribution should fit the goals and philosophy of the project.
-
-If you disagree with the direction or want to take the idea somewhere else:
-
-**Fork it. Build your own version. Experiment.**
-
-That is one of the main reasons this project is open source. The code is here to be used, studied, modified, and expanded.
-
-If you ship a derivative, keep it open source under **GPL-3.0** (same as this repo) and link back to [Motif](https://github.com/max-anders/Motif) in your README.
-
-Credit for contributions is appreciated and will be given where appropriate, but the priority is creating something useful and interesting.
+**Feedback and contributions:** Bug reports and ideas are welcome. Code contributions may be accepted case by case once licensing is clearer; ask before investing large patches.
 
 ## License
 
-Motif is licensed under the [GNU General Public License v3.0 or later](LICENSE).
+No license selected yet. Copyright (c) 2026. All rights reserved until stated otherwise here.
+
+When a license is chosen, this section and a `LICENSE` file will be updated.
 
 ## Platform support
 

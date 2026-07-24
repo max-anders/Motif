@@ -45,6 +45,12 @@ struct EditorSession {
     title: String,
     /// Last size applied from host resize (avoid feedback loops).
     last_size: Option<(u32, u32)>,
+    /// Whether the editor window is currently mapped/shown. A session is kept
+    /// across close/re-open: closing hides the window (`visible = false`) rather
+    /// than destroying it, so the plugin's editor (and any un-joinable editor
+    /// thread it runs) stays valid until the plugin is unloaded. See
+    /// [`PluginEditorHost::close`] / [`PluginEditorHost::remove`].
+    visible: bool,
 }
 
 /// Aggregated result of polling all open editor windows for one frame.
@@ -100,11 +106,13 @@ impl PluginEditorHost {
     pub fn set_close_binding(&mut self, _close_binding: EditorCloseBinding) {}
 
     pub fn is_open(&self, target: PluginRef) -> bool {
-        self.sessions.contains_key(&target)
+        self.sessions
+            .get(&target)
+            .is_some_and(|session| session.visible)
     }
 
     pub fn any_open(&self) -> bool {
-        !self.sessions.is_empty()
+        self.sessions.values().any(|session| session.visible)
     }
 
     pub fn open(
@@ -115,7 +123,25 @@ impl PluginEditorHost {
         host_x11: Option<HostX11>,
         forward_transport: bool,
     ) -> Result<(), String> {
-        if self.sessions.contains_key(&target) {
+        // Re-open of an editor whose window was kept alive but hidden: just
+        // re-show it (never re-create the plugin GUI). Destroying and rebuilding
+        // the parent window is what crashed the host for plugins with
+        // un-joinable editor threads, so the window persists across close/open.
+        if let Some(session) = self.sessions.get_mut(&target) {
+            #[cfg(target_os = "linux")]
+            {
+                if session.visible {
+                    return Ok(());
+                }
+                session.window.set_forward_transport(forward_transport);
+                session.window.show();
+                if let Ok(mut guard) = session.plugin.lock() {
+                    guard.show_editor();
+                }
+                session.visible = true;
+            }
+            #[cfg(not(target_os = "linux"))]
+            let _ = (host_x11, forward_transport);
             return Ok(());
         }
 
@@ -129,7 +155,7 @@ impl PluginEditorHost {
 
         #[cfg(target_os = "linux")]
         {
-            let window = EditorParentWindow::create(
+            let mut window = EditorParentWindow::create(
                 title,
                 host_x11,
                 forward_transport,
@@ -152,6 +178,10 @@ impl PluginEditorHost {
                 if let Some((w, h)) = guard.editor_size() {
                     let _ = window.resize(w, h);
                 }
+                // Plugins with an un-joinable editor thread (LSP) must never have
+                // their parent window destroyed while loaded — leak it on every
+                // drop path instead. Decided once here at open time.
+                window.set_leak_on_drop(guard.editor_teardown_leaks_window());
             }
 
             self.sessions.insert(
@@ -161,16 +191,18 @@ impl PluginEditorHost {
                     window,
                     title: title.to_string(),
                     last_size: None,
+                    visible: true,
                 },
             );
             Ok(())
         }
     }
 
-    /// Plugin refs + titles of currently open editors (for the UI strip).
+    /// Plugin refs + titles of currently visible editors (for the UI strip).
     pub fn open_editors(&self) -> Vec<(PluginRef, String)> {
         self.sessions
             .iter()
+            .filter(|(_, session)| session.visible)
             .map(|(target, session)| (*target, session.title.clone()))
             .collect()
     }
@@ -185,16 +217,49 @@ impl PluginEditorHost {
         }
     }
 
+    /// User-initiated editor close: hide the window but keep the session (and
+    /// its parent window + plugin GUI) alive so it can be re-opened, and so the
+    /// plugin's editor thread never touches a destroyed window. Full teardown
+    /// happens only in [`Self::remove`] when the plugin is unloaded.
     pub fn close(&mut self, target: PluginRef) {
+        let Some(session) = self.sessions.get_mut(&target) else {
+            return;
+        };
+        #[cfg(target_os = "linux")]
+        {
+            if !session.visible {
+                return;
+            }
+            if let Ok(mut guard) = session.plugin.lock() {
+                guard.hide_editor();
+            }
+            session.window.hide();
+            session.visible = false;
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = session;
+    }
+
+    /// Fully tear down and drop an editor session (plugin is being unloaded).
+    /// Releases this host's plugin `Arc` and drops the parent window. The window
+    /// is destroyed for well-behaved plugins, but its leak-on-drop flag (set at
+    /// open time for LSP) keeps it alive so a live editor thread never touches a
+    /// destroyed window.
+    pub fn remove(&mut self, target: PluginRef) {
         let Some(session) = self.sessions.remove(&target) else {
             return;
         };
-        if let Ok(mut guard) = session.plugin.lock() {
-            guard.close_editor();
-        };
+        {
+            if let Ok(mut guard) = session.plugin.lock() {
+                guard.close_editor();
+            }
+        }
+        // `session` (its parent window + this host's plugin Arc) drops here;
+        // the window honours its leak-on-drop flag.
+        drop(session);
     }
 
-    /// Close every open editor belonging to a track (its instrument and all
+    /// Remove every editor session belonging to a track (its instrument and all
     /// of its insert-FX devices). Used when the whole track is removed.
     pub fn close_track(&mut self, track_id: u64) {
         let targets: Vec<PluginRef> = self
@@ -204,20 +269,28 @@ impl PluginEditorHost {
             .filter(|target| target.track_id == track_id)
             .collect();
         for target in targets {
-            self.close(target);
+            self.remove(target);
         }
     }
 
+    /// Remove all editor sessions (e.g. when the whole engine state is reset).
     pub fn close_all(&mut self) {
         let targets: Vec<PluginRef> = self.sessions.keys().copied().collect();
         for target in targets {
-            self.close(target);
+            self.remove(target);
         }
     }
 
     /// Drain window events, idle editors; returns aggregated poll outcome.
     pub fn poll(&mut self) -> EditorPoll {
-        let targets: Vec<PluginRef> = self.sessions.keys().copied().collect();
+        // Only poll currently-visible editors; hidden sessions keep their
+        // window/GUI alive but are not driven.
+        let targets: Vec<PluginRef> = self
+            .sessions
+            .iter()
+            .filter(|(_, session)| session.visible)
+            .map(|(target, _)| *target)
+            .collect();
         let mut toggle_playback = false;
         for target in targets {
             let result = self.poll_one(target);
@@ -236,6 +309,12 @@ impl PluginEditorHost {
         let Some(session) = self.sessions.get_mut(&target) else {
             return PollOne::default();
         };
+        if !session.visible {
+            return PollOne {
+                keep_open: true,
+                toggle_playback: false,
+            };
+        }
 
         let mut toggle_playback = false;
 

@@ -40,10 +40,11 @@ use vst3::Steinberg::Vst::{
     AudioBusBuffers, AudioBusBuffers__type0, Event, Event_::EventTypes_, Event__type0,
     IAudioProcessor, IAudioProcessorTrait, IComponent, IComponentTrait, IConnectionPoint,
     IConnectionPointTrait, IEditController, IEditControllerTrait, IEventList, IEventListTrait,
-    IHostApplication, IHostApplicationTrait, IParameterChanges, NoteOffEvent, NoteOnEvent,
-    ParameterInfo as Vst3ParameterInfo, ParameterInfo_::ParameterFlags_, PolyPressureEvent,
-    ProcessContext as Vst3ProcessContext, ProcessContext_::StatesAndFlags_, ProcessData,
-    ProcessModes_, ProcessSetup, String128, SymbolicSampleSizes_, ViewType,
+    BusDirections_, IHostApplication, IHostApplicationTrait, IParameterChanges, MediaTypes_,
+    NoteOffEvent, NoteOnEvent, ParameterInfo as Vst3ParameterInfo,
+    ParameterInfo_::ParameterFlags_, PolyPressureEvent, ProcessContext as Vst3ProcessContext,
+    ProcessContext_::StatesAndFlags_, ProcessData, ProcessModes_, ProcessSetup, String128,
+    SymbolicSampleSizes_, ViewType,
 };
 use vst3::Steinberg::{
     FUnknown, IBStream, IBStreamTrait, IPlugView, IPlugViewTrait, IPluginBaseTrait, IPluginFactory,
@@ -741,6 +742,27 @@ impl Vst3Plugin {
     }
 }
 
+impl Vst3Plugin {
+    /// Activate (`state = true`) or deactivate the main audio input/output bus
+    /// (index 0). VST3 buses are inactive until the host activates them; see the
+    /// call site in `activate`. Only the main bus is touched because `process`
+    /// only supplies the main bus buffers.
+    unsafe fn activate_main_buses(&self, state: bool) {
+        let on: u8 = u8::from(state);
+        let audio = MediaTypes_::kAudio as i32;
+        let input = BusDirections_::kInput as i32;
+        let output = BusDirections_::kOutput as i32;
+        unsafe {
+            if self.component.getBusCount(audio, input) > 0 {
+                self.component.activateBus(audio, input, 0, on);
+            }
+            if self.component.getBusCount(audio, output) > 0 {
+                self.component.activateBus(audio, output, 0, on);
+            }
+        }
+    }
+}
+
 /// Call `IEditController::createView("editor")` and wrap the raw
 /// pointer. Returns `None` when the plugin has no editor.
 unsafe fn create_editor_view(controller: &ComPtr<IEditController>) -> Option<ComPtr<IPlugView>> {
@@ -940,13 +962,26 @@ impl PluginCore for Vst3Plugin {
                 "IAudioProcessor::setupProcessing failed".into(),
             ));
         }
+        // Activate the main audio buses. VST3 buses default to INACTIVE and must
+        // be activated (while the component is still inactive) before processing.
+        // Skipping this is a spec violation that leaves many plugins (LSP) either
+        // outputting silence or passing audio through unprocessed — i.e. the FX
+        // "doesn't route sound cleanly". We only feed the main bus (index 0) in
+        // `process`, so we activate exactly that bus on each side.
+        unsafe { self.activate_main_buses(true) };
         if unsafe { self.component.setActive(1) } != kResultOk {
             return Err(Error::Other("IComponent::setActive(true) failed".into()));
         }
-        if unsafe { self.processor.setProcessing(1) } != kResultOk {
-            return Err(Error::Other(
-                "IAudioProcessor::setProcessing(true) failed".into(),
-            ));
+        // setProcessing(true) is advisory: the VST3 SDK lets plugins return
+        // kNotImplemented (or, like LSP-Plugins, kResultFalse) here without it
+        // being an error. Treating a non-OK return as fatal wrongly refused to
+        // load those plugins entirely (their FX slot never activated, so their
+        // editor could never be opened). Log and continue; process() still runs.
+        let sp = unsafe { self.processor.setProcessing(1) };
+        if sp != kResultOk {
+            eprintln!(
+                "truce-rack-vst3: IAudioProcessor::setProcessing(true) returned {sp} (non-fatal, continuing)"
+            );
         }
         self.processing = true;
         self.active_layout = Some(layout);
@@ -960,6 +995,7 @@ impl PluginCore for Vst3Plugin {
         }
         if self.active_layout.is_some() {
             unsafe { self.component.setActive(0) };
+            unsafe { self.activate_main_buses(false) };
         }
         self.active_layout = None;
     }

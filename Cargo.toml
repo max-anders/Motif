@@ -2,8 +2,7 @@
 name = "motif"
 version = "0.1.0"
 edition = "2021"
-description = "Motif: open-source music sketchpad (piano roll + soft piano / CLAP-VST3)"
-license = "GPL-3.0-or-later"
+description = "Motif: experimental music sketchpad (piano roll + soft piano / CLAP-VST3)"
 repository = "https://github.com/max-anders/Motif"
 
 [dependencies]
