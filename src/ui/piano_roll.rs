@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use egui::{Pos2, Rect, Response, Sense, Ui, Vec2};
+use egui::{Align, Layout, Pos2, Rect, Response, Sense, Ui, UiBuilder, Vec2};
 
 use crate::engine::DawEngine;
 use crate::model::{
@@ -9,14 +9,32 @@ use crate::model::{
 use crate::ui::theme::ThemeColors;
 use crate::ui::timeline::{
     apply_piano_roll_wheel_controls, daw_editor_scroll_area, draw_playhead, draw_ruler,
-    handle_timeline_playhead_pointer, is_timeline_pointer, timeline_body_rect, timeline_x,
-    with_solid_scrollbars, x_to_beat, TimelineMetrics, DEFAULT_BEAT_WIDTH, RULER_HEIGHT,
+    handle_timeline_playhead_pointer, is_timeline_pointer, timeline_x, with_solid_scrollbars,
+    x_to_beat, TimelineMetrics, DEFAULT_BEAT_WIDTH, MAX_BEAT_WIDTH, MIN_BEAT_WIDTH, RULER_HEIGHT,
     TIMELINE_GUTTER_WIDTH,
 };
+
+/// Fixed width of the pinned piano-key column (left of the scrolling grid).
+const KEY_COLUMN_WIDTH: f32 = TIMELINE_GUTTER_WIDTH;
 
 const BLACK_KEY_WIDTH_RATIO: f32 = 0.62;
 const RESIZE_HANDLE_PX: f32 = 12.0;
 
+/// Fraction of the viewport width the clip fills at maximum zoom-out. The rest
+/// becomes symmetric empty "outside" margin on both sides of the clip.
+const MIN_CLIP_VIEW_FILL: f32 = 0.82;
+/// Max zoom-in for a clip expressed as how many viewport widths the whole clip may
+/// span. Short clips get a proportionally larger px/beat ceiling so notes can be
+/// enlarged; long clips fall back to the flat `MAX_BEAT_WIDTH`.
+const MAX_CLIP_ZOOM_SPAN: f32 = 4.0;
+/// Absolute upper bound on beat width so pathologically short clips / huge monitors
+/// don't produce an absurd zoom-in ceiling.
+const HARD_MAX_BEAT_WIDTH: f32 = 1600.0;
+/// After a Ctrl+wheel zoom, if the resulting horizontal scroll lands within this
+/// many pixels of either extreme, snap it flush to the edge. Cursor-anchored zoom
+/// otherwise leaves a small residual offset when the pointer is near an edge,
+/// which reads as the scrollbar "detaching" from the end.
+const EDGE_SNAP_PX: f32 = 24.0;
 const DEFAULT_KEY_HEIGHT: f32 = 18.0;
 const MIN_KEY_HEIGHT: f32 = 8.0;
 const MAX_KEY_HEIGHT: f32 = 48.0;
@@ -85,6 +103,10 @@ pub struct PianoRollUi {
     beat_width: f32,
     key_height: f32,
     scroll_offset: Vec2,
+    /// Actual horizontal viewport width of the grid scroll area from the previous
+    /// frame (excludes the always-visible vertical scrollbar). Zoom-out fit and
+    /// edge-snap math use this real width so the scrollbar reaches its extremes.
+    grid_view_w: f32,
 }
 
 impl PianoRollUi {
@@ -144,6 +166,7 @@ impl Default for PianoRollUi {
             beat_width: DEFAULT_BEAT_WIDTH,
             key_height: DEFAULT_KEY_HEIGHT,
             scroll_offset: Vec2::new(0.0, initial_scroll_y),
+            grid_view_w: 0.0,
         }
     }
 }
@@ -170,11 +193,61 @@ impl PianoRollUi {
         };
         self.audition_track_id = project.track_id_for_clip(clip_id).unwrap_or(0);
         let track_id = self.audition_track_id;
-        let viewport_rect = ui.available_rect_before_wrap();
-        apply_piano_roll_wheel_controls(
+        let full = ui.available_rect_before_wrap();
+        // Side-by-side layout: a fixed key column + corner on the left, the ruler
+        // across the top-right, and the scrolling note grid filling the rest. The
+        // keyboard/ruler are separate widgets beside the grid, not overlays baked
+        // into the scroll content, so beat 0 can never slide under the keyboard.
+        let corner = Rect::from_min_max(
+            full.min,
+            Pos2::new(full.left() + KEY_COLUMN_WIDTH, full.top() + RULER_HEIGHT),
+        );
+        let ruler_area = Rect::from_min_max(
+            Pos2::new(full.left() + KEY_COLUMN_WIDTH, full.top()),
+            Pos2::new(full.right(), full.top() + RULER_HEIGHT),
+        );
+        let keys_area = Rect::from_min_max(
+            Pos2::new(full.left(), full.top() + RULER_HEIGHT),
+            Pos2::new(full.left() + KEY_COLUMN_WIDTH, full.bottom()),
+        );
+        let grid_area = Rect::from_min_max(
+            Pos2::new(full.left() + KEY_COLUMN_WIDTH, full.top() + RULER_HEIGHT),
+            full.max,
+        );
+
+        // Horizontal viewport actually available to scroll content: the grid area
+        // minus the always-visible vertical scrollbar (measured last frame). Using
+        // the real inner width keeps the fit floor and edge-snap in sync with what
+        // egui scrolls, so the scrollbar reaches both extremes exactly.
+        let view_w = if self.grid_view_w > 0.0 {
+            self.grid_view_w
+        } else {
+            grid_area.width()
+        };
+
+        // Zoom-out floor: allow the clip to shrink until it fills only
+        // MIN_CLIP_VIEW_FILL of the grid width, leaving symmetric empty "outside"
+        // margins around it (Bitwig-style breathing room). Below this the view
+        // stops zooming out, so it never feels arbitrarily far away.
+        let fit_beat_width = (view_w / total_beats).max(0.0);
+        // Zoom-in ceiling scales with clip length: a short clip can be blown up
+        // until it spans ~MAX_CLIP_ZOOM_SPAN viewport widths, so small clips aren't
+        // stuck at the flat MAX_BEAT_WIDTH. Long clips keep the flat ceiling.
+        let max_beat_width = (view_w * MAX_CLIP_ZOOM_SPAN / total_beats)
+            .max(MAX_BEAT_WIDTH)
+            .min(HARD_MAX_BEAT_WIDTH);
+        let min_beat_width = (fit_beat_width * MIN_CLIP_VIEW_FILL)
+            .max(MIN_BEAT_WIDTH)
+            .min(max_beat_width);
+        // Re-fit on window resize / clip switch, not just on wheel input.
+        self.beat_width = self.beat_width.clamp(min_beat_width, max_beat_width);
+
+        let did_h_zoom = apply_piano_roll_wheel_controls(
             ui,
-            viewport_rect,
+            grid_area,
             &mut self.beat_width,
+            min_beat_width,
+            max_beat_width,
             &mut self.key_height,
             &mut self.scroll_offset,
             MIN_KEY_HEIGHT,
@@ -185,203 +258,239 @@ impl PianoRollUi {
             beat_width: self.beat_width,
             key_height: self.key_height,
         };
+
+        // Symmetric "outside" padding: when the clip is narrower than the grid
+        // viewport, split the slack into equal lead-in / lead-out margins so the
+        // clip sits centered with empty grid on both sides. When it is wider than
+        // the viewport there is no slack (lead 0) and scrolling/zoom are normal.
+        let view_beats = (view_w / metrics.beat_width).max(0.0);
+        let lead_beats = ((view_beats - total_beats) / 2.0).max(0.0);
+        let lead_px = lead_beats * metrics.beat_width;
+
         let pitch_span = (MAX_PITCH - MIN_PITCH + 1) as f32;
+        // Scroll content is the pure timeline: no key gutter, no ruler strip.
         let content_size = Vec2::new(
-            TIMELINE_GUTTER_WIDTH + total_beats * metrics.beat_width,
-            RULER_HEIGHT + pitch_span * metrics.key_height,
+            (total_beats + 2.0 * lead_beats) * metrics.beat_width,
+            pitch_span * metrics.key_height,
         );
-        let viewport = ui.available_size();
         let canvas_size = Vec2::new(
-            content_size.x.max(viewport.x),
-            content_size.y.max(viewport.y),
+            content_size.x.max(view_w),
+            content_size.y.max(grid_area.height()),
         );
+
+        // Sticky edges: pure cursor-anchored zoom leaves a few px of residual
+        // horizontal scroll when the pointer sits near an edge, so the scrollbar
+        // never quite reaches the end and beat 0 (or the clip tail) stays just
+        // off-screen. Snap to the extreme when we land within EDGE_SNAP_PX of it,
+        // but only right after a zoom so manual scrolling is left untouched.
+        if did_h_zoom {
+            let max_scroll_x = (canvas_size.x - view_w).max(0.0);
+            if self.scroll_offset.x < EDGE_SNAP_PX {
+                self.scroll_offset.x = 0.0;
+            } else if self.scroll_offset.x > max_scroll_x - EDGE_SNAP_PX {
+                self.scroll_offset.x = max_scroll_x;
+            }
+        }
 
         let global_playhead = engine.current_beats();
         let local_playhead = global_playhead - clip_start;
         let playhead_visible = local_playhead >= 0.0 && local_playhead <= total_beats;
+        let playhead_draw = if playhead_visible { local_playhead } else { -1.0 };
 
         let clip_notes: Vec<Note> = project
             .midi_clip(clip_id)
             .map(|clip| clip.notes.clone())
             .unwrap_or_default();
 
-        // Offset used to place content this frame (wheel updates apply next frame).
         let scroll = self.scroll_offset;
 
+        // ---- Scrolling note grid (keyboard column + ruler are drawn beside it) ----
         let output = with_solid_scrollbars(ui, theme, |ui| {
+            let mut grid_ui = ui.new_child(
+                UiBuilder::new()
+                    .id_salt("piano_roll_grid")
+                    .max_rect(grid_area)
+                    .layout(Layout::top_down(Align::LEFT)),
+            );
+            grid_ui.set_clip_rect(grid_area);
             daw_editor_scroll_area("piano_roll_canvas")
                 .scroll_offset(scroll)
-                .show(ui, |ui| {
+                .show(&mut grid_ui, |ui| {
                     ui.set_min_size(canvas_size);
                     let (response, painter) =
                         ui.allocate_painter(canvas_size, Sense::click_and_drag());
                     let content = response.rect;
-                    let grid = timeline_body_rect(content);
-
-                    // Visible viewport in screen space. Ruler stays pinned to the top
-                    // (follows horizontal scroll); piano keys stay pinned to the left
-                    // (follow vertical scroll).
-                    let viewport = Rect::from_min_size(content.min + scroll, viewport_rect.size())
-                        .intersect(ui.clip_rect());
-                    let sticky_ruler = Rect::from_min_max(
-                        viewport.min,
-                        Pos2::new(viewport.right(), viewport.top() + RULER_HEIGHT),
-                    );
-                    // Timeline X origin tracks horizontal scroll (content space).
-                    let ruler_timeline = Rect::from_min_max(
-                        Pos2::new(content.left(), sticky_ruler.top()),
-                        Pos2::new(content.right(), sticky_ruler.bottom()),
-                    );
-                    // Keyboard X is viewport-left; Y tracks vertical scroll (content space).
-                    let sticky_keys = Rect::from_min_max(
-                        Pos2::new(viewport.left(), sticky_ruler.bottom()),
-                        Pos2::new(viewport.left() + TIMELINE_GUTTER_WIDTH, viewport.bottom()),
-                    );
-                    let keys_grid = Rect::from_min_max(
-                        Pos2::new(viewport.left(), grid.top()),
-                        Pos2::new(viewport.left() + grid.width(), grid.bottom()),
-                    );
-
-                    tick_timed_audition(
-                        engine,
-                        track_id,
-                        &mut self.audition_pitch,
-                        &mut self.audition_held,
-                        &mut self.audition_until,
-                        response.ctx.input(|input| input.time),
-                    );
-
-                    // In-flight note/marquee drags always get pointer updates (including
-                    // release outside the grid). Keyboard / playhead only win when idle.
-                    let gesture_active = self.active_drag.is_some() || self.marquee.is_some();
-                    let keyboard_handled = !gesture_active
-                        && handle_keyboard_audition(
-                            &response,
-                            sticky_keys,
-                            keys_grid,
-                            metrics,
-                            engine,
-                            track_id,
-                            &mut self.audition_pitch,
-                            &mut self.audition_held,
-                            &mut self.audition_until,
-                        );
-
-                    let playhead_handled = !gesture_active
-                        && handle_timeline_playhead_pointer(
-                            &response,
-                            sticky_ruler,
-                            grid,
-                            metrics.timeline(),
-                            engine,
-                            &mut self.dragging_playhead,
-                            clip_start,
-                            // Body right-click drag scrubs in the shared handler;
-                            // click-without-drag stays here (delete note or seek).
-                            false,
-                        );
-
-                    if gesture_active || (!keyboard_handled && !playhead_handled) {
-                        handle_pointer(
-                            &response,
-                            sticky_ruler,
-                            grid,
-                            metrics,
-                            clip_id,
-                            project,
-                            history,
-                            engine,
-                            clip_start,
-                            track_id,
-                            &mut self.selected_note_ids,
-                            &mut self.active_drag,
-                            &mut self.marquee,
-                            &mut self.default_duration_beats,
-                            &mut self.audition_pitch,
-                            &mut self.audition_held,
-                            &mut self.audition_until,
-                        );
-                    }
-
-                    // Keep scrolled content out of the sticky piano / ruler strips so
-                    // notes and grid never paint under (or through) the pinned chrome.
-                    let timeline_clip = Rect::from_min_max(
-                        Pos2::new(sticky_keys.right(), sticky_ruler.bottom()),
-                        content.max,
-                    );
-                    let timeline_painter = painter.with_clip_rect(timeline_clip);
+                    let beat_grid = beat_grid_rect(content, lead_px);
+                    let playing = engine.is_playing();
 
                     draw_grid(
-                        &timeline_painter,
-                        grid,
+                        &painter,
+                        content,
+                        lead_px,
                         metrics,
                         total_beats,
                         beats_per_bar,
                         theme,
                     );
-                    let playing = engine.is_playing();
                     draw_notes(
-                        &timeline_painter,
-                        grid,
+                        &painter,
+                        beat_grid,
                         metrics,
                         &clip_notes,
                         &self.selected_note_ids,
-                        if playhead_visible {
-                            local_playhead
-                        } else {
-                            -1.0
-                        },
+                        playhead_draw,
                         playing,
                         theme,
                     );
                     if let Some(marquee) = &self.marquee {
-                        draw_marquee(&timeline_painter, marquee.rect(), theme);
+                        draw_marquee(&painter, marquee.rect(), theme);
                     }
-
-                    // Sticky chrome on top of scrolled content.
-                    draw_keyboard(
-                        &painter.with_clip_rect(sticky_keys),
-                        keys_grid,
-                        metrics,
-                        &clip_notes,
-                        if playhead_visible {
-                            local_playhead
-                        } else {
-                            -1.0
-                        },
-                        playing,
-                        self.audition_pitch,
-                        theme,
-                    );
-                    draw_ruler(
-                        &painter.with_clip_rect(sticky_ruler),
-                        sticky_ruler,
-                        ruler_timeline,
-                        metrics.timeline(),
-                        total_beats,
-                        beats_per_bar,
-                        theme,
-                    );
-                    // Playhead last, clipped to the right of the piano keys so it stays
-                    // above notes/ruler and never draws behind the pinned keyboard.
-                    let playhead_clip = Rect::from_min_max(
-                        Pos2::new(sticky_keys.right(), sticky_ruler.top()),
-                        content.max,
-                    );
-                    draw_playhead(
-                        &painter.with_clip_rect(playhead_clip),
-                        sticky_ruler,
-                        grid,
-                        metrics.timeline(),
-                        local_playhead,
-                        playhead_visible,
-                        theme,
-                    );
+                    (response, content)
                 })
         });
 
+        let (response, content) = output.inner;
         self.scroll_offset = output.state.offset;
+        // Cache the true inner viewport width (excludes the vertical scrollbar) for
+        // next frame's fit-floor and edge-snap math.
+        self.grid_view_w = output.inner_rect.width();
+
+        let beat_grid = beat_grid_rect(content, lead_px);
+        // Keyboard rows share the grid's vertical origin/scroll.
+        let keys_grid = Rect::from_min_max(
+            Pos2::new(keys_area.left(), content.top()),
+            Pos2::new(keys_area.right(), content.bottom()),
+        );
+        // Shift the ruler reference left by the key column so the shared
+        // ruler/playhead helpers (which add a gutter internally) resolve beat 0
+        // to the grid's left edge in this split layout.
+        let ruler_ref = Rect::from_min_max(
+            Pos2::new(ruler_area.left() - KEY_COLUMN_WIDTH, ruler_area.top()),
+            ruler_area.max,
+        );
+
+        tick_timed_audition(
+            engine,
+            track_id,
+            &mut self.audition_pitch,
+            &mut self.audition_held,
+            &mut self.audition_until,
+            ui.input(|input| input.time),
+        );
+
+        let keys_response = ui.interact(
+            keys_area,
+            ui.id().with("piano_roll_keys"),
+            Sense::click_and_drag(),
+        );
+        let ruler_response = ui.interact(
+            ruler_area,
+            ui.id().with("piano_roll_ruler"),
+            Sense::click_and_drag(),
+        );
+
+        // In-flight note/marquee drags keep pointer ownership; keyboard and ruler
+        // only win when idle.
+        let gesture_active = self.active_drag.is_some() || self.marquee.is_some();
+        let keyboard_handled = !gesture_active
+            && handle_keyboard_audition(
+                &keys_response,
+                keys_area,
+                keys_grid,
+                metrics,
+                engine,
+                track_id,
+                &mut self.audition_pitch,
+                &mut self.audition_held,
+                &mut self.audition_until,
+            );
+
+        let playhead_handled = !gesture_active
+            && !keyboard_handled
+            && handle_timeline_playhead_pointer(
+                &ruler_response,
+                ruler_ref,
+                beat_grid,
+                metrics.timeline(),
+                engine,
+                &mut self.dragging_playhead,
+                clip_start,
+                false,
+            );
+
+        if gesture_active || (!keyboard_handled && !playhead_handled) {
+            handle_pointer(
+                &response,
+                ruler_ref,
+                beat_grid,
+                metrics,
+                clip_id,
+                project,
+                history,
+                engine,
+                clip_start,
+                track_id,
+                &mut self.selected_note_ids,
+                &mut self.active_drag,
+                &mut self.marquee,
+                &mut self.default_duration_beats,
+                &mut self.audition_pitch,
+                &mut self.audition_held,
+                &mut self.audition_until,
+            );
+        }
+
+        // ---- Chrome beside the grid: keyboard, ruler, corner, playhead ----
+        let playing = engine.is_playing();
+        draw_keyboard(
+            &ui.painter().with_clip_rect(keys_area),
+            keys_grid,
+            metrics,
+            &clip_notes,
+            playhead_draw,
+            playing,
+            self.audition_pitch,
+            theme,
+        );
+        draw_ruler(
+            &ui.painter().with_clip_rect(ruler_area),
+            ruler_ref,
+            beat_grid,
+            metrics.timeline(),
+            total_beats,
+            beats_per_bar,
+            theme,
+        );
+        // Corner box above the key column, with a divider matching the keyboard.
+        ui.painter().rect_filled(corner, 0.0, theme.gutter_bg);
+        ui.painter().line_segment(
+            [corner.right_top(), corner.right_bottom()],
+            egui::Stroke::new(1.5_f32, theme.key_divider),
+        );
+        // Playhead spans ruler + grid, clipped to the right of the key column so
+        // it never draws over the keyboard or corner.
+        let playhead_clip = Rect::from_min_max(Pos2::new(grid_area.left(), full.top()), full.max);
+        draw_playhead(
+            &ui.painter().with_clip_rect(playhead_clip),
+            ruler_area,
+            beat_grid,
+            metrics.timeline(),
+            local_playhead,
+            playhead_visible,
+            theme,
+        );
     }
+}
+
+/// Beat-mapping rect for the grid scroll content. The shared `timeline_x` /
+/// `x_to_beat` helpers add `TIMELINE_GUTTER_WIDTH` to `rect.left()`, so shifting
+/// left by the key column makes beat 0 resolve to `content.left() + lead_px`
+/// (the lead-in margin) while keeping the vertical origin at `content.top()`.
+fn beat_grid_rect(content: Rect, lead_px: f32) -> Rect {
+    Rect::from_min_max(
+        Pos2::new(content.left() + lead_px - KEY_COLUMN_WIDTH, content.top()),
+        content.max,
+    )
 }
 
 fn pitch_to_y(grid: Rect, pitch: u8, metrics: ViewMetrics) -> f32 {
@@ -441,12 +550,15 @@ fn is_black_key(pitch: u8) -> bool {
 fn draw_grid(
     painter: &egui::Painter,
     grid: Rect,
+    lead_px: f32,
     metrics: ViewMetrics,
     total_beats: f32,
     beats_per_bar: f32,
     theme: &ThemeColors,
 ) {
-    let timeline_left = grid.left() + TIMELINE_GUTTER_WIDTH;
+    // The scroll content is the pure timeline (no key column), so the grid fills
+    // from its own left edge.
+    let timeline_left = grid.left();
     painter.rect_filled(
         Rect::from_min_max(Pos2::new(timeline_left, grid.top()), grid.max),
         0.0,
@@ -470,9 +582,13 @@ fn draw_grid(
         );
     }
 
+    // Beat 0 sits after the lead-in margin; grid lines share that origin.
+    let beat_origin = timeline_left + lead_px;
+    let beat_x = |beat: f32| beat_origin + beat * metrics.beat_width;
+
     let beat_count = total_beats.ceil() as i32;
     for beat in 0..=beat_count {
-        let x = timeline_x(grid, beat as f32, metrics.timeline());
+        let x = beat_x(beat as f32);
         let is_bar = (beat as f32).rem_euclid(beats_per_bar) == 0.0;
         let color = if is_bar {
             theme.grid_bar
@@ -490,10 +606,33 @@ fn draw_grid(
         if (beat.rem_euclid(beats_per_bar)).fract() == 0.0 && beat.fract() == 0.0 {
             continue;
         }
-        let x = timeline_x(grid, beat as f32, metrics.timeline());
+        let x = beat_x(beat);
         painter.line_segment(
             [Pos2::new(x, grid.top()), Pos2::new(x, grid.bottom())],
             egui::Stroke::new(1.0_f32, theme.grid_subbeat),
+        );
+    }
+
+    // Dim the empty region on either side of the clip so the playable range
+    // reads as distinct from the outside margins.
+    if lead_px > 0.5 {
+        let shade = egui::Color32::from_black_alpha(64);
+        let clip_end_x = beat_x(total_beats);
+        painter.rect_filled(
+            Rect::from_min_max(
+                Pos2::new(timeline_left, grid.top()),
+                Pos2::new(beat_origin, grid.bottom()),
+            ),
+            0.0,
+            shade,
+        );
+        painter.rect_filled(
+            Rect::from_min_max(
+                Pos2::new(clip_end_x, grid.top()),
+                Pos2::new(grid.right(), grid.bottom()),
+            ),
+            0.0,
+            shade,
         );
     }
 }

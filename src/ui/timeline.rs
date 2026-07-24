@@ -141,21 +141,25 @@ pub fn apply_horizontal_wheel_controls(
 }
 
 /// Piano roll: Alt+Wheel vertical zoom uses scroll_y consumption; combined with horizontal above.
+/// Returns true when a horizontal (beat-width) zoom occurred this frame, so the
+/// caller can apply edge-snapping to the resulting scroll offset.
 pub fn apply_piano_roll_wheel_controls(
     ui: &Ui,
     viewport: Rect,
     beat_width: &mut f32,
+    min_beat_width: f32,
+    max_beat_width: f32,
     key_height: &mut f32,
     scroll_offset: &mut Vec2,
     min_key_height: f32,
     max_key_height: f32,
-) {
+) -> bool {
     if !ui.rect_contains_pointer(viewport) {
-        return;
+        return false;
     }
 
     let Some(pointer) = ui.input(|input| input.pointer.hover_pos()) else {
-        return;
+        return false;
     };
 
     let (modifiers, zoom_delta) = ui.input(|input| (input.modifiers, input.zoom_delta()));
@@ -163,7 +167,7 @@ pub fn apply_piano_roll_wheel_controls(
     let zoom_vertical = modifiers.alt;
 
     if !zoom_horizontal && !zoom_vertical {
-        return;
+        return false;
     }
 
     let mut h_factor = 1.0_f32;
@@ -190,18 +194,24 @@ pub fn apply_piano_roll_wheel_controls(
     }
 
     if h_factor == 1.0 && v_factor == 1.0 {
-        return;
+        return false;
     }
 
     let content_pos = pointer - viewport.min + *scroll_offset;
+    let mut h_zoomed = false;
 
+    // The piano-roll grid viewport is the pure timeline region (the keyboard and
+    // ruler are separate widgets, not baked into this scroll content), so the
+    // content position under the pointer maps directly onto beat/pitch space.
     if h_factor != 1.0 {
         let old = *beat_width;
-        let new = (old * h_factor).clamp(MIN_BEAT_WIDTH, MAX_BEAT_WIDTH);
+        let new = (old * h_factor).clamp(min_beat_width, max_beat_width);
         let actual = new / old;
-        if (actual - 1.0).abs() > f32::EPSILON && content_pos.x > TIMELINE_GUTTER_WIDTH {
-            let timeline_x_pos = content_pos.x - TIMELINE_GUTTER_WIDTH;
-            scroll_offset.x += timeline_x_pos * (actual - 1.0);
+        if (actual - 1.0).abs() > f32::EPSILON {
+            if content_pos.x > 0.0 {
+                scroll_offset.x += content_pos.x * (actual - 1.0);
+            }
+            h_zoomed = true;
         }
         *beat_width = new;
     }
@@ -210,12 +220,13 @@ pub fn apply_piano_roll_wheel_controls(
         let old = *key_height;
         let new = (old * v_factor).clamp(min_key_height, max_key_height);
         let actual = new / old;
-        if (actual - 1.0).abs() > f32::EPSILON && content_pos.y > RULER_HEIGHT {
-            let keys_y = content_pos.y - RULER_HEIGHT;
-            scroll_offset.y += keys_y * (actual - 1.0);
+        if (actual - 1.0).abs() > f32::EPSILON && content_pos.y > 0.0 {
+            scroll_offset.y += content_pos.y * (actual - 1.0);
         }
         *key_height = new;
     }
+
+    h_zoomed
 }
 
 pub fn draw_ruler(

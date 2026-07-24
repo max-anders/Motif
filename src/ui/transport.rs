@@ -112,7 +112,7 @@ impl TransportUi {
                 engine.set_beats_per_second(project.beats_per_second());
             }
 
-            ui.separator();e
+            ui.separator();
 
             let mut loop_enabled = project.loop_enabled;
             if ui
