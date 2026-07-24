@@ -91,6 +91,7 @@ impl Project {
             id,
             name: name.to_string(),
             instrument,
+            plugin_state: None,
             clips: Vec::new(),
         });
         id
@@ -304,6 +305,7 @@ impl Project {
             id: 1,
             name: String::from("Track 1"),
             instrument: TrackInstrument::BuiltInPiano,
+            plugin_state: None,
             clips: vec![clip],
         };
 

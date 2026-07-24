@@ -401,6 +401,7 @@ impl AudioEngine {
         track_id: u64,
         instrument: TrackInstrument,
         entry: CatalogEntry,
+        state: Option<Vec<u8>>,
     ) {
         let Some(load_tx) = self.load_tx.clone() else {
             return;
@@ -418,7 +419,7 @@ impl AudioEngine {
             voice: TrackVoice::Silent,
         });
         thread::spawn(move || {
-            let result = match load_and_activate(&entry, sample_rate) {
+            let result = match load_and_activate(&entry, sample_rate, state.as_deref()) {
                 Ok(plugin) => Ok(plugin),
                 Err(error) => Err(format!("{name}: {error}")),
             };
@@ -661,7 +662,12 @@ impl DawEngine for AudioEngine {
                         });
                         continue;
                     };
-                    self.spawn_plugin_load(track.id, track.instrument.clone(), entry);
+                    self.spawn_plugin_load(
+                        track.id,
+                        track.instrument.clone(),
+                        entry,
+                        track.plugin_state.clone(),
+                    );
                     errors.push((track.id, String::from(LOADING_STATUS)));
                 }
             }
@@ -669,6 +675,32 @@ impl DawEngine for AudioEngine {
 
         self.flush_pending_cmds();
         errors
+    }
+
+    fn capture_plugin_states(&mut self, project: &mut Project) {
+        self.flush_pending_cmds();
+        for track in &mut project.tracks {
+            let format = match &track.instrument {
+                TrackInstrument::Plugin { format, .. } => *format,
+                TrackInstrument::BuiltInPiano => {
+                    track.plugin_state = None;
+                    continue;
+                }
+            };
+            let Some(slot) = self.plugin_slots.get(&track.id) else {
+                // Keep last saved blob while the plugin is still loading / missing.
+                continue;
+            };
+            let Ok(guard) = slot.lock() else {
+                continue;
+            };
+            match guard.save_state_blob(format) {
+                Ok(blob) => track.plugin_state = Some(blob),
+                Err(_) => {
+                    // Leave previous project blob; avoid wiping a good save on a flaky getState.
+                }
+            }
+        }
     }
 
     fn invalidate_instruments(&mut self) {

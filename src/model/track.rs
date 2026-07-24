@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use super::clip::{MidiClip, DEFAULT_CLIP_LENGTH_BEATS};
 use super::instrument::TrackInstrument;
+use super::serde_b64;
 use super::{Note, Project};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -10,6 +11,14 @@ pub struct Track {
     pub name: String,
     #[serde(default)]
     pub instrument: TrackInstrument,
+    /// Opaque CLAP/VST3 state (RKST envelope). Restored after plugin activate.
+    /// Kept off `TrackInstrument` so identity sync does not reload on every save.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "serde_b64"
+    )]
+    pub plugin_state: Option<Vec<u8>>,
     pub clips: Vec<MidiClip>,
 }
 

@@ -2,6 +2,7 @@ mod clip;
 mod instrument;
 mod note;
 mod project;
+mod serde_b64;
 mod track;
 
 pub use clip::{MidiClip, DEFAULT_CLIP_LENGTH_BEATS};

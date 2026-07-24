@@ -315,6 +315,8 @@ impl PlaylistUi {
                                 if let Some(name) = rename {
                                     track.name = name;
                                 }
+                                // New instrument identity — drop prior plugin blob.
+                                track.plugin_state = None;
                                 track.instrument = instrument;
                             }
                             self.change_instrument_search.clear();

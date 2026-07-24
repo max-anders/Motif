@@ -10,6 +10,7 @@ use truce_rack::core::events::{Event, EventBody, EventList, MidiData, TransportF
 use truce_rack::core::info::{PluginCategory, PluginInfo};
 use truce_rack::core::plugin::{Plugin, PluginCore, ProcessContext};
 use truce_rack::core::scanner::PluginScanner;
+use truce_rack::core::state::{FormatId, StateEnvelope};
 use truce_rack::core::transport::TransportInfo;
 use truce_rack::vst3::Vst3Scanner;
 
@@ -240,12 +241,32 @@ impl HostedPlugin {
             }
         }
     }
+
+    /// Snapshot plugin state as an RKST envelope (for `project.json`).
+    pub fn save_state_blob(&self, format: PluginFormat) -> Result<Vec<u8>, String> {
+        let payload = match &self.instance {
+            PluginInstance::Clap(plugin) => plugin
+                .save_state()
+                .map_err(|e| format!("CLAP save_state failed: {e}"))?,
+            PluginInstance::Vst3(plugin) => plugin
+                .save_state()
+                .map_err(|e| format!("VST3 save_state failed: {e}"))?,
+        };
+        Ok(StateEnvelope {
+            format: format_id(format),
+            payload: &payload,
+        }
+        .encode())
+    }
+
 }
 
 /// Load from catalog metadata and activate at `sample_rate`.
+/// When `state` is set (RKST envelope), restore it after activate.
 pub fn load_and_activate(
     entry: &CatalogEntry,
     sample_rate: f64,
+    state: Option<&[u8]>,
 ) -> Result<HostedPlugin, String> {
     if entry.path.components().any(|c| {
         c.as_os_str()
@@ -298,6 +319,13 @@ pub fn load_and_activate(
             .map_err(|e| format!("VST3 activate failed: {e}"))?,
     }
 
+    if let Some(bytes) = state {
+        // Best-effort: a corrupt / outdated blob must not silence the track.
+        if let Err(error) = apply_state_blob(&mut instance, entry.format, bytes) {
+            eprintln!("motif: plugin state restore failed ({name}): {error}", name = entry.name);
+        }
+    }
+
     Ok(HostedPlugin {
         instance,
         in_l: vec![0.0; MAX_BLOCK_FRAMES],
@@ -309,6 +337,38 @@ pub fn load_and_activate(
         held_notes: HashSet::new(),
         sample_rate,
     })
+}
+
+fn apply_state_blob(
+    instance: &mut PluginInstance,
+    format: PluginFormat,
+    bytes: &[u8],
+) -> Result<(), String> {
+    let envelope = StateEnvelope::decode(bytes).map_err(|e| format!("Bad plugin state: {e}"))?;
+    let expected = format_id(format);
+    if envelope.format != expected && envelope.format != FormatId::Unknown {
+        return Err(format!(
+            "Plugin state format mismatch: saved {:?}, track is {}",
+            envelope.format,
+            format.label()
+        ));
+    }
+    match instance {
+        PluginInstance::Clap(plugin) => plugin
+            .load_state(envelope.payload)
+            .map_err(|e| format!("CLAP load_state failed: {e}"))?,
+        PluginInstance::Vst3(plugin) => plugin
+            .load_state(envelope.payload)
+            .map_err(|e| format!("VST3 load_state failed: {e}"))?,
+    }
+    Ok(())
+}
+
+fn format_id(format: PluginFormat) -> FormatId {
+    match format {
+        PluginFormat::Clap => FormatId::Clap,
+        PluginFormat::Vst3 => FormatId::Vst3,
+    }
 }
 
 fn pick_layout(layouts: &[BusLayout]) -> BusLayout {

@@ -15,7 +15,7 @@ Open-source music sketchpad: piano roll, playlist, soft-synth piano, and CLAP/VS
 | Piano roll (notes + key audition) | Working |
 | Transport + loop + BPM | Working |
 | Soft piano + plugin mix (`cpal`) | Working (UI continues if device open fails) |
-| Project save/load | Working (`project.json` in CWD) |
+| Project save/load | Working (`project.json` in CWD; includes CLAP/VST3 state) |
 | Settings (shortcuts + themes + plugins) | Working (`settings.json` in CWD) |
 | VST2 / mixer / export | Not started |
 | Tests / undo / samples | Not started |
@@ -135,8 +135,8 @@ cargo run --release
 - **Play / Pause** - play arrangement notes through each track's instrument (playhead loops)
 - **Stop** - stop, silence, and return to start
 - **Space** - play/pause (factory default; remappable)
-- **Ctrl/Cmd+S** - save `project.json` (factory default; remappable)
-- **Ctrl/Cmd+O** - load `project.json` (factory default; remappable)
+- **Ctrl/Cmd+S** - save `project.json` (includes per-track CLAP/VST3 state; factory default; remappable)
+- **Ctrl/Cmd+O** - load `project.json` (restores plugin state after instruments load; factory default; remappable)
 - **Save / Load** buttons - same as the shortcuts above
 - **Settings** - themes, shortcut remapping, Plugin Manager (Rescan / extra paths); saved to `settings.json` + `plugin_cache.json`
 - **Escape** - leave piano roll or Settings (factory default; remappable)

@@ -130,6 +130,7 @@ impl DawApp {
     }
 
     fn save_project(&mut self) {
+        self.engine.capture_plugin_states(&mut self.project);
         match serde_json::to_string_pretty(&self.project) {
             Ok(json) => match fs::write(Self::project_path(), json) {
                 Ok(()) => self.status_message = format!("Saved to {PROJECT_FILE}"),

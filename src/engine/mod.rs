@@ -38,6 +38,11 @@ pub trait DawEngine {
         catalog: &Catalog,
     ) -> Vec<(u64, String)>;
 
+    /// Copy live CLAP/VST3 state into each track's `plugin_state` before project save.
+    fn capture_plugin_states(&mut self, project: &mut Project) {
+        let _ = project;
+    }
+
     /// Drop cached voice identities so the next sync reloads everything.
     fn invalidate_instruments(&mut self);
 
