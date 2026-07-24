@@ -16,9 +16,10 @@ use crate::ui::instrument_menu::{
 use crate::ui::theme::ThemeColors;
 use crate::ui::timeline::{
     apply_horizontal_wheel_controls, daw_editor_scroll_area, draw_loop_region, draw_playhead,
-    draw_ruler, draw_timeline_grid_lines, handle_timeline_playhead_pointer, is_timeline_pointer,
-    timeline_body_rect, timeline_x, with_solid_scrollbars, x_to_beat, TimelineMetrics,
-    DEFAULT_BEAT_WIDTH, RULER_HEIGHT, TIMELINE_GUTTER_WIDTH,
+    draw_ruler, draw_timeline_grid_lines, handle_loop_region_pointer,
+    handle_timeline_playhead_pointer, hit_test_loop_edge, is_timeline_pointer, timeline_body_rect,
+    timeline_x, with_solid_scrollbars, x_to_beat, LoopEdge, TimelineMetrics, DEFAULT_BEAT_WIDTH,
+    RULER_HEIGHT, TIMELINE_GUTTER_WIDTH,
 };
 
 pub(crate) const TRACK_HEADER_WIDTH: f32 = TIMELINE_GUTTER_WIDTH;
@@ -92,6 +93,7 @@ pub struct PlaylistUi {
     active_drag: Option<ClipDrag>,
     marquee: Option<MarqueeDrag>,
     dragging_playhead: bool,
+    dragging_loop_edge: Option<LoopEdge>,
     beat_width: f32,
     scroll_offset: Vec2,
     /// Set when user clicks a clip without dragging (consumed by app).
@@ -119,6 +121,7 @@ impl Default for PlaylistUi {
             active_drag: None,
             marquee: None,
             dragging_playhead: false,
+            dragging_loop_edge: None,
             beat_width: DEFAULT_BEAT_WIDTH,
             scroll_offset: Vec2::ZERO,
             open_clip_request: None,
@@ -242,7 +245,6 @@ impl PlaylistUi {
             beat_width: self.beat_width,
         };
         let total_beats = project.arrangement_length_beats();
-        let loop_span = project.loop_span();
         let lane_count = project.tracks.len().max(1);
         let content_height = RULER_HEIGHT + lane_count as f32 * LANE_HEIGHT;
         let content_width = TRACK_HEADER_WIDTH + total_beats * metrics.beat_width;
@@ -291,10 +293,22 @@ impl PlaylistUi {
                         .is_some_and(|pos| sticky_headers.contains(pos));
                     let gesture_active =
                         self.active_drag.is_some() || self.marquee.is_some();
-                    let allow_playhead =
-                        (self.dragging_playhead || !on_sticky_headers) && !gesture_active;
+                    let loop_handled = !gesture_active
+                        && handle_loop_region_pointer(
+                            &response,
+                            sticky_ruler,
+                            body,
+                            metrics,
+                            project,
+                            &mut self.dragging_loop_edge,
+                        );
+                    let allow_playhead = (self.dragging_playhead || !on_sticky_headers)
+                        && !gesture_active
+                        && !loop_handled;
 
-                    if allow_playhead
+                    if loop_handled {
+                        // Loop edge drag owns the pointer this frame.
+                    } else if allow_playhead
                         && handle_timeline_playhead_pointer(
                             &response,
                             sticky_ruler,
@@ -392,7 +406,18 @@ impl PlaylistUi {
                         Pos2::new(sticky_headers.right(), sticky_ruler.top()),
                         content.max,
                     );
-                    if let Some((loop_start, loop_end)) = loop_span {
+                    if let Some((loop_start, loop_end)) = project.loop_span() {
+                        let hover_edge = response.hover_pos().and_then(|pos| {
+                            hit_test_loop_edge(
+                                sticky_ruler,
+                                body,
+                                metrics,
+                                loop_start,
+                                loop_end,
+                                pos,
+                            )
+                        });
+                        let highlighted = self.dragging_loop_edge.or(hover_edge);
                         draw_loop_region(
                             &painter.with_clip_rect(playhead_clip),
                             sticky_ruler,
@@ -401,6 +426,7 @@ impl PlaylistUi {
                             loop_start,
                             loop_end,
                             theme,
+                            highlighted,
                         );
                     }
                     let playhead = engine.current_beats();

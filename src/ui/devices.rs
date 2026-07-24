@@ -19,8 +19,9 @@ use crate::ui::playlist::{
 use crate::ui::theme::ThemeColors;
 use crate::ui::timeline::{
     apply_horizontal_wheel_controls, draw_loop_region, draw_playhead, draw_ruler,
-    handle_timeline_playhead_pointer, timeline_body_rect, with_solid_scrollbars, TimelineMetrics,
-    DEFAULT_BEAT_WIDTH, RULER_HEIGHT,
+    handle_loop_region_pointer, handle_timeline_playhead_pointer, hit_test_loop_edge,
+    timeline_body_rect, with_solid_scrollbars, LoopEdge, TimelineMetrics, DEFAULT_BEAT_WIDTH,
+    RULER_HEIGHT,
 };
 
 const TILE_WIDTH: f32 = 146.0;
@@ -76,6 +77,7 @@ pub struct DevicesUi {
     mini_active_drag: Option<ClipDrag>,
     mini_marquee: Option<MarqueeDrag>,
     mini_dragging_playhead: bool,
+    mini_dragging_loop_edge: Option<LoopEdge>,
     mini_beat_width: f32,
     mini_scroll_offset: Vec2,
     mini_drag_moved: bool,
@@ -96,6 +98,7 @@ impl Default for DevicesUi {
             mini_active_drag: None,
             mini_marquee: None,
             mini_dragging_playhead: false,
+            mini_dragging_loop_edge: None,
             mini_beat_width: DEFAULT_BEAT_WIDTH,
             mini_scroll_offset: Vec2::ZERO,
             mini_drag_moved: false,
@@ -385,7 +388,6 @@ impl DevicesUi {
             beat_width: self.mini_beat_width,
         };
         let total_beats = project.arrangement_length_beats();
-        let loop_span = project.loop_span();
         let content_width = total_beats * metrics.beat_width;
         // Exactly ruler + one lane tall: single-track lane never scrolls vertically,
         // so this keeps the lane flush against the horizontal scrollbar (no dead gap).
@@ -420,6 +422,51 @@ impl DevicesUi {
                         Pos2::new(body.right(), body.top() + LANE_HEIGHT),
                     );
 
+                    // Pointer first so loop/clip/playhead mutations paint this frame.
+                    let gesture_active =
+                        self.mini_active_drag.is_some() || self.mini_marquee.is_some();
+                    let loop_handled = !gesture_active
+                        && handle_loop_region_pointer(
+                            &response,
+                            ruler,
+                            body,
+                            metrics,
+                            project,
+                            &mut self.mini_dragging_loop_edge,
+                        );
+                    if loop_handled {
+                        // Loop edge drag owns the pointer this frame.
+                    } else if !gesture_active
+                        && handle_timeline_playhead_pointer(
+                            &response,
+                            ruler,
+                            lane,
+                            metrics,
+                            engine,
+                            &mut self.mini_dragging_playhead,
+                            0.0,
+                            true,
+                        )
+                    {
+                        // Playhead scrub; skip clip picks while dragging.
+                    } else {
+                        handle_single_track_clip_pointer(
+                            &response,
+                            timeline_rect,
+                            lane,
+                            track.id,
+                            &track.clips,
+                            metrics,
+                            project,
+                            history,
+                            &mut self.mini_selected_clip_ids,
+                            &mut self.mini_active_drag,
+                            &mut self.mini_marquee,
+                            &mut self.open_clip_request,
+                            &mut self.mini_drag_moved,
+                        );
+                    }
+
                     let timeline_painter = painter.with_clip_rect(content);
                     draw_lane_timeline(
                         &timeline_painter,
@@ -444,7 +491,11 @@ impl DevicesUi {
                         project.beats_per_bar,
                         theme,
                     );
-                    if let Some((loop_start, loop_end)) = loop_span {
+                    if let Some((loop_start, loop_end)) = project.loop_span() {
+                        let hover_edge = response.hover_pos().and_then(|pos| {
+                            hit_test_loop_edge(ruler, body, metrics, loop_start, loop_end, pos)
+                        });
+                        let highlighted = self.mini_dragging_loop_edge.or(hover_edge);
                         draw_loop_region(
                             &timeline_painter,
                             ruler,
@@ -453,6 +504,7 @@ impl DevicesUi {
                             loop_start,
                             loop_end,
                             theme,
+                            highlighted,
                         );
                     }
                     let playhead = engine.current_beats();
@@ -464,38 +516,6 @@ impl DevicesUi {
                         playhead,
                         true,
                         theme,
-                    );
-
-                    if self.mini_active_drag.is_none()
-                        && self.mini_marquee.is_none()
-                        && handle_timeline_playhead_pointer(
-                            &response,
-                            ruler,
-                            lane,
-                            metrics,
-                            engine,
-                            &mut self.mini_dragging_playhead,
-                            0.0,
-                            true,
-                        )
-                    {
-                        return;
-                    }
-
-                    handle_single_track_clip_pointer(
-                        &response,
-                        timeline_rect,
-                        lane,
-                        track.id,
-                        &track.clips,
-                        metrics,
-                        project,
-                        history,
-                        &mut self.mini_selected_clip_ids,
-                        &mut self.mini_active_drag,
-                        &mut self.mini_marquee,
-                        &mut self.open_clip_request,
-                        &mut self.mini_drag_moved,
                     );
 
                     if let Some(marquee) = &self.mini_marquee {

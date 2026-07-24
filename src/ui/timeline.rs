@@ -5,8 +5,18 @@ use egui::style::ScrollStyle;
 use egui::{Pos2, Rect, Response, ScrollArea, Ui, Vec2};
 
 use crate::engine::DawEngine;
-use crate::model::{Project, SNAP_BEATS};
+use crate::model::{Project, MIN_LOOP_SPAN_BEATS, SNAP_BEATS};
 use crate::ui::theme::ThemeColors;
+
+/// Which end of the loop region is being dragged on the ruler.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoopEdge {
+    Start,
+    End,
+}
+
+/// Hit-test half-width around a loop edge (screen px).
+const LOOP_EDGE_HIT_PX: f32 = 8.0;
 
 /// egui's default floating bars fade to invisible when idle. DAW editors need
 /// always-opaque, space-taking bars so scroll position stays readable.
@@ -306,6 +316,9 @@ pub fn draw_playhead(
 /// Highlight the active loop/cycle region: a translucent band across the body,
 /// a marker strip along the bottom of the ruler, and vertical edges. Drawn only
 /// when the caller has a valid enabled loop (`end > start`).
+///
+/// `highlighted_edge` thickens the active/hovered ruler handle so edges read as
+/// adjustable.
 pub fn draw_loop_region(
     painter: &egui::Painter,
     ruler: Rect,
@@ -314,6 +327,7 @@ pub fn draw_loop_region(
     loop_start: f32,
     loop_end: f32,
     theme: &ThemeColors,
+    highlighted_edge: Option<LoopEdge>,
 ) {
     if loop_end <= loop_start {
         return;
@@ -346,6 +360,137 @@ pub fn draw_loop_region(
     let edge = egui::Stroke::new(1.5_f32, theme.loop_region_edge);
     for x in [x_start, x_end] {
         painter.line_segment([Pos2::new(x, strip_top), Pos2::new(x, body.bottom())], edge);
+    }
+
+    // Grab handles on the ruler (thicker when hovered / dragged).
+    for (edge_kind, x) in [(LoopEdge::Start, x_start), (LoopEdge::End, x_end)] {
+        let hot = highlighted_edge == Some(edge_kind);
+        let half_w = if hot { 3.5_f32 } else { 2.0_f32 };
+        painter.rect_filled(
+            Rect::from_min_max(
+                Pos2::new(x - half_w, ruler.top() + 2.0),
+                Pos2::new(x + half_w, strip_top),
+            ),
+            1.0,
+            theme.loop_region_edge,
+        );
+    }
+}
+
+/// Hit-test a loop edge on the ruler brace (not the body lanes — avoids fighting
+/// clip resize handles).
+pub fn hit_test_loop_edge(
+    ruler: Rect,
+    body: Rect,
+    metrics: TimelineMetrics,
+    loop_start: f32,
+    loop_end: f32,
+    pointer: Pos2,
+) -> Option<LoopEdge> {
+    if loop_end <= loop_start {
+        return None;
+    }
+    if !is_ruler_timeline_pointer(ruler, pointer) {
+        return None;
+    }
+    let x_start = timeline_x(body, loop_start, metrics);
+    let x_end = timeline_x(body, loop_end, metrics);
+    let dist_start = (pointer.x - x_start).abs();
+    let dist_end = (pointer.x - x_end).abs();
+    if dist_start > LOOP_EDGE_HIT_PX && dist_end > LOOP_EDGE_HIT_PX {
+        return None;
+    }
+    if dist_start <= dist_end {
+        Some(LoopEdge::Start)
+    } else {
+        Some(LoopEdge::End)
+    }
+}
+
+/// Drag loop start/end on the ruler. Returns true while the gesture owns the
+/// pointer (active drag), so callers can skip playhead scrub / clip picks.
+pub fn handle_loop_region_pointer(
+    response: &Response,
+    ruler: Rect,
+    body: Rect,
+    metrics: TimelineMetrics,
+    project: &mut Project,
+    dragging: &mut Option<LoopEdge>,
+) -> bool {
+    let Some((loop_start, loop_end)) = project.loop_span() else {
+        *dragging = None;
+        return false;
+    };
+
+    if dragging.is_none() {
+        if let Some(hover) = response.hover_pos() {
+            if hit_test_loop_edge(ruler, body, metrics, loop_start, loop_end, hover).is_some() {
+                response
+                    .ctx
+                    .set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+            }
+        }
+    }
+
+    if let Some(edge) = *dragging {
+        if response.dragged() {
+            if let Some(pointer) = response.interact_pointer_pos() {
+                apply_loop_edge_drag(project, edge, body, pointer, metrics);
+                response
+                    .ctx
+                    .set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+            }
+        }
+        if response.drag_stopped()
+            || !response
+                .ctx
+                .input(|input| input.pointer.button_down(egui::PointerButton::Primary))
+        {
+            *dragging = None;
+        }
+        return true;
+    }
+
+    let Some(pointer) = response.interact_pointer_pos() else {
+        return false;
+    };
+    let press_pos = response
+        .ctx
+        .input(|input| input.pointer.press_origin())
+        .unwrap_or(pointer);
+
+    if response.drag_started_by(egui::PointerButton::Primary) {
+        if let Some(edge) =
+            hit_test_loop_edge(ruler, body, metrics, loop_start, loop_end, press_pos)
+        {
+            *dragging = Some(edge);
+            apply_loop_edge_drag(project, edge, body, pointer, metrics);
+            response
+                .ctx
+                .set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+            return true;
+        }
+    }
+
+    false
+}
+
+fn apply_loop_edge_drag(
+    project: &mut Project,
+    edge: LoopEdge,
+    body: Rect,
+    pointer: Pos2,
+    metrics: TimelineMetrics,
+) {
+    let beat = Project::snap_beats(x_to_beat(body, pointer.x, metrics).max(0.0));
+    match edge {
+        LoopEdge::Start => {
+            project.loop_start_beats =
+                beat.clamp(0.0, project.loop_end_beats - MIN_LOOP_SPAN_BEATS);
+        }
+        LoopEdge::End => {
+            project.loop_end_beats = beat.max(project.loop_start_beats + MIN_LOOP_SPAN_BEATS);
+        }
     }
 }
 

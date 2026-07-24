@@ -127,6 +127,11 @@ impl PianoSynth {
         }
     }
 
+    /// Count non-idle piano voices (for Performance telemetry).
+    pub fn active_voice_count(&self) -> u32 {
+        self.voices.iter().filter(|v| v.is_active()).count() as u32
+    }
+
     /// Render one mono sample and advance envelopes/phases.
     pub fn render_sample(&mut self) -> f32 {
         let mut mix = 0.0_f32;

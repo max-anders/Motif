@@ -18,9 +18,9 @@ use crate::model::{
 use crate::ui::{
     choice_to_instrument, show_inspector, track_name_for_choice, Action, AddBrowserAction,
     AddBrowserUi, AppSettings, AudioImportRequest, BrowserTab, Chord, DevicesUi, MixerUi,
-    PianoRollUi, PlaylistUi, PluginEditorRequest, PollFilter, ProjectBrowserAction,
-    ProjectBrowserUi, SettingsAction, SettingsUi, TransportUi, DEVICES_STRIP_HEIGHT,
-    SETTINGS_FILE,
+    PerformanceUi, PianoRollUi, PlaylistUi, PluginEditorRequest, PollFilter,
+    ProjectBrowserAction, ProjectBrowserUi, SettingsAction, SettingsUi, TransportUi,
+    DEVICES_STRIP_HEIGHT, SETTINGS_FILE,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,6 +29,7 @@ enum CenterView {
     PianoRoll { clip_id: u64 },
     Mixer,
     Devices,
+    Performance,
     Settings,
 }
 
@@ -47,6 +48,7 @@ pub struct DawApp {
     playlist: PlaylistUi,
     piano_roll: PianoRollUi,
     mixer: MixerUi,
+    performance: PerformanceUi,
     devices: DevicesUi,
     settings_ui: SettingsUi,
     project_browser: ProjectBrowserUi,
@@ -126,6 +128,7 @@ impl DawApp {
             playlist: PlaylistUi::default(),
             piano_roll: PianoRollUi::default(),
             mixer: MixerUi::default(),
+            performance: PerformanceUi::default(),
             devices: DevicesUi::default(),
             settings_ui: SettingsUi::default(),
             project_browser: ProjectBrowserUi::default(),
@@ -1378,6 +1381,16 @@ impl DawApp {
         self.center_view = CenterView::Mixer;
     }
 
+    fn open_performance(&mut self) {
+        if matches!(self.center_view, CenterView::Performance) {
+            return;
+        }
+        if matches!(self.center_view, CenterView::PianoRoll { .. }) {
+            self.piano_roll.release_audition(&mut self.engine);
+        }
+        self.center_view = CenterView::Performance;
+    }
+
     fn open_devices(&mut self) {
         if matches!(self.center_view, CenterView::Devices) {
             return;
@@ -1437,27 +1450,42 @@ impl DawApp {
             Action::DeleteSelection => match self.center_view {
                 CenterView::Playlist => self.delete_selected_clips(),
                 CenterView::PianoRoll { .. } => self.delete_selected_notes(),
-                CenterView::Mixer | CenterView::Devices | CenterView::Settings => {}
+                CenterView::Mixer
+                | CenterView::Devices
+                | CenterView::Performance
+                | CenterView::Settings => {}
             },
             Action::CopySelection => match self.center_view {
                 CenterView::Playlist => self.copy_selected_clips(),
                 CenterView::PianoRoll { .. } => self.copy_selected_notes(),
-                CenterView::Mixer | CenterView::Devices | CenterView::Settings => {}
+                CenterView::Mixer
+                | CenterView::Devices
+                | CenterView::Performance
+                | CenterView::Settings => {}
             },
             Action::CutSelection => match self.center_view {
                 CenterView::Playlist => self.cut_selected_clips(),
                 CenterView::PianoRoll { .. } => self.cut_selected_notes(),
-                CenterView::Mixer | CenterView::Devices | CenterView::Settings => {}
+                CenterView::Mixer
+                | CenterView::Devices
+                | CenterView::Performance
+                | CenterView::Settings => {}
             },
             Action::PasteSelection => match self.center_view {
                 CenterView::Playlist => self.paste_clips_at_playhead(),
                 CenterView::PianoRoll { clip_id } => self.paste_notes_at_playhead(clip_id),
-                CenterView::Mixer | CenterView::Devices | CenterView::Settings => {}
+                CenterView::Mixer
+                | CenterView::Devices
+                | CenterView::Performance
+                | CenterView::Settings => {}
             },
             Action::DuplicateSelection => match self.center_view {
                 CenterView::Playlist => self.duplicate_selected_clips(),
                 CenterView::PianoRoll { .. } => self.duplicate_selected_notes(),
-                CenterView::Mixer | CenterView::Devices | CenterView::Settings => {}
+                CenterView::Mixer
+                | CenterView::Devices
+                | CenterView::Performance
+                | CenterView::Settings => {}
             },
             Action::Undo => match self.center_view {
                 CenterView::Settings => {}
@@ -1482,7 +1510,10 @@ impl DawApp {
                 }
                 match self.center_view {
                     CenterView::Settings => self.close_settings(),
-                    CenterView::PianoRoll { .. } | CenterView::Mixer | CenterView::Devices => {
+                    CenterView::PianoRoll { .. }
+                    | CenterView::Mixer
+                    | CenterView::Devices
+                    | CenterView::Performance => {
                         self.back_to_playlist()
                     }
                     CenterView::Playlist => {}
@@ -1492,6 +1523,11 @@ impl DawApp {
                 CenterView::Mixer => self.back_to_playlist(),
                 CenterView::Settings => {}
                 _ => self.open_mixer(),
+            },
+            Action::TogglePerformance => match self.center_view {
+                CenterView::Performance => self.back_to_playlist(),
+                CenterView::Settings => {}
+                _ => self.open_performance(),
             },
             Action::ToggleDevices => match self.center_view {
                 CenterView::Settings => {}
@@ -1582,7 +1618,10 @@ impl eframe::App for DawApp {
                         }
                         ui.separator();
                     }
-                    CenterView::PianoRoll { .. } | CenterView::Mixer | CenterView::Devices => {
+                    CenterView::PianoRoll { .. }
+                    | CenterView::Mixer
+                    | CenterView::Devices
+                    | CenterView::Performance => {
                         if ui.button("Back to playlist").clicked() {
                             self.back_to_playlist();
                         }
@@ -1597,6 +1636,14 @@ impl eframe::App for DawApp {
                     && ui.button("Mixer").clicked()
                 {
                     self.open_mixer();
+                }
+
+                if !matches!(
+                    self.center_view,
+                    CenterView::Settings | CenterView::Performance
+                ) && ui.button("Perf").clicked()
+                {
+                    self.open_performance();
                 }
 
                 if !matches!(self.center_view, CenterView::Settings | CenterView::Devices)
@@ -1645,6 +1692,9 @@ impl eframe::App for DawApp {
                 }
                 if matches!(self.center_view, CenterView::Devices) {
                     ui.label("Devices");
+                }
+                if matches!(self.center_view, CenterView::Performance) {
+                    ui.label("Performance");
                 }
                 ui.label(&self.status_message);
             });
@@ -1847,6 +1897,16 @@ impl eframe::App for DawApp {
                     } else {
                         self.back_to_playlist();
                     }
+                }
+                CenterView::Performance => {
+                    let DawApp {
+                        performance,
+                        project,
+                        engine,
+                        settings,
+                        ..
+                    } = self;
+                    performance.show(ui, project, engine, settings.themes.colors());
                 }
                 CenterView::Settings => {
                     ui.add_space(8.0);

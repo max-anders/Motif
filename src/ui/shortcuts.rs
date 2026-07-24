@@ -41,6 +41,8 @@ pub enum Action {
     BackToPlaylist,
     /// Toggle the Mixer view (or return to playlist when already there).
     ToggleMixer,
+    /// Toggle the Performance view (or return to playlist when already there).
+    TogglePerformance,
     /// Toggle the bottom device strip (or no-op in Settings).
     ToggleDevices,
     /// Open or close the native plugin editor for the selected track's instrument.
@@ -75,6 +77,7 @@ impl<'de> Deserialize<'de> for Action {
             "open_sample_browser" => Ok(Self::OpenSampleBrowser),
             "back_to_playlist" => Ok(Self::BackToPlaylist),
             "toggle_mixer" => Ok(Self::ToggleMixer),
+            "toggle_performance" => Ok(Self::TogglePerformance),
             "toggle_devices" => Ok(Self::ToggleDevices),
             "toggle_plugin_editor" | "open_plugin_editor" => Ok(Self::TogglePluginEditor),
             "close_plugin_editor" => Ok(Self::ClosePluginEditor),
@@ -100,6 +103,7 @@ impl<'de> Deserialize<'de> for Action {
                     "open_sample_browser",
                     "back_to_playlist",
                     "toggle_mixer",
+                    "toggle_performance",
                     "toggle_devices",
                     "toggle_plugin_editor",
                     "close_plugin_editor",
@@ -111,7 +115,7 @@ impl<'de> Deserialize<'de> for Action {
 
 impl Action {
     /// All actions in Settings / docs order (includes actions with no factory binding).
-    pub const ALL: [Self; 22] = [
+    pub const ALL: [Self; 23] = [
         Self::TogglePlayback,
         Self::DeleteSelection,
         Self::DeleteTrack,
@@ -131,6 +135,7 @@ impl Action {
         Self::OpenSampleBrowser,
         Self::BackToPlaylist,
         Self::ToggleMixer,
+        Self::TogglePerformance,
         Self::ToggleDevices,
         Self::TogglePluginEditor,
         Self::ClosePluginEditor,
@@ -157,6 +162,7 @@ impl Action {
             Self::OpenSampleBrowser => "Add sample...",
             Self::BackToPlaylist => "Back / close",
             Self::ToggleMixer => "Mixer",
+            Self::TogglePerformance => "Performance",
             Self::ToggleDevices => "Devices",
             Self::TogglePluginEditor => "Plugin editor",
             Self::ClosePluginEditor => "Close plugin editor",
@@ -377,6 +383,10 @@ impl ShortcutRegistry {
                     Binding::Key(Chord::new(Key::Escape)),
                 ),
                 (Action::ToggleMixer, Binding::Key(Chord::ctrl_or_cmd(Key::M))),
+                (
+                    Action::TogglePerformance,
+                    Binding::Key(Chord::ctrl_or_cmd_shift(Key::P)),
+                ),
                 (
                     Action::ToggleDevices,
                     Binding::Key(Chord::ctrl_or_cmd_shift(Key::M)),

@@ -1,6 +1,6 @@
 use egui::{RichText, Stroke, Ui};
 
-use crate::engine::DawEngine;
+use crate::engine::{DawEngine, EnginePerformance};
 use crate::model::{Project, MIN_LOOP_SPAN_BEATS};
 
 pub struct TransportUi;
@@ -29,6 +29,42 @@ fn show_time_box(ui: &mut Ui, beats: f32, beats_per_second: f32) {
                     .strong(),
             );
         });
+}
+
+fn show_perf_strip(ui: &mut Ui, perf: EnginePerformance) {
+    let warn = perf.cpu_percent >= 80.0 || perf.xruns > 0 || perf.lock_skips > 0;
+    let color = if warn {
+        ui.visuals().warn_fg_color
+    } else {
+        ui.visuals().weak_text_color()
+    };
+
+    let rate_k = if perf.sample_rate_hz >= 1000 {
+        format!("{}k", (perf.sample_rate_hz + 500) / 1000)
+    } else {
+        format!("{}Hz", perf.sample_rate_hz)
+    };
+    let buf = if perf.buffer_frames > 0 {
+        format!("{} @ {rate_k}", perf.buffer_frames)
+    } else {
+        format!("-- @ {rate_k}")
+    };
+    let latency = if perf.latency_ms > 0.0 {
+        format!("~{:.1} ms", perf.latency_ms)
+    } else {
+        String::from("~-- ms")
+    };
+    let text = format!(
+        "CPU {:.1}%  |  {buf}  |  {latency}  |  xruns {}  |  locks {}",
+        perf.cpu_percent, perf.xruns, perf.lock_skips
+    );
+
+    ui.label(RichText::new(text).monospace().size(12.0).color(color))
+        .on_hover_text(
+            "Audio callback load vs buffer period. \
+             xruns = callbacks that overran the budget. \
+             locks = plugin try_lock skips on the audio thread (dropout risk).",
+        );
 }
 
 impl TransportUi {
@@ -125,6 +161,9 @@ impl TransportUi {
                 beat_in_bar,
                 engine.current_beats()
             ));
+
+            ui.separator();
+            show_perf_strip(ui, engine.performance());
         });
         metronome_changed
     }

@@ -14,7 +14,8 @@ Open-source music sketchpad: piano roll, playlist, soft-synth piano, and CLAP/VS
 | Plugin editor GUI | Working on Linux (X11 / XWayland); not Wayland-native |
 | Piano roll (notes + key audition + copy/paste) | Working |
 | Undo / redo (clips + notes) | Working (depth in Settings → Editing) |
-| Transport + loop + BPM + metronome | Working |
+| Transport + loop + BPM + metronome | Working (includes live CPU / buffer / xrun strip) |
+| Performance view | Working (CPU graph + per-track DSP; Ctrl/Cmd+Shift+P) |
 | Soft piano + plugin mix (`cpal`) | Working (UI continues if device open fails) |
 | Project save/load | Working (`.motif` files; recent projects; recovery autosave) |
 | Settings (shortcuts + themes + plugins + editing + project) | Working (`settings.json` in CWD) |
@@ -165,8 +166,11 @@ cargo run --release
 - **Ctrl/Cmd+Shift+S** - Save As... (remappable)
 - **Projects...** - in-app Recent Projects loader
 - Window title and toolbar show the project name with `*` when unsaved
+- **Perf** toolbar / **Ctrl/Cmd+Shift+P** - Performance view (CPU graph, per-track DSP ms, xruns / lock skips; remappable)
+- **Mixer** toolbar / **Ctrl/Cmd+M** - mixer view (remappable)
+- Transport strip also shows live **CPU % / buffer / latency / xruns / locks**
 - **Settings** - themes, shortcut remapping (multiple keys per action, conflict Override), Plugin Manager (Rescan / extra paths), Editing (undo depth), Project (autosave recovery interval, recent list); saved to `settings.json` + `plugin_cache.json`
-- **Escape** - leave piano roll or Settings (factory default; remappable)
+- **Escape** - leave piano roll, mixer, devices, Performance, or Settings (factory default; remappable)
 
 ### Projects (`.motif`)
 

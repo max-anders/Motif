@@ -4,9 +4,11 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender, TryRecvError, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Instant;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, Stream, StreamConfig};
@@ -23,7 +25,45 @@ use super::plugins::{
     PluginRef,
 };
 use super::DecodedAudio;
-use super::{DawEngine, LoopPlayback};
+use super::{DawEngine, EnginePerformance, LoopPlayback, TrackPerformance, TrackVoiceKind};
+
+/// RT -> UI telemetry written only with Relaxed atomics (never locks).
+struct AudioPerfShared {
+    /// Latest callback load in tenths of a percent (123 = 12.3%).
+    cpu_load_tenths: AtomicU32,
+    buffer_frames: AtomicU32,
+    xruns: AtomicU64,
+    lock_skips: AtomicU64,
+}
+
+impl AudioPerfShared {
+    fn new() -> Self {
+        Self {
+            cpu_load_tenths: AtomicU32::new(0),
+            buffer_frames: AtomicU32::new(0),
+            xruns: AtomicU64::new(0),
+            lock_skips: AtomicU64::new(0),
+        }
+    }
+
+    fn snapshot(&self, sample_rate_hz: u32) -> EnginePerformance {
+        let buffer_frames = self.buffer_frames.load(Ordering::Relaxed);
+        let cpu_percent = self.cpu_load_tenths.load(Ordering::Relaxed) as f32 / 10.0;
+        let latency_ms = if sample_rate_hz > 0 && buffer_frames > 0 {
+            (buffer_frames as f32 / sample_rate_hz as f32) * 1000.0
+        } else {
+            0.0
+        };
+        EnginePerformance {
+            cpu_percent,
+            buffer_frames,
+            sample_rate_hz,
+            latency_ms,
+            xruns: self.xruns.load(Ordering::Relaxed),
+            lock_skips: self.lock_skips.load(Ordering::Relaxed),
+        }
+    }
+}
 
 const LOADING_STATUS: &str = "Loading plugin...";
 
@@ -191,6 +231,7 @@ struct AudioCallbackState {
     master_gain: f32,
     commands: Receiver<AudioCommand>,
     channels: usize,
+    sample_rate: f32,
     transport: TransportInfo,
     metronome: MetronomeRunner,
     mix_l: Vec<f32>,
@@ -200,6 +241,9 @@ struct AudioCallbackState {
     /// Shared with UI: `(track_id, peak_l, peak_r)`.
     track_meters: Arc<Mutex<Vec<(u64, f32, f32)>>>,
     master_meter: Arc<Mutex<(f32, f32)>>,
+    /// Shared with UI: per-track DSP timing for the latest callback.
+    track_perf: Arc<Mutex<Vec<TrackPerformance>>>,
+    perf: Arc<AudioPerfShared>,
     /// Retired plugin voices/chains handed back to the UI thread to drop
     /// (never destroy a hosted plugin on the RT thread — see [`RetiredResource`]).
     retire_tx: Sender<RetiredResource>,
@@ -233,6 +277,8 @@ impl AudioCallbackState {
                     Some(TrackVoice::Plugin(plugin)) => {
                         if let Ok(mut guard) = plugin.try_lock() {
                             guard.push_note_on(pitch, velocity);
+                        } else {
+                            self.perf.lock_skips.fetch_add(1, Ordering::Relaxed);
                         }
                     }
                     Some(TrackVoice::Silent) | None => {}
@@ -243,6 +289,8 @@ impl AudioCallbackState {
                         Some(TrackVoice::Plugin(plugin)) => {
                             if let Ok(mut guard) = plugin.try_lock() {
                                 guard.push_note_off(pitch);
+                            } else {
+                                self.perf.lock_skips.fetch_add(1, Ordering::Relaxed);
                             }
                         }
                         Some(TrackVoice::Silent) | None => {}
@@ -255,6 +303,8 @@ impl AudioCallbackState {
                             TrackVoice::Plugin(plugin) => {
                                 if let Ok(mut guard) = plugin.try_lock() {
                                     guard.all_notes_off();
+                                } else {
+                                    self.perf.lock_skips.fetch_add(1, Ordering::Relaxed);
                                 }
                             }
                             TrackVoice::Silent => {}
@@ -476,6 +526,8 @@ impl AudioCallbackState {
         let transport = Some(self.transport);
         let default_channel = ChannelParams::default();
         let mut meter_scratch: Vec<(u64, f32, f32)> = Vec::with_capacity(self.voices.len());
+        let mut track_perf_scratch: Vec<TrackPerformance> =
+            Vec::with_capacity(self.voices.len());
         let block_start_beat = self
             .transport
             .song_position_beats
@@ -494,15 +546,23 @@ impl AudioCallbackState {
             self.tmp_r[..frames].fill(0.0);
             let lanes = self.automation.get(&track_id).map(Vec::as_slice).unwrap_or(&[]);
 
+            let mut voice_kind = TrackVoiceKind::None;
+            let mut active_voices = 0_u32;
+            let mut lock_skips = 0_u32;
+
+            let voice_started = Instant::now();
             match self.voices.get_mut(&track_id) {
                 Some(TrackVoice::Piano(synth)) => {
+                    voice_kind = TrackVoiceKind::Piano;
                     for i in 0..frames {
                         let sample = synth.render_sample();
                         self.tmp_l[i] = sample;
                         self.tmp_r[i] = sample;
                     }
+                    active_voices = synth.active_voice_count();
                 }
                 Some(TrackVoice::Plugin(plugin)) => {
+                    voice_kind = TrackVoiceKind::Plugin;
                     if let Ok(mut guard) = plugin.try_lock() {
                         if apply_automation {
                             Self::push_automation_for_instrument(lanes, block_start_beat, &mut guard);
@@ -513,11 +573,19 @@ impl AudioCallbackState {
                             &mut self.tmp_l[..frames],
                             &mut self.tmp_r[..frames],
                         );
+                    } else {
+                        lock_skips += 1;
+                        self.perf.lock_skips.fetch_add(1, Ordering::Relaxed);
                     }
                 }
-                Some(TrackVoice::Silent) | None => {}
+                Some(TrackVoice::Silent) => {
+                    voice_kind = TrackVoiceKind::Silent;
+                }
+                None => {}
             }
+            let voice_ms = voice_started.elapsed().as_secs_f64() as f32 * 1000.0;
 
+            let samples_started = Instant::now();
             if self.transport.playing {
                 if let (Some(song_pos_samples), Some(tempo_bpm)) =
                     (self.transport.song_position_samples, self.transport.tempo_bpm)
@@ -552,9 +620,11 @@ impl AudioCallbackState {
                     }
                 }
             }
+            let samples_ms = samples_started.elapsed().as_secs_f64() as f32 * 1000.0;
 
             // Serial insert-FX chain, pre-fader: each non-bypassed device
             // replaces tmp_l/tmp_r in place before gain/pan is applied below.
+            let fx_started = Instant::now();
             if let Some(chain) = self.fx_chains.get(&track_id) {
                 for slot in chain {
                     if slot.bypassed {
@@ -575,9 +645,13 @@ impl AudioCallbackState {
                             &mut self.tmp_l[..frames],
                             &mut self.tmp_r[..frames],
                         );
+                    } else {
+                        lock_skips += 1;
+                        self.perf.lock_skips.fetch_add(1, Ordering::Relaxed);
                     }
                 }
             }
+            let fx_ms = fx_started.elapsed().as_secs_f64() as f32 * 1000.0;
 
             let mut peak_l = 0.0_f32;
             let mut peak_r = 0.0_f32;
@@ -592,6 +666,16 @@ impl AudioCallbackState {
                 self.mix_r[i] += r;
             }
             meter_scratch.push((track_id, peak_l, peak_r));
+            track_perf_scratch.push(TrackPerformance {
+                track_id,
+                voice_kind,
+                voice_ms,
+                fx_ms,
+                samples_ms,
+                total_ms: voice_ms + fx_ms + samples_ms,
+                lock_skips,
+                active_voices,
+            });
         }
 
         let master = self.master_gain;
@@ -606,19 +690,46 @@ impl AudioCallbackState {
             master_peak_r = master_peak_r.max(self.mix_r[i].abs());
         }
 
-        // Cosmetic meters: skip on contention so the RT thread never blocks.
+        // Cosmetic meters / perf: skip on contention so the RT thread never blocks.
         if let Ok(mut meters) = self.track_meters.try_lock() {
             *meters = meter_scratch;
         }
         if let Ok(mut master_m) = self.master_meter.try_lock() {
             *master_m = (master_peak_l, master_peak_r);
         }
+        if let Ok(mut tracks) = self.track_perf.try_lock() {
+            *tracks = track_perf_scratch;
+        }
 
         self.metronome
             .process_block(frames, &mut self.mix_l[..frames], &mut self.mix_r[..frames]);
     }
 
+    /// Record callback load vs buffer budget. RT-safe (atomics only).
+    fn record_callback_perf(&self, frames: usize, started: Instant) {
+        if frames == 0 || self.sample_rate <= 0.0 {
+            return;
+        }
+        let elapsed = started.elapsed().as_secs_f64();
+        let budget = frames as f64 / self.sample_rate as f64;
+        if budget <= 0.0 {
+            return;
+        }
+        let load_pct = (elapsed / budget) * 100.0;
+        let tenths = (load_pct * 10.0).round().clamp(0.0, 999_990.0) as u32;
+        self.perf
+            .cpu_load_tenths
+            .store(tenths, Ordering::Relaxed);
+        self.perf
+            .buffer_frames
+            .store(frames as u32, Ordering::Relaxed);
+        if elapsed > budget {
+            self.perf.xruns.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
     fn write_f32(&mut self, data: &mut [f32]) {
+        let started = Instant::now();
         self.process_commands();
         if self.channels == 0 {
             return;
@@ -638,9 +749,11 @@ impl AudioCallbackState {
                 *ch0 = 0.5 * (l + r);
             }
         }
+        self.record_callback_perf(frames, started);
     }
 
     fn write_i16(&mut self, data: &mut [i16]) {
+        let started = Instant::now();
         self.process_commands();
         if self.channels == 0 {
             return;
@@ -660,9 +773,11 @@ impl AudioCallbackState {
                 *ch0 = (0.5 * (l + r) * i16::MAX as f32) as i16;
             }
         }
+        self.record_callback_perf(frames, started);
     }
 
     fn write_u16(&mut self, data: &mut [u16]) {
+        let started = Instant::now();
         self.process_commands();
         if self.channels == 0 {
             return;
@@ -685,6 +800,7 @@ impl AudioCallbackState {
                 *ch0 = ((m * 0.5 + 0.5) * u16::MAX as f32) as u16;
             }
         }
+        self.record_callback_perf(frames, started);
     }
 }
 
@@ -747,6 +863,8 @@ pub struct AudioEngine {
     editor_host: PluginEditorHost,
     track_meters: Arc<Mutex<Vec<(u64, f32, f32)>>>,
     master_meter: Arc<Mutex<(f32, f32)>>,
+    track_perf: Arc<Mutex<Vec<TrackPerformance>>>,
+    perf: Arc<AudioPerfShared>,
     /// Plugin voices/chains retired by the audio callback, drained and dropped
     /// on the UI thread (never destroy a hosted plugin on the RT thread).
     retire_rx: Receiver<RetiredResource>,
@@ -754,6 +872,7 @@ pub struct AudioEngine {
     _stream: Option<Stream>,
     audio_available: bool,
     init_error: Option<String>,
+    device_name: Option<String>,
     metronome_enabled: bool,
 }
 
@@ -764,8 +883,16 @@ impl AudioEngine {
         let (retire_tx, retire_rx) = mpsc::channel::<RetiredResource>();
         let track_meters = Arc::new(Mutex::new(Vec::new()));
         let master_meter = Arc::new(Mutex::new((0.0_f32, 0.0_f32)));
-        match start_stream(Arc::clone(&track_meters), Arc::clone(&master_meter), retire_tx) {
-            Ok((stream, tx, sample_rate)) => {
+        let track_perf = Arc::new(Mutex::new(Vec::new()));
+        let perf = Arc::new(AudioPerfShared::new());
+        match start_stream(
+            Arc::clone(&track_meters),
+            Arc::clone(&master_meter),
+            Arc::clone(&track_perf),
+            Arc::clone(&perf),
+            retire_tx,
+        ) {
+            Ok((stream, tx, sample_rate, device_name)) => {
                 let play_error = stream
                     .play()
                     .err()
@@ -806,10 +933,13 @@ impl AudioEngine {
                     editor_host: PluginEditorHost::default(),
                     track_meters,
                     master_meter,
+                    track_perf,
+                    perf,
                     retire_rx,
                     _stream: Some(stream),
                     audio_available,
                     init_error: play_error,
+                    device_name: Some(device_name),
                     metronome_enabled: true,
                 }
             }
@@ -848,10 +978,13 @@ impl AudioEngine {
                 editor_host: PluginEditorHost::default(),
                 track_meters,
                 master_meter,
+                track_perf,
+                perf,
                 retire_rx,
                 _stream: None,
                 audio_available: false,
                 init_error: Some(error),
+                device_name: None,
                 metronome_enabled: true,
             },
         }
@@ -1859,6 +1992,28 @@ impl DawEngine for AudioEngine {
             .unwrap_or((0.0, 0.0))
     }
 
+    fn performance(&self) -> EnginePerformance {
+        self.perf.snapshot(self.sample_rate_hz())
+    }
+
+    fn track_performance(&self) -> Vec<TrackPerformance> {
+        self.track_perf
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_default()
+    }
+
+    fn audio_device_name(&self) -> Option<String> {
+        self.device_name.clone()
+    }
+
+    fn pending_plugin_loads(&self) -> (usize, usize) {
+        (
+            self.pending_loads.len(),
+            self.pending_device_loads.len(),
+        )
+    }
+
     fn sync_samples(
         &mut self,
         project: &Project,
@@ -1919,12 +2074,17 @@ fn find_note(project: &Project, note_id: u64) -> Option<(u64, u8, u8)> {
 fn start_stream(
     track_meters: Arc<Mutex<Vec<(u64, f32, f32)>>>,
     master_meter: Arc<Mutex<(f32, f32)>>,
+    track_perf: Arc<Mutex<Vec<TrackPerformance>>>,
+    perf: Arc<AudioPerfShared>,
     retire_tx: Sender<RetiredResource>,
-) -> Result<(Stream, SyncSender<AudioCommand>, f32), String> {
+) -> Result<(Stream, SyncSender<AudioCommand>, f32, String), String> {
     let host = cpal::default_host();
     let device = host
         .default_output_device()
         .ok_or_else(|| String::from("No default audio output device"))?;
+    let device_name = device
+        .name()
+        .unwrap_or_else(|_| String::from("Unknown output"));
 
     let supported = device
         .default_output_config()
@@ -1934,6 +2094,9 @@ fn start_stream(
     let config: StreamConfig = supported.config();
     let sample_rate = config.sample_rate.0 as f32;
     let channels = config.channels as usize;
+    if let cpal::BufferSize::Fixed(frames) = config.buffer_size {
+        perf.buffer_frames.store(frames, Ordering::Relaxed);
+    }
 
     let (tx, rx) = mpsc::sync_channel::<AudioCommand>(64);
     let state = AudioCallbackState {
@@ -1945,6 +2108,7 @@ fn start_stream(
         master_gain: 1.0,
         commands: rx,
         channels,
+        sample_rate,
         transport: TransportInfo::default(),
         metronome: MetronomeRunner::new(sample_rate),
         mix_l: vec![0.0; 4096],
@@ -1953,6 +2117,8 @@ fn start_stream(
         tmp_r: vec![0.0; 4096],
         track_meters,
         master_meter,
+        track_perf,
+        perf,
         retire_tx,
     };
 
@@ -1997,5 +2163,5 @@ fn start_stream(
         }
     };
 
-    Ok((stream, tx, sample_rate))
+    Ok((stream, tx, sample_rate, device_name))
 }

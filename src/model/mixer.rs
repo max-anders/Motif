@@ -1,8 +1,8 @@
 //! Per-track mixer facets: gain/pan math plus scaffolding for sends/devices/macros.
 //!
 //! Sends, devices, and macros are serialized project data today but not yet processed
-//! by the audio engine. Future views (Devices, Routing, Performance) bind to these
-//! same fields without changing the Track core.
+//! by the audio engine. Devices and Performance views bind to live engine /
+//! track data; Routing remains future scaffolding on these same fields.
 
 use serde::{Deserialize, Serialize};
 

@@ -14,6 +14,75 @@ pub use audio::AudioEngine;
 // Kept for silent fallback / tests; not wired in the app UI path.
 #[allow(unused_imports)]
 pub use mock::MockEngine;
+
+/// Live audio-thread telemetry for the transport bar / Performance view.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EnginePerformance {
+    /// Recent callback load as percent of the buffer period (can exceed 100).
+    pub cpu_percent: f32,
+    /// Frames delivered in the latest callback (device period).
+    pub buffer_frames: u32,
+    pub sample_rate_hz: u32,
+    /// Estimated one-buffer output latency in milliseconds.
+    pub latency_ms: f32,
+    /// Callbacks that exceeded their buffer budget (underrun risk).
+    pub xruns: u64,
+    /// Plugin `try_lock` failures skipped on the RT thread (dropout risk).
+    pub lock_skips: u64,
+}
+
+impl Default for EnginePerformance {
+    fn default() -> Self {
+        Self {
+            cpu_percent: 0.0,
+            buffer_frames: 0,
+            sample_rate_hz: 0,
+            latency_ms: 0.0,
+            xruns: 0,
+            lock_skips: 0,
+        }
+    }
+}
+
+/// Kind of voice currently mixed for a track (audio-thread view).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TrackVoiceKind {
+    #[default]
+    None,
+    Piano,
+    Plugin,
+    Silent,
+}
+
+impl TrackVoiceKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::None => "-",
+            Self::Piano => "Piano",
+            Self::Plugin => "Plugin",
+            Self::Silent => "Silent",
+        }
+    }
+}
+
+/// Per-track DSP timing for the latest audio callback (cosmetic / UI only).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct TrackPerformance {
+    pub track_id: u64,
+    pub voice_kind: TrackVoiceKind,
+    /// Instrument / piano voice DSP (ms).
+    pub voice_ms: f32,
+    /// Insert-FX chain DSP (ms).
+    pub fx_ms: f32,
+    /// Sample-clip mix DSP (ms).
+    pub samples_ms: f32,
+    /// voice + fx + samples for this track (ms).
+    pub total_ms: f32,
+    /// `try_lock` skips on this track during the latest callback.
+    pub lock_skips: u32,
+    /// Active piano voices (0 for plugin / silent).
+    pub active_voices: u32,
+}
 #[allow(unused_imports)] // EntryCategory: public catalog surface, consumed once the effect picker lands
 pub use plugins::{
     CatalogEntry, EditorCloseBinding, EditorPoll, EntryCategory, HostX11, PluginCatalog,
@@ -99,6 +168,26 @@ pub trait DawEngine {
     /// Latest master-bus peak `(peak_l, peak_r)`.
     fn master_meter(&self) -> (f32, f32) {
         (0.0, 0.0)
+    }
+
+    /// Latest audio-thread performance snapshot (CPU load, buffer, xruns).
+    fn performance(&self) -> EnginePerformance {
+        EnginePerformance::default()
+    }
+
+    /// Per-track DSP timing from the latest callback (empty when unavailable).
+    fn track_performance(&self) -> Vec<TrackPerformance> {
+        Vec::new()
+    }
+
+    /// Output device name reported by cpal at stream open.
+    fn audio_device_name(&self) -> Option<String> {
+        None
+    }
+
+    /// In-flight background plugin loads: `(instruments, insert_fx)`.
+    fn pending_plugin_loads(&self) -> (usize, usize) {
+        (0, 0)
     }
 
     /// True when an activated plugin instance is ready for this slot
