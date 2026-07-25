@@ -20,8 +20,8 @@ use cpal::{SampleFormat, Stream, StreamConfig};
 use truce_rack::core::transport::TransportInfo;
 
 use crate::model::{
-    db_to_linear, AutomationPoint, AutomationTarget, CurveKind, PluginFormat, Project,
-    TrackInstrument,
+    db_to_linear, AutomationPoint, AutomationTarget, CurveKind, LfoRate, LfoShape, PluginFormat,
+    Project, TrackInstrument,
 };
 
 use super::metronome::MetronomeRunner;
@@ -153,6 +153,28 @@ struct RtAutomationLane {
     step_count: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum RtLfoRate {
+    SyncBeats { beats: f32 },
+    Hz { hz: f32 },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct RtModulator {
+    id: u64,
+    target: RtAutomationTarget,
+    shape: LfoShape,
+    rate: RtLfoRate,
+    depth: f32,
+    phase: f32,
+    bipolar: bool,
+    center: f32,
+    mseg_points: Vec<AutomationPoint>,
+    min: f64,
+    max: f64,
+    step_count: u32,
+}
+
 impl Default for ChannelParams {
     fn default() -> Self {
         // Equal-power center at unity.
@@ -203,6 +225,10 @@ enum AudioCommand {
         track_id: u64,
         lanes: Vec<RtAutomationLane>,
     },
+    SetModulators {
+        track_id: u64,
+        modulators: Vec<RtModulator>,
+    },
     SetTrackSamples {
         track_id: u64,
         clips: Vec<SamplePlayback>,
@@ -234,6 +260,10 @@ struct AudioCallbackState {
     sample_clips: HashMap<u64, Vec<SamplePlayback>>,
     /// Per-track block-rate automation lanes for plugin params.
     automation: HashMap<u64, Vec<RtAutomationLane>>,
+    /// Per-track LFO / MSEG modulators for plugin params.
+    modulators: HashMap<u64, Vec<RtModulator>>,
+    /// Free-running Hz LFO phase (cycles 0..1) keyed by `(track_id, modulator_id)`.
+    lfo_phases: HashMap<(u64, u64), f64>,
     master_gain: f32,
     commands: Receiver<AudioCommand>,
     channels: usize,
@@ -253,6 +283,17 @@ struct AudioCallbackState {
     /// Retired plugin voices/chains handed back to the UI thread to drop
     /// (never destroy a hosted plugin on the RT thread — see [`RetiredResource`]).
     retire_tx: Sender<RetiredResource>,
+}
+
+fn normalize_mseg_points(points: &mut Vec<AutomationPoint>, legacy_length: f32) {
+    let length = legacy_length.max(0.0625);
+    if length == 1.0 && !points.iter().any(|p| p.beat > 1.0 + f32::EPSILON) {
+        return;
+    }
+    for point in &mut *points {
+        point.beat = (point.beat / length).clamp(0.0, 1.0);
+    }
+    points.sort_by(|a, b| a.beat.total_cmp(&b.beat));
 }
 
 impl AudioCallbackState {
@@ -332,6 +373,8 @@ impl AudioCallbackState {
                     }
                     self.sample_clips.remove(&track_id);
                     self.automation.remove(&track_id);
+                    self.modulators.remove(&track_id);
+                    self.lfo_phases.retain(|&(tid, _), _| tid != track_id);
                 }
                 Ok(AudioCommand::SetChannel {
                     track_id,
@@ -358,12 +401,29 @@ impl AudioCallbackState {
                         self.retire_chain(old);
                     }
                     self.automation.remove(&track_id);
+                    self.modulators.remove(&track_id);
+                    self.lfo_phases.retain(|&(tid, _), _| tid != track_id);
                 }
                 Ok(AudioCommand::SetAutomation { track_id, lanes }) => {
                     if lanes.is_empty() {
                         self.automation.remove(&track_id);
                     } else {
                         self.automation.insert(track_id, lanes);
+                    }
+                }
+                Ok(AudioCommand::SetModulators {
+                    track_id,
+                    modulators,
+                }) => {
+                    if modulators.is_empty() {
+                        self.modulators.remove(&track_id);
+                        self.lfo_phases.retain(|&(tid, _), _| tid != track_id);
+                    } else {
+                        let live_ids: HashSet<u64> =
+                            modulators.iter().map(|modulator| modulator.id).collect();
+                        self.lfo_phases
+                            .retain(|&(tid, mid), _| tid != track_id || live_ids.contains(&mid));
+                        self.modulators.insert(track_id, modulators);
                     }
                 }
                 Ok(AudioCommand::SetTrackSamples { track_id, clips }) => {
@@ -472,44 +532,275 @@ impl AudioCallbackState {
         native
     }
 
-    fn push_automation_for_instrument(
-        lanes: &[RtAutomationLane],
+    fn lfo_wave(shape: LfoShape, phase01: f64) -> f64 {
+        let p = phase01.rem_euclid(1.0);
+        match shape {
+            LfoShape::Sine => (p * std::f64::consts::TAU).sin(),
+            LfoShape::Triangle => {
+                if p < 0.25 {
+                    p * 4.0
+                } else if p < 0.75 {
+                    2.0 - p * 4.0
+                } else {
+                    p * 4.0 - 4.0
+                }
+            }
+            LfoShape::Saw => 2.0 * p - 1.0,
+            LfoShape::Square => {
+                if p < 0.5 {
+                    1.0
+                } else {
+                    -1.0
+                }
+            }
+            LfoShape::Custom => 0.0,
+        }
+    }
+
+    fn evaluate_mseg_at_phase(points: &[AutomationPoint], phase01: f64) -> f64 {
+        let local = phase01.rem_euclid(1.0) as f32;
+        Self::evaluate_lane_value(points, local).unwrap_or(0.0)
+    }
+
+    fn modulator_cycle_phase(
+        modulator: &RtModulator,
         beat: f32,
+        free_phase: f64,
+    ) -> f64 {
+        match modulator.rate {
+            RtLfoRate::SyncBeats { beats } => {
+                let period = beats.max(0.0625) as f64;
+                ((beat as f64) / period + modulator.phase as f64).rem_euclid(1.0)
+            }
+            RtLfoRate::Hz { .. } => (free_phase + modulator.phase as f64).rem_euclid(1.0),
+        }
+    }
+
+    fn modulator_signal(
+        modulator: &RtModulator,
+        beat: f32,
+        free_phase: f64,
+    ) -> f64 {
+        let phase = Self::modulator_cycle_phase(modulator, beat, free_phase);
+        match modulator.shape {
+            LfoShape::Custom => {
+                let unipolar = Self::evaluate_mseg_at_phase(&modulator.mseg_points, phase);
+                if modulator.bipolar {
+                    unipolar * 2.0 - 1.0
+                } else {
+                    unipolar
+                }
+            }
+            shape => {
+                let bipolar = Self::lfo_wave(shape, phase);
+                if modulator.bipolar {
+                    bipolar
+                } else {
+                    (bipolar + 1.0) * 0.5
+                }
+            }
+        }
+    }
+
+    fn advance_lfo_phases(&mut self, track_id: u64, modulators: &[RtModulator], frames: usize) {
+        let dt = frames as f64 / self.sample_rate.max(1.0) as f64;
+        for modulator in modulators {
+            let RtLfoRate::Hz { hz } = modulator.rate else {
+                continue;
+            };
+            let key = (track_id, modulator.id);
+            let phase = self.lfo_phases.entry(key).or_insert(0.0);
+            *phase = (*phase + hz.max(0.0) as f64 * dt).rem_euclid(1.0);
+        }
+    }
+
+    fn push_params_for_instrument(
+        track_id: u64,
+        lanes: &[RtAutomationLane],
+        modulators: &[RtModulator],
+        lfo_phases: &HashMap<(u64, u64), f64>,
+        beat: f32,
+        apply_automation: bool,
+        apply_modulation: bool,
         plugin: &mut HostedPlugin,
     ) {
-        for lane in lanes {
-            let RtAutomationTarget::Instrument { param_id } = lane.target else {
+        let mut param_ids: HashSet<u32> = HashSet::new();
+        if apply_automation {
+            for lane in lanes {
+                if let RtAutomationTarget::Instrument { param_id } = lane.target {
+                    param_ids.insert(param_id);
+                }
+            }
+        }
+        if apply_modulation {
+            for modulator in modulators {
+                if let RtAutomationTarget::Instrument { param_id } = modulator.target {
+                    param_ids.insert(param_id);
+                }
+            }
+        }
+
+        for param_id in param_ids {
+            let lane = lanes.iter().find(|lane| {
+                matches!(
+                    lane.target,
+                    RtAutomationTarget::Instrument { param_id: id } if id == param_id
+                )
+            });
+            let mods: Vec<&RtModulator> = modulators
+                .iter()
+                .filter(|modulator| {
+                    matches!(
+                        modulator.target,
+                        RtAutomationTarget::Instrument { param_id: id } if id == param_id
+                    )
+                })
+                .collect();
+
+            let (mut normalized, min, max, step_count) = if apply_automation {
+                if let Some(lane) = lane {
+                    let Some(value) = Self::evaluate_lane_value(&lane.points, beat) else {
+                        continue;
+                    };
+                    (value, lane.min, lane.max, lane.step_count)
+                } else if let Some(first) = mods.first() {
+                    (
+                        first.center as f64,
+                        first.min,
+                        first.max,
+                        first.step_count,
+                    )
+                } else {
+                    continue;
+                }
+            } else if let Some(first) = mods.first() {
+                (
+                    first.center as f64,
+                    first.min,
+                    first.max,
+                    first.step_count,
+                )
+            } else {
                 continue;
             };
-            let Some(normalized) = Self::evaluate_lane_value(&lane.points, beat) else {
-                continue;
-            };
-            let native = Self::normalized_to_native(normalized, lane.min, lane.max, lane.step_count);
+
+            if apply_modulation {
+                for modulator in mods {
+                    let free_phase = lfo_phases
+                        .get(&(track_id, modulator.id))
+                        .copied()
+                        .unwrap_or(0.0);
+                    let signal = Self::modulator_signal(modulator, beat, free_phase);
+                    normalized += (modulator.depth as f64) * signal;
+                }
+            }
+
+            let native = Self::normalized_to_native(normalized, min, max, step_count);
             plugin.push_param(param_id, native, 0);
         }
     }
 
-    fn push_automation_for_device(
+    fn push_params_for_device(
+        track_id: u64,
         lanes: &[RtAutomationLane],
+        modulators: &[RtModulator],
+        lfo_phases: &HashMap<(u64, u64), f64>,
         beat: f32,
         device_id: u64,
+        apply_automation: bool,
+        apply_modulation: bool,
         plugin: &mut HostedPlugin,
     ) {
-        for lane in lanes {
-            let RtAutomationTarget::Device {
-                device_id: lane_device_id,
-                param_id,
-            } = lane.target
-            else {
-                continue;
-            };
-            if lane_device_id != device_id {
-                continue;
+        let mut param_ids: HashSet<u32> = HashSet::new();
+        if apply_automation {
+            for lane in lanes {
+                if let RtAutomationTarget::Device {
+                    device_id: lane_device_id,
+                    param_id,
+                } = lane.target
+                {
+                    if lane_device_id == device_id {
+                        param_ids.insert(param_id);
+                    }
+                }
             }
-            let Some(normalized) = Self::evaluate_lane_value(&lane.points, beat) else {
+        }
+        if apply_modulation {
+            for modulator in modulators {
+                if let RtAutomationTarget::Device {
+                    device_id: mod_device_id,
+                    param_id,
+                } = modulator.target
+                {
+                    if mod_device_id == device_id {
+                        param_ids.insert(param_id);
+                    }
+                }
+            }
+        }
+
+        for param_id in param_ids {
+            let lane = lanes.iter().find(|lane| {
+                matches!(
+                    lane.target,
+                    RtAutomationTarget::Device {
+                        device_id: did,
+                        param_id: pid,
+                    } if did == device_id && pid == param_id
+                )
+            });
+            let mods: Vec<&RtModulator> = modulators
+                .iter()
+                .filter(|modulator| {
+                    matches!(
+                        modulator.target,
+                        RtAutomationTarget::Device {
+                            device_id: did,
+                            param_id: pid,
+                        } if did == device_id && pid == param_id
+                    )
+                })
+                .collect();
+
+            let (mut normalized, min, max, step_count) = if apply_automation {
+                if let Some(lane) = lane {
+                    let Some(value) = Self::evaluate_lane_value(&lane.points, beat) else {
+                        continue;
+                    };
+                    (value, lane.min, lane.max, lane.step_count)
+                } else if let Some(first) = mods.first() {
+                    (
+                        first.center as f64,
+                        first.min,
+                        first.max,
+                        first.step_count,
+                    )
+                } else {
+                    continue;
+                }
+            } else if let Some(first) = mods.first() {
+                (
+                    first.center as f64,
+                    first.min,
+                    first.max,
+                    first.step_count,
+                )
+            } else {
                 continue;
             };
-            let native = Self::normalized_to_native(normalized, lane.min, lane.max, lane.step_count);
+
+            if apply_modulation {
+                for modulator in mods {
+                    let free_phase = lfo_phases
+                        .get(&(track_id, modulator.id))
+                        .copied()
+                        .unwrap_or(0.0);
+                    let signal = Self::modulator_signal(modulator, beat, free_phase);
+                    normalized += (modulator.depth as f64) * signal;
+                }
+            }
+
+            let native = Self::normalized_to_native(normalized, min, max, step_count);
             plugin.push_param(param_id, native, 0);
         }
     }
@@ -540,6 +831,7 @@ impl AudioCallbackState {
             .map(|beats| beats as f32)
             .unwrap_or(0.0);
         let apply_automation = self.transport.playing;
+        let apply_modulation = self.transport.playing;
 
         let track_ids: Vec<u64> = self.voices.keys().copied().collect();
         for track_id in track_ids {
@@ -550,7 +842,26 @@ impl AudioCallbackState {
                 .unwrap_or(default_channel);
             self.tmp_l[..frames].fill(0.0);
             self.tmp_r[..frames].fill(0.0);
-            let lanes = self.automation.get(&track_id).map(Vec::as_slice).unwrap_or(&[]);
+            let lanes = self
+                .automation
+                .get(&track_id)
+                .cloned()
+                .unwrap_or_default();
+            let modulators = self
+                .modulators
+                .get(&track_id)
+                .cloned()
+                .unwrap_or_default();
+            if apply_modulation {
+                self.advance_lfo_phases(track_id, &modulators, frames);
+            }
+            // Snapshot phases before borrowing voices mutably.
+            let mut track_phases: HashMap<(u64, u64), f64> = HashMap::new();
+            for modulator in &modulators {
+                if let Some(phase) = self.lfo_phases.get(&(track_id, modulator.id)) {
+                    track_phases.insert((track_id, modulator.id), *phase);
+                }
+            }
 
             let mut voice_kind = TrackVoiceKind::None;
             let mut active_voices = 0_u32;
@@ -570,8 +881,17 @@ impl AudioCallbackState {
                 Some(TrackVoice::Plugin(plugin)) => {
                     voice_kind = TrackVoiceKind::Plugin;
                     if let Ok(mut guard) = plugin.try_lock() {
-                        if apply_automation {
-                            Self::push_automation_for_instrument(lanes, block_start_beat, &mut guard);
+                        if apply_automation || apply_modulation {
+                            Self::push_params_for_instrument(
+                                track_id,
+                                &lanes,
+                                &modulators,
+                                &track_phases,
+                                block_start_beat,
+                                apply_automation,
+                                apply_modulation,
+                                &mut guard,
+                            );
                         }
                         guard.process_block(
                             frames,
@@ -637,11 +957,16 @@ impl AudioCallbackState {
                         continue;
                     }
                     if let Ok(mut guard) = slot.plugin.try_lock() {
-                        if apply_automation {
-                            Self::push_automation_for_device(
-                                lanes,
+                        if apply_automation || apply_modulation {
+                            Self::push_params_for_device(
+                                track_id,
+                                &lanes,
+                                &modulators,
+                                &track_phases,
                                 block_start_beat,
                                 slot.device_id,
+                                apply_automation,
+                                apply_modulation,
                                 &mut guard,
                             );
                         }
@@ -832,6 +1157,8 @@ pub struct AudioEngine {
     synced_master_gain_db: Option<f32>,
     /// Last automation payload sent to the audio thread per track.
     synced_automation: HashMap<u64, Vec<RtAutomationLane>>,
+    /// Last modulator payload sent to the audio thread per track.
+    synced_modulators: HashMap<u64, Vec<RtModulator>>,
     /// In-flight background plugin loads (track -> desired instrument).
     pending_loads: HashMap<u64, TrackInstrument>,
     load_tx: Option<SyncSender<VoiceLoadResult>>,
@@ -919,6 +1246,7 @@ impl AudioEngine {
                     synced_channels: HashMap::new(),
                     synced_master_gain_db: None,
                     synced_automation: HashMap::new(),
+                    synced_modulators: HashMap::new(),
                     pending_loads: HashMap::new(),
                     load_tx: Some(load_tx),
                     load_rx,
@@ -964,6 +1292,7 @@ impl AudioEngine {
                 synced_channels: HashMap::new(),
                 synced_master_gain_db: None,
                 synced_automation: HashMap::new(),
+                synced_modulators: HashMap::new(),
                 pending_loads: HashMap::new(),
                 load_tx: Some(load_tx),
                 load_rx,
@@ -1461,6 +1790,108 @@ impl AudioEngine {
             self.send(AudioCommand::SetAutomation {
                 track_id: track.id,
                 lanes,
+            });
+        }
+
+        self.flush_pending_cmds();
+    }
+
+    pub fn sync_modulators(&mut self, project: &Project) {
+        self.flush_pending_cmds();
+
+        let live_ids: HashSet<u64> = project.tracks.iter().map(|track| track.id).collect();
+        let stale: Vec<u64> = self
+            .synced_modulators
+            .keys()
+            .copied()
+            .filter(|track_id| !live_ids.contains(track_id))
+            .collect();
+        for track_id in stale {
+            self.synced_modulators.remove(&track_id);
+            self.send(AudioCommand::SetModulators {
+                track_id,
+                modulators: Vec::new(),
+            });
+        }
+
+        for track in &project.tracks {
+            let mut modulators = Vec::new();
+            for modulator in &track.modulators {
+                if !modulator.enabled {
+                    continue;
+                }
+                let target = match &modulator.target {
+                    AutomationTarget::Instrument { param_id } => RtAutomationTarget::Instrument {
+                        param_id: *param_id,
+                    },
+                    AutomationTarget::Device {
+                        device_id,
+                        param_id,
+                    } => RtAutomationTarget::Device {
+                        device_id: *device_id,
+                        param_id: *param_id,
+                    },
+                };
+                let Some(param_info) = self.param_info_for_target(track.id, &modulator.target)
+                else {
+                    continue;
+                };
+                if !param_info.automatable {
+                    continue;
+                }
+                let legacy_cycle = if matches!(modulator.shape, LfoShape::Custom) {
+                    modulator.mseg_legacy_cycle_beats()
+                } else {
+                    1.0
+                };
+                let rate = match modulator.rate {
+                    LfoRate::SyncBeats { beats } => RtLfoRate::SyncBeats {
+                        beats: (beats * legacy_cycle).max(0.0625),
+                    },
+                    LfoRate::Hz { hz } => RtLfoRate::Hz { hz: hz.max(0.0) },
+                };
+                let mut mseg_points = modulator.mseg_points.clone();
+                mseg_points.sort_by(|a, b| a.beat.total_cmp(&b.beat));
+                if matches!(modulator.shape, LfoShape::Custom) {
+                    normalize_mseg_points(&mut mseg_points, legacy_cycle);
+                }
+                if matches!(modulator.shape, LfoShape::Custom) && mseg_points.is_empty() {
+                    continue;
+                }
+                modulators.push(RtModulator {
+                    id: modulator.id,
+                    target,
+                    shape: modulator.shape,
+                    rate,
+                    depth: modulator.depth.clamp(0.0, 1.0),
+                    phase: modulator.phase.rem_euclid(1.0),
+                    bipolar: modulator.bipolar,
+                    center: modulator.center.clamp(0.0, 1.0),
+                    mseg_points,
+                    min: param_info.min,
+                    max: param_info.max,
+                    step_count: param_info.step_count,
+                });
+            }
+
+            let changed = self
+                .synced_modulators
+                .get(&track.id)
+                .map(|prev| prev != &modulators)
+                .unwrap_or(true);
+            if !changed {
+                continue;
+            }
+
+            if modulators.is_empty() {
+                self.synced_modulators.remove(&track.id);
+            } else {
+                self.synced_modulators
+                    .insert(track.id, modulators.clone());
+            }
+            self.send(AudioCommand::SetModulators {
+                track_id: track.id,
+                modulators,
             });
         }
 
@@ -2141,6 +2572,8 @@ fn start_stream(
         fx_chains: HashMap::new(),
         sample_clips: HashMap::new(),
         automation: HashMap::new(),
+        modulators: HashMap::new(),
+        lfo_phases: HashMap::new(),
         master_gain: 1.0,
         commands: rx,
         channels,

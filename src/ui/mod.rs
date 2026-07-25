@@ -5,6 +5,7 @@ mod devices;
 mod inspector;
 mod instrument_menu;
 mod mixer;
+mod modulator;
 mod performance;
 mod piano_roll;
 mod playlist;

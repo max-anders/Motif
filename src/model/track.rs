@@ -4,6 +4,7 @@ use super::automation::AutomationLane;
 use super::clip::{Clip, MidiClip, DEFAULT_CLIP_LENGTH_BEATS};
 use super::instrument::TrackInstrument;
 use super::mixer::{db_to_linear, pan_gains, Device, Macro, Send};
+use super::modulator::LfoModulator;
 use super::serde_b64;
 use super::{Note, Project};
 
@@ -36,6 +37,9 @@ pub struct Track {
     /// Beat/value automation curves for instrument or insert-FX parameters.
     #[serde(default)]
     pub automation_lanes: Vec<AutomationLane>,
+    /// Host-side LFO / MSEG modulators for instrument or insert-FX parameters.
+    #[serde(default)]
+    pub modulators: Vec<LfoModulator>,
     #[serde(default)]
     pub instrument: TrackInstrument,
     /// Opaque CLAP/VST3 state (RKST envelope). Restored after plugin activate.

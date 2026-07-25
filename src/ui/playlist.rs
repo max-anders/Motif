@@ -9,6 +9,9 @@ use crate::model::{
     AudioClip, Clip, EditHistory, Project, Track, TrackInstrument, DEFAULT_CLIP_LENGTH_BEATS,
     MAX_PITCH, MIN_PITCH, SNAP_BEATS,
 };
+use crate::ui::automation::{
+    automation_extra_height, AutomationUi, ADD_AUTOMATION_ROW_HEIGHT, AUTOMATION_LANE_BODY_HEIGHT,
+};
 use crate::ui::instrument_menu::{
     choice_to_instrument, show_instrument_picker, track_name_for_choice, InstrumentChoice,
     MENU_LIST_MAX_HEIGHT,
@@ -115,6 +118,9 @@ pub struct PlaylistUi {
     change_instrument_search: String,
     /// Last instrument load errors for display on lanes.
     instrument_errors: HashMap<u64, String>,
+    /// Tracks whose automation fold-out is expanded under the clip lane.
+    automation_expanded: HashSet<u64>,
+    automation: AutomationUi,
 }
 
 impl Default for PlaylistUi {
@@ -136,7 +142,64 @@ impl Default for PlaylistUi {
             add_track_search: String::new(),
             change_instrument_search: String::new(),
             instrument_errors: HashMap::new(),
+            automation_expanded: HashSet::new(),
+            automation: AutomationUi::default(),
         }
+    }
+}
+
+/// Per-track vertical layout for variable-height playlist rows.
+#[derive(Debug, Clone)]
+struct TrackLayout {
+    /// Y offset of each track block relative to `body.top()`.
+    tops: Vec<f32>,
+    /// Total block height (clip lane + optional automation fold-out).
+    heights: Vec<f32>,
+}
+
+impl TrackLayout {
+    fn from_project(project: &Project, automation_expanded: &HashSet<u64>) -> Self {
+        let mut tops = Vec::with_capacity(project.tracks.len());
+        let mut heights = Vec::with_capacity(project.tracks.len());
+        let mut y = 0.0_f32;
+        for track in &project.tracks {
+            let expanded = automation_expanded.contains(&track.id);
+            let height =
+                LANE_HEIGHT + automation_extra_height(track.automation_lanes.len(), expanded);
+            tops.push(y);
+            heights.push(height);
+            y += height;
+        }
+        Self { tops, heights }
+    }
+
+    fn total_height(&self) -> f32 {
+        self.tops
+            .last()
+            .zip(self.heights.last())
+            .map(|(top, height)| top + height)
+            .unwrap_or(0.0)
+            .max(LANE_HEIGHT)
+    }
+
+    fn clip_lane_rect(&self, body: Rect, track_index: usize) -> Option<Rect> {
+        let top = *self.tops.get(track_index)?;
+        let lane_top = body.top() + top;
+        Some(Rect::from_min_max(
+            Pos2::new(body.left(), lane_top),
+            Pos2::new(body.right(), lane_top + LANE_HEIGHT),
+        ))
+    }
+
+    fn track_at_y(&self, body: Rect, y: f32) -> Option<(usize, bool)> {
+        let rel = y - body.top();
+        for (index, (top, height)) in self.tops.iter().zip(self.heights.iter()).enumerate() {
+            if rel >= *top && rel < top + height {
+                let in_clip_lane = rel < top + LANE_HEIGHT;
+                return Some((index, in_clip_lane));
+            }
+        }
+        None
     }
 }
 
@@ -241,9 +304,8 @@ impl PlaylistUi {
             beat_width: self.beat_width,
         };
         let total_beats = project.arrangement_length_beats();
-        let lane_count = project.tracks.len().max(1);
-        let content_height =
-            RULER_HEIGHT + lane_count as f32 * LANE_HEIGHT + ADD_TRACK_ROW_HEIGHT;
+        let layout = TrackLayout::from_project(project, &self.automation_expanded);
+        let content_height = RULER_HEIGHT + layout.total_height() + ADD_TRACK_ROW_HEIGHT;
         let content_width = TRACK_HEADER_WIDTH + total_beats * metrics.beat_width;
         let viewport = ui.available_size();
         let canvas_size = Vec2::new(
@@ -264,6 +326,7 @@ impl PlaylistUi {
                     let content = response.rect;
                     painter.rect_filled(content, 0.0, theme.panel_bg);
                     let body = timeline_body_rect(content);
+                    let layout = TrackLayout::from_project(project, &self.automation_expanded);
 
                     // Visible viewport in screen space. Ruler stays pinned to the top
                     // (follows horizontal scroll); track headers stay pinned to the left
@@ -323,6 +386,7 @@ impl PlaylistUi {
                             &response,
                             body,
                             sticky_headers,
+                            &layout,
                             metrics,
                             project,
                             history,
@@ -343,11 +407,9 @@ impl PlaylistUi {
                     let timeline_painter = painter.with_clip_rect(timeline_clip);
 
                     for (index, track) in project.tracks.iter().enumerate() {
-                        let lane_top = body.top() + index as f32 * LANE_HEIGHT;
-                        let lane_rect = Rect::from_min_max(
-                            Pos2::new(body.left(), lane_top),
-                            Pos2::new(body.right(), lane_top + LANE_HEIGHT),
-                        );
+                        let Some(lane_rect) = layout.clip_lane_rect(body, index) else {
+                            continue;
+                        };
                         let audible = project.track_audible(track);
                         draw_lane_timeline(
                             &timeline_painter,
@@ -372,10 +434,12 @@ impl PlaylistUi {
                     // Sticky chrome on top of scrolled content.
                     let track_ids: Vec<u64> = project.tracks.iter().map(|t| t.id).collect();
                     for (index, track) in project.tracks.iter().enumerate() {
-                        let lane_top = body.top() + index as f32 * LANE_HEIGHT;
+                        let Some(lane_rect) = layout.clip_lane_rect(body, index) else {
+                            continue;
+                        };
                         let header = Rect::from_min_max(
-                            Pos2::new(sticky_headers.left(), lane_top),
-                            Pos2::new(sticky_headers.right(), lane_top + LANE_HEIGHT),
+                            Pos2::new(sticky_headers.left(), lane_rect.top()),
+                            Pos2::new(sticky_headers.right(), lane_rect.bottom()),
                         );
                         draw_track_header(
                             &painter.with_clip_rect(sticky_headers),
@@ -437,12 +501,16 @@ impl PlaylistUi {
                         theme,
                     );
 
-                    // Track header controls (M/S, context menu).
-                    for (index, track_id) in track_ids.into_iter().enumerate() {
-                        let lane_top = body.top() + index as f32 * LANE_HEIGHT;
+                    // Track header controls (M/S, context menu, automation disclosure).
+                    // Disclosure toggles apply next frame so layout height stays consistent.
+                    let mut next_automation_expanded = self.automation_expanded.clone();
+                    for (index, track_id) in track_ids.iter().copied().enumerate() {
+                        let Some(lane_rect) = layout.clip_lane_rect(body, index) else {
+                            continue;
+                        };
                         let header = Rect::from_min_max(
-                            Pos2::new(sticky_headers.left(), lane_top),
-                            Pos2::new(sticky_headers.right(), lane_top + LANE_HEIGHT),
+                            Pos2::new(sticky_headers.left(), lane_rect.top()),
+                            Pos2::new(sticky_headers.right(), lane_rect.bottom()),
                         );
                         let track_snapshot = project
                             .tracks
@@ -452,6 +520,7 @@ impl PlaylistUi {
                         let Some(track_snapshot) = track_snapshot else {
                             continue;
                         };
+                        let mut auto_expanded = next_automation_expanded.contains(&track_id);
                         track_header_row(
                             ui,
                             header,
@@ -470,7 +539,96 @@ impl PlaylistUi {
                             &mut self.plugin_editor_request,
                             &mut self.delete_track_request,
                             &mut self.hovered_track_header,
+                            Some(&mut auto_expanded),
                             "playlist",
+                        );
+                        if auto_expanded {
+                            next_automation_expanded.insert(track_id);
+                        } else {
+                            next_automation_expanded.remove(&track_id);
+                        }
+                    }
+
+                    // Automation fold-out: sticky sub-headers + timeline curves.
+                    // Use the layout's expanded set (pre-toggle) for this frame's geometry.
+                    for (index, track_id) in track_ids.iter().copied().enumerate() {
+                        if !self.automation_expanded.contains(&track_id) {
+                            continue;
+                        }
+                        let Some(clip_lane) = layout.clip_lane_rect(body, index) else {
+                            continue;
+                        };
+                        let track_snapshot = project.track(track_id).cloned();
+                        let Some(track_snapshot) = track_snapshot else {
+                            continue;
+                        };
+                        let lane_ids: Vec<u64> = track_snapshot
+                            .automation_lanes
+                            .iter()
+                            .map(|lane| lane.id)
+                            .collect();
+                        for (lane_i, lane_id) in lane_ids.iter().copied().enumerate() {
+                            let sub_top =
+                                clip_lane.bottom() + lane_i as f32 * AUTOMATION_LANE_BODY_HEIGHT;
+                            let sub_header = Rect::from_min_max(
+                                Pos2::new(sticky_headers.left(), sub_top),
+                                Pos2::new(
+                                    sticky_headers.right(),
+                                    sub_top + AUTOMATION_LANE_BODY_HEIGHT,
+                                ),
+                            );
+                            let auto_body = Rect::from_min_max(
+                                Pos2::new(body.left(), sub_top),
+                                Pos2::new(body.right(), sub_top + AUTOMATION_LANE_BODY_HEIGHT),
+                            );
+                            self.automation.show_lane_header(
+                                ui,
+                                sub_header,
+                                project,
+                                track_id,
+                                lane_id,
+                                &track_snapshot,
+                                engine,
+                                history,
+                                theme,
+                            );
+                            self.automation.show_lane_timeline(
+                                ui,
+                                auto_body,
+                                metrics,
+                                project,
+                                track_id,
+                                lane_id,
+                                history,
+                                theme,
+                                total_beats,
+                                project.beats_per_bar,
+                            );
+                        }
+                        let add_top = clip_lane.bottom()
+                            + lane_ids.len() as f32 * AUTOMATION_LANE_BODY_HEIGHT;
+                        let add_row = Rect::from_min_max(
+                            Pos2::new(sticky_headers.left(), add_top),
+                            Pos2::new(
+                                sticky_headers.right(),
+                                add_top + ADD_AUTOMATION_ROW_HEIGHT,
+                            ),
+                        );
+                        // Dim empty timeline strip next to the add-row.
+                        let add_body = Rect::from_min_max(
+                            Pos2::new(body.left(), add_top),
+                            Pos2::new(body.right(), add_top + ADD_AUTOMATION_ROW_HEIGHT),
+                        );
+                        ui.painter()
+                            .with_clip_rect(timeline_clip)
+                            .rect_filled(add_body, 0.0, theme.panel_bg.gamma_multiply(0.9));
+                        self.automation.show_add_lane_row(
+                            ui,
+                            add_row,
+                            project,
+                            track_id,
+                            history,
+                            theme,
                         );
                     }
 
@@ -478,7 +636,7 @@ impl PlaylistUi {
                     let add_center = Pos2::new(
                         (sticky_headers.right() + viewport.right()) * 0.5,
                         body.top()
-                            + lane_count as f32 * LANE_HEIGHT
+                            + layout.total_height()
                             + ADD_TRACK_GAP
                             + ADD_TRACK_BUTTON_SIZE * 0.5,
                     );
@@ -509,6 +667,8 @@ impl PlaylistUi {
                         .response
                         .on_hover_text("Add track");
                     });
+
+                    self.automation_expanded = next_automation_expanded;
                 })
         });
 
@@ -600,6 +760,7 @@ pub(crate) fn track_header_row(
     plugin_editor_request: &mut Option<PluginEditorRequest>,
     delete_track_request: &mut Option<u64>,
     hovered_track_header: &mut Option<u64>,
+    automation_expanded: Option<&mut bool>,
     id_scope: &'static str,
 ) {
     draw_track_header(
@@ -627,6 +788,40 @@ pub(crate) fn track_header_row(
     }
     if header_response.clicked() {
         *select_track_request = Some(track_id);
+    }
+
+    if let Some(expanded) = automation_expanded {
+        let disclose = Rect::from_min_size(
+            Pos2::new(header.left() + 2.0, header.bottom() - 20.0),
+            Vec2::new(18.0, 16.0),
+        );
+        ui.allocate_ui_at_rect(disclose, |ui| {
+            let label = if *expanded { "v" } else { ">" };
+            let lane_count = track_snapshot.automation_lanes.len();
+            let tip = if *expanded {
+                "Collapse automation lanes"
+            } else if lane_count == 0 {
+                "Show automation lanes"
+            } else {
+                "Show automation lanes"
+            };
+            if ui
+                .add(
+                    egui::Button::new(
+                        egui::RichText::new(label)
+                            .size(11.0)
+                            .color(theme.text_muted)
+                            .monospace(),
+                    )
+                    .fill(theme.widget_bg)
+                    .min_size(Vec2::new(16.0, 14.0)),
+                )
+                .on_hover_text(tip)
+                .clicked()
+            {
+                *expanded = !*expanded;
+            }
+        });
     }
 
     let controls = Rect::from_min_max(
@@ -1072,6 +1267,7 @@ fn update_clip_resize_hover_cursor(
     response: &Response,
     body: Rect,
     sticky_headers: Rect,
+    layout: &TrackLayout,
     project: &Project,
     metrics: TimelineMetrics,
 ) {
@@ -1081,11 +1277,15 @@ fn update_clip_resize_hover_cursor(
     if !body.contains(hover) || sticky_headers.contains(hover) {
         return;
     }
-    let track_index = ((hover.y - body.top()) / LANE_HEIGHT).floor() as usize;
-    if track_index >= project.tracks.len() {
+    let Some((track_index, in_clip_lane)) = layout.track_at_y(body, hover.y) else {
+        return;
+    };
+    if !in_clip_lane {
         return;
     }
-    let lane = lane_rect_for_track(body, track_index);
+    let Some(lane) = layout.clip_lane_rect(body, track_index) else {
+        return;
+    };
     let Some(clip) = hit_test_clip(
         body,
         lane,
@@ -1103,7 +1303,9 @@ fn update_clip_resize_hover_cursor(
     }
 }
 
-fn lane_rect_for_track(body: Rect, track_index: usize) -> Rect {
+/// Fixed-height clip lane for single-track views (devices mini-playlist).
+#[allow(dead_code)]
+pub(crate) fn lane_rect_for_track(body: Rect, track_index: usize) -> Rect {
     let lane_top = body.top() + track_index as f32 * LANE_HEIGHT;
     Rect::from_min_max(
         Pos2::new(body.left(), lane_top),
@@ -1113,6 +1315,7 @@ fn lane_rect_for_track(body: Rect, track_index: usize) -> Rect {
 
 fn select_clips_in_rect(
     body: Rect,
+    layout: &TrackLayout,
     project: &Project,
     selection: Rect,
     metrics: TimelineMetrics,
@@ -1122,12 +1325,19 @@ fn select_clips_in_rect(
         .iter()
         .enumerate()
         .flat_map(|(index, track)| {
-            let lane = lane_rect_for_track(body, index);
-            track.clips.iter().filter_map(move |clip| {
-                let clip_rect = clip_block_rect(body, lane, clip, metrics);
-                clip_rect.intersects(selection).then_some(clip.id())
-            })
+            let lane = layout.clip_lane_rect(body, index)?;
+            Some(
+                track
+                    .clips
+                    .iter()
+                    .filter_map(move |clip| {
+                        let clip_rect = clip_block_rect(body, lane, clip, metrics);
+                        clip_rect.intersects(selection).then_some(clip.id())
+                    })
+                    .collect::<Vec<_>>(),
+            )
         })
+        .flatten()
         .collect()
 }
 
@@ -1174,6 +1384,7 @@ fn handle_clip_pointer(
     response: &Response,
     body: Rect,
     sticky_headers: Rect,
+    layout: &TrackLayout,
     metrics: TimelineMetrics,
     project: &mut Project,
     history: &mut EditHistory,
@@ -1184,7 +1395,7 @@ fn handle_clip_pointer(
     drag_moved: &mut bool,
     selected_track: &mut Option<u64>,
 ) {
-    update_clip_resize_hover_cursor(response, body, sticky_headers, project, metrics);
+    update_clip_resize_hover_cursor(response, body, sticky_headers, layout, project, metrics);
 
     let primary_down = response
         .ctx
@@ -1242,7 +1453,8 @@ fn handle_clip_pointer(
     if let Some(active_marquee) = marquee.as_mut() {
         if primary_down {
             active_marquee.current = pointer;
-            *selected = select_clips_in_rect(body, project, active_marquee.rect(), metrics);
+            *selected =
+                select_clips_in_rect(body, layout, project, active_marquee.rect(), metrics);
             sync_selected_track_from_clips(project, selected, selected_track);
         }
         return;
@@ -1257,13 +1469,17 @@ fn handle_clip_pointer(
         return;
     }
 
-    // Find which track/lane was hit
-    let track_index = ((press_pos.y - body.top()) / LANE_HEIGHT).floor() as usize;
-    if track_index >= project.tracks.len() {
+    // Find which track clip-lane was hit (ignore automation fold-out rows).
+    let Some((track_index, in_clip_lane)) = layout.track_at_y(body, press_pos.y) else {
+        return;
+    };
+    if !in_clip_lane {
         return;
     }
     let track_id = project.tracks[track_index].id;
-    let lane = lane_rect_for_track(body, track_index);
+    let Some(lane) = layout.clip_lane_rect(body, track_index) else {
+        return;
+    };
 
     if response.drag_started_by(egui::PointerButton::Primary)
         && is_timeline_pointer(lane, press_pos)
@@ -1354,6 +1570,7 @@ fn handle_clip_pointer(
             });
             *selected = select_clips_in_rect(
                 body,
+                layout,
                 project,
                 Rect::from_two_pos(press_pos, pointer),
                 metrics,
@@ -1398,7 +1615,7 @@ fn handle_clip_pointer(
     }
 
     if response.double_clicked_by(egui::PointerButton::Primary) && body.contains(pointer) {
-        if let Some(clip_id) = hit_test_clip_id(body, project, pointer, metrics) {
+        if let Some(clip_id) = hit_test_clip_id(body, layout, project, pointer, metrics) {
             selected.clear();
             selected.insert(clip_id);
             *selected_track = Some(track_id);
@@ -1626,15 +1843,16 @@ pub(crate) fn handle_single_track_clip_pointer(
 
 fn hit_test_clip_id(
     body: Rect,
+    layout: &TrackLayout,
     project: &Project,
     pos: Pos2,
     metrics: TimelineMetrics,
 ) -> Option<u64> {
-    let track_index = ((pos.y - body.top()) / LANE_HEIGHT).floor() as usize;
-    if track_index >= project.tracks.len() {
+    let (track_index, in_clip_lane) = layout.track_at_y(body, pos.y)?;
+    if !in_clip_lane {
         return None;
     }
-    let lane = lane_rect_for_track(body, track_index);
+    let lane = layout.clip_lane_rect(body, track_index)?;
     hit_test_clip(body, lane, &project.tracks[track_index].clips, pos, metrics).and_then(|clip| {
         if clip.as_midi().is_some() {
             Some(clip.id())

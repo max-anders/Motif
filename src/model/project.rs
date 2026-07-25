@@ -6,6 +6,7 @@ use super::clip::{Clip, MidiClip};
 use super::clipboard::{ClipboardClip, ClipboardNote};
 use super::instrument::{PluginFormat, TrackInstrument};
 use super::mixer::Device;
+use super::modulator::LfoModulator;
 use super::track::{migrate_notes_to_clip, Track};
 use super::Note;
 
@@ -49,6 +50,9 @@ pub struct Project {
     /// Missing on projects saved before automation lanes; starts at 1.
     #[serde(default = "default_next_automation_lane_id")]
     next_automation_lane_id: u64,
+    /// Missing on projects saved before modulators; starts at 1.
+    #[serde(default = "default_next_modulator_id")]
+    next_modulator_id: u64,
 }
 
 fn default_next_device_id() -> u64 {
@@ -56,6 +60,10 @@ fn default_next_device_id() -> u64 {
 }
 
 fn default_next_automation_lane_id() -> u64 {
+    1
+}
+
+fn default_next_modulator_id() -> u64 {
     1
 }
 
@@ -84,6 +92,7 @@ impl Default for Project {
             next_track_id: 2,
             next_device_id: 1,
             next_automation_lane_id: 1,
+            next_modulator_id: 1,
         };
         let track_id = project.add_track("Track 1", TrackInstrument::BuiltInPiano);
         project.add_clip_to_track(track_id, 0.0, 4.0);
@@ -334,6 +343,58 @@ impl Project {
             .find(|lane| lane.id == lane_id)
     }
 
+    pub fn next_modulator_id(&self) -> u64 {
+        self.next_modulator_id
+    }
+
+    pub fn bump_modulator_id(&mut self) {
+        self.next_modulator_id += 1;
+    }
+
+    /// Append an LFO/MSEG modulator to a track. Returns the new modulator id.
+    pub fn add_modulator(
+        &mut self,
+        track_id: u64,
+        target: AutomationTarget,
+        param_name: impl Into<String>,
+    ) -> Option<u64> {
+        let id = self.next_modulator_id();
+        self.bump_modulator_id();
+        let mut modulator = LfoModulator::new(id, target);
+        modulator.param_name = param_name.into();
+        self.track_mut(track_id)?.modulators.push(modulator);
+        Some(id)
+    }
+
+    /// Remove a modulator from a track. Returns `false` if the track or
+    /// modulator id is unknown (project unchanged).
+    pub fn remove_modulator(&mut self, track_id: u64, modulator_id: u64) -> bool {
+        let Some(track) = self.track_mut(track_id) else {
+            return false;
+        };
+        let before = track.modulators.len();
+        track.modulators.retain(|modulator| modulator.id != modulator_id);
+        track.modulators.len() != before
+    }
+
+    pub fn modulator(&self, track_id: u64, modulator_id: u64) -> Option<&LfoModulator> {
+        self.track(track_id)?
+            .modulators
+            .iter()
+            .find(|modulator| modulator.id == modulator_id)
+    }
+
+    pub fn modulator_mut(
+        &mut self,
+        track_id: u64,
+        modulator_id: u64,
+    ) -> Option<&mut LfoModulator> {
+        self.track_mut(track_id)?
+            .modulators
+            .iter_mut()
+            .find(|modulator| modulator.id == modulator_id)
+    }
+
     /// Append a plugin effect to a track's insert chain. Returns the new device id.
     pub fn add_device(
         &mut self,
@@ -404,6 +465,7 @@ impl Project {
             devices: Vec::new(),
             macros: Vec::new(),
             automation_lanes: Vec::new(),
+            modulators: Vec::new(),
             instrument,
             plugin_state: None,
             clips: Vec::new(),
@@ -951,6 +1013,7 @@ impl Project {
             devices: Vec::new(),
             macros: Vec::new(),
             automation_lanes: Vec::new(),
+            modulators: Vec::new(),
             instrument: TrackInstrument::BuiltInPiano,
             plugin_state: None,
             clips: vec![Clip::Midi(clip)],
@@ -969,6 +1032,7 @@ impl Project {
             next_track_id: 2,
             next_device_id: 1,
             next_automation_lane_id: 1,
+            next_modulator_id: 1,
         })
     }
 }
@@ -1546,7 +1610,78 @@ mod tests {
         }"#;
         let project = Project::from_json(json).expect("parse");
         assert!(project.tracks[0].automation_lanes.is_empty());
+        assert!(project.tracks[0].modulators.is_empty());
         assert_eq!(project.next_automation_lane_id(), 1);
+        assert_eq!(project.next_modulator_id(), 1);
+    }
+
+    #[test]
+    fn modulator_round_trip_in_envelope() {
+        let mut project = Project::default();
+        let track_id = project.tracks[0].id;
+        let mod_id = project
+            .add_modulator(
+                track_id,
+                AutomationTarget::Instrument { param_id: 7 },
+                "Cutoff",
+            )
+            .expect("modulator");
+        {
+            let modulator = project.modulator_mut(track_id, mod_id).expect("mod");
+            modulator.shape = crate::model::LfoShape::Triangle;
+            modulator.rate = crate::model::LfoRate::Hz { hz: 2.5 };
+            modulator.depth = 0.4;
+            modulator.bipolar = false;
+            modulator.mseg_points.push(crate::model::AutomationPoint {
+                beat: 0.0,
+                value: 0.0,
+                curve: crate::model::CurveKind::Linear,
+            });
+            modulator.mseg_points.push(crate::model::AutomationPoint {
+                beat: 0.5,
+                value: 1.0,
+                curve: crate::model::CurveKind::Linear,
+            });
+            modulator.shape = crate::model::LfoShape::Custom;
+            modulator.mseg_length_beats = 2.0;
+        }
+
+        let json = serde_json::to_string(&crate::model::persistence::ProjectEnvelope::new(
+            project.clone(),
+        ))
+        .unwrap();
+        let loaded = Project::from_json(&json).unwrap();
+        assert_eq!(loaded.next_modulator_id(), 2);
+        let modulator = loaded.modulator(track_id, mod_id).expect("reloaded");
+        assert_eq!(modulator.param_name, "Cutoff");
+        assert_eq!(modulator.shape, crate::model::LfoShape::Custom);
+        assert_eq!(modulator.rate, crate::model::LfoRate::Hz { hz: 2.5 });
+        assert!((modulator.depth - 0.4).abs() < f32::EPSILON);
+        assert!(!modulator.bipolar);
+        assert_eq!(modulator.mseg_points.len(), 2);
+        assert!((modulator.mseg_length_beats - 2.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn modulator_add_remove_mut() {
+        let mut project = Project::default();
+        let track_id = project.tracks[0].id;
+        let mod_id = project
+            .add_modulator(
+                track_id,
+                AutomationTarget::Device {
+                    device_id: 3,
+                    param_id: 1,
+                },
+                "Gain",
+            )
+            .expect("modulator");
+        assert_eq!(project.track(track_id).unwrap().modulators.len(), 1);
+        project.modulator_mut(track_id, mod_id).unwrap().enabled = false;
+        assert!(!project.modulator(track_id, mod_id).unwrap().enabled);
+        assert!(project.remove_modulator(track_id, mod_id));
+        assert!(project.track(track_id).unwrap().modulators.is_empty());
+        assert!(!project.remove_modulator(track_id, mod_id));
     }
 
     #[test]

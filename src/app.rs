@@ -881,6 +881,7 @@ impl DawApp {
         self.engine.sync_samples(&self.project, &self.decoded_audio);
         self.engine.sync_channels(&self.project);
         self.engine.sync_automation(&self.project);
+        self.engine.sync_modulators(&self.project);
     }
 
     fn undo_edit(&mut self) {
@@ -1615,6 +1616,7 @@ impl eframe::App for DawApp {
         self.engine.sync_samples(&self.project, &self.decoded_audio);
         self.engine.sync_channels(&self.project);
         self.engine.sync_automation(&self.project);
+        self.engine.sync_modulators(&self.project);
         self.engine.advance(delta_seconds, playback);
         self.engine.schedule_project(&self.project);
         let editor_poll = self.engine.poll_plugin_editors();
@@ -1777,7 +1779,7 @@ impl eframe::App for DawApp {
         if self.devices_strip_visible() {
             egui::TopBottomPanel::bottom("devices_strip")
                 .default_height(DEVICES_STRIP_HEIGHT)
-                .resizable(false)
+                .resizable(true)
                 .show(ctx, |ui| {
                     let theme = self.settings.themes.colors().clone();
                     let strip_output = {

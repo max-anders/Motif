@@ -5,6 +5,7 @@ mod clipboard;
 mod history;
 mod instrument;
 mod mixer;
+mod modulator;
 mod note;
 mod persistence;
 mod project;
@@ -29,6 +30,8 @@ pub use instrument::{PluginFormat, TrackInstrument};
 pub use mixer::{
     db_to_linear, pan_gains, Device, Macro, Send, MAX_GAIN_DB, MIN_GAIN_DB,
 };
+#[allow(unused_imports)] // public modulator surface for UI / engine / tests
+pub use modulator::{LfoModulator, LfoRate, LfoShape};
 pub use note::Note;
 pub use persistence::{
     clear_recovery, ensure_motif_extension, format_unix_time, legacy_project_path, load_project_from,
