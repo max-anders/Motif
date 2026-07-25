@@ -13,6 +13,8 @@ pub const SETTINGS_FILE: &str = "settings.json";
 #[serde(rename_all = "snake_case")]
 pub enum Action {
     TogglePlayback,
+    /// Pause without returning to the playback start (or Play when stopped).
+    PauseInPlace,
     /// Toggle cycle/loop playback on the current loop region.
     ToggleLoop,
     DeleteSelection,
@@ -71,6 +73,7 @@ impl<'de> Deserialize<'de> for Action {
         let raw = String::deserialize(deserializer)?;
         match raw.as_str() {
             "toggle_playback" => Ok(Self::TogglePlayback),
+            "pause_in_place" => Ok(Self::PauseInPlace),
             "toggle_loop" => Ok(Self::ToggleLoop),
             "delete_selection" => Ok(Self::DeleteSelection),
             "delete_track" => Ok(Self::DeleteTrack),
@@ -103,6 +106,7 @@ impl<'de> Deserialize<'de> for Action {
                 other,
                 &[
                     "toggle_playback",
+                    "pause_in_place",
                     "toggle_loop",
                     "delete_selection",
                     "delete_track",
@@ -139,8 +143,9 @@ impl<'de> Deserialize<'de> for Action {
 
 impl Action {
     /// All actions in Settings / docs order (includes actions with no factory binding).
-    pub const ALL: [Self; 29] = [
+    pub const ALL: [Self; 30] = [
         Self::TogglePlayback,
+        Self::PauseInPlace,
         Self::ToggleLoop,
         Self::DeleteSelection,
         Self::DeleteTrack,
@@ -174,6 +179,7 @@ impl Action {
     pub fn label(self) -> &'static str {
         match self {
             Self::TogglePlayback => "Play / Pause",
+            Self::PauseInPlace => "Pause in place / Play",
             Self::ToggleLoop => "Loop",
             Self::DeleteSelection => "Delete selection",
             Self::DeleteTrack => "Delete track",
@@ -380,6 +386,10 @@ impl ShortcutRegistry {
         Self {
             bindings: vec![
                 (Action::TogglePlayback, Binding::Key(Chord::new(Key::Space))),
+                (
+                    Action::PauseInPlace,
+                    Binding::Key(Chord::shift(Key::Space)),
+                ),
                 (Action::ToggleLoop, Binding::Key(Chord::new(Key::L))),
                 (
                     Action::DeleteSelection,

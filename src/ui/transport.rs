@@ -76,8 +76,19 @@ impl TransportUi {
         let mut metronome_changed = false;
         ui.horizontal(|ui| {
             let play_label = if engine.is_playing() { "Pause" } else { "Play" };
-            if ui.button(play_label).clicked() {
-                engine.toggle_playback();
+            let play_resp = ui
+                .button(play_label)
+                .on_hover_text(
+                    "Space: pause returns to the start mark (triangle on the ruler).\n\
+                     Shift+Space (or Shift+click): pause and leave the playhead.",
+                );
+            if play_resp.clicked() {
+                let shift = ui.input(|i| i.modifiers.shift);
+                if shift && engine.is_playing() {
+                    engine.pause_in_place();
+                } else {
+                    engine.toggle_playback();
+                }
             }
             if ui.button("Stop").clicked() {
                 engine.stop();

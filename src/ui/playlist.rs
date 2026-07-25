@@ -19,7 +19,7 @@ use crate::ui::instrument_menu::{
 use crate::ui::theme::ThemeColors;
 use crate::ui::timeline::{
     apply_horizontal_wheel_controls, daw_editor_scroll_area, draw_loop_region, draw_playhead,
-    draw_ruler, draw_timeline_grid_lines, handle_loop_region_pointer,
+    draw_playback_anchor, draw_ruler, draw_timeline_grid_lines, handle_loop_region_pointer,
     handle_timeline_playhead_pointer, hit_test_loop_edge, is_timeline_pointer, timeline_body_rect,
     timeline_x, with_solid_scrollbars, x_to_beat, LoopEdge, TimelineMetrics, DEFAULT_BEAT_WIDTH,
     RULER_HEIGHT, TIMELINE_GUTTER_WIDTH,
@@ -491,8 +491,20 @@ impl PlaylistUi {
                         );
                     }
                     let playhead = engine.current_beats();
+                    let anchor = engine.playback_anchor_beats();
+                    let clip_painter = painter.with_clip_rect(playhead_clip);
+                    draw_playback_anchor(
+                        &clip_painter,
+                        sticky_ruler,
+                        body,
+                        metrics,
+                        anchor,
+                        playhead,
+                        true,
+                        theme,
+                    );
                     draw_playhead(
-                        &painter.with_clip_rect(playhead_clip),
+                        &clip_painter,
                         sticky_ruler,
                         body,
                         metrics,

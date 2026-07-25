@@ -20,7 +20,8 @@ use crate::ui::{
     AddBrowserUi, AppSettings, AudioImportRequest, BrowserTab, Chord, DevicesUi, MixerUi,
     PerformanceUi, PianoRollUi, PlaylistUi, PluginEditorRequest, PollFilter,
     ProjectBrowserAction, ProjectBrowserUi, SettingsAction, SettingsUi, TransportUi,
-    DEVICES_STRIP_HEIGHT, SETTINGS_FILE,
+    DEVICES_DOCK_MAX_WIDTH, DEVICES_DOCK_MIN_WIDTH, DEVICES_DOCK_WIDTH,
+    DEVICES_DOCK_WIDTH_DEVICES, SETTINGS_FILE, sync_devices_dock_panel_width,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1018,7 +1019,7 @@ impl DawApp {
             }))
         };
         self.history.push_before(self.project.clone());
-        let new_ids = self.project.duplicate_notes_in_clip(clip_id, &ids, span, 0);
+        let new_ids = self.project.duplicate_notes_in_clip(clip_id, &ids, span, 0, false);
         if !new_ids.is_empty() {
             self.piano_roll.set_selection(new_ids);
         }
@@ -1130,6 +1131,7 @@ impl DawApp {
         let new_ids = self.project.paste_notes_into_clip(clip_id, &notes, origin);
         if new_ids.is_empty() {
             self.project = before;
+            self.status_message = String::from("Paste failed (overlap)");
             return;
         }
         self.history.push_before(before);
@@ -1479,6 +1481,13 @@ impl DawApp {
         }
         match action {
             Action::TogglePlayback => self.engine.toggle_playback(),
+            Action::PauseInPlace => {
+                if self.engine.is_playing() {
+                    self.engine.pause_in_place();
+                } else {
+                    self.engine.play();
+                }
+            }
             Action::ToggleLoop => {
                 self.project.loop_enabled = !self.project.loop_enabled;
             }
@@ -1777,10 +1786,23 @@ impl eframe::App for DawApp {
         }
 
         if self.devices_strip_visible() {
-            egui::TopBottomPanel::bottom("devices_strip")
-                .default_height(DEVICES_STRIP_HEIGHT)
-                .resizable(true)
-                .show(ctx, |ui| {
+            let dock_track = self.selected_track;
+            sync_devices_dock_panel_width(ctx, dock_track, &self.devices);
+            let mods_open = dock_track.is_some_and(|id| self.devices.dock_shows_mod_column(id));
+            let panel = egui::SidePanel::right("devices_dock");
+            let panel = if mods_open {
+                panel
+                    .default_width(DEVICES_DOCK_WIDTH)
+                    .min_width(DEVICES_DOCK_MIN_WIDTH)
+                    .max_width(DEVICES_DOCK_MAX_WIDTH)
+                    .resizable(true)
+            } else {
+                panel
+                    .default_width(DEVICES_DOCK_WIDTH_DEVICES)
+                    .width_range(DEVICES_DOCK_WIDTH_DEVICES..=DEVICES_DOCK_WIDTH_DEVICES)
+                    .resizable(false)
+            };
+            panel.show(ctx, |ui| {
                     let theme = self.settings.themes.colors().clone();
                     let strip_output = {
                         let DawApp {

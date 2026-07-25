@@ -34,6 +34,17 @@ impl DawEngine for MockEngine {
     }
 
     fn pause(&mut self) {
+        if self.playing {
+            self.current_beats = self.playback_anchor_beats;
+        }
+        self.playing = false;
+    }
+
+    fn pause_in_place(&mut self) {
+        if !self.playing {
+            return;
+        }
+        self.playback_anchor_beats = self.current_beats;
         self.playing = false;
     }
 
@@ -60,6 +71,10 @@ impl DawEngine for MockEngine {
 
     fn current_beats(&self) -> f32 {
         self.current_beats
+    }
+
+    fn playback_anchor_beats(&self) -> f32 {
+        self.playback_anchor_beats
     }
 
     fn set_beats_per_second(&mut self, beats_per_second: f32) {

@@ -1140,6 +1140,8 @@ pub struct AudioEngine {
     playing: bool,
     current_beats: f32,
     previous_beats: f32,
+    /// Playhead position when playback last started; pause restores here.
+    playback_anchor_beats: f32,
     beats_per_second: f32,
     beats_per_bar: f32,
     loop_enabled: bool,
@@ -1235,6 +1237,7 @@ impl AudioEngine {
                     playing: false,
                     current_beats: 0.0,
                     previous_beats: 0.0,
+                    playback_anchor_beats: 0.0,
                     beats_per_second,
                     beats_per_bar: 4.0,
                     loop_enabled: false,
@@ -1281,6 +1284,7 @@ impl AudioEngine {
                 playing: false,
                 current_beats: 0.0,
                 previous_beats: 0.0,
+                playback_anchor_beats: 0.0,
                 beats_per_second,
                 beats_per_bar: 4.0,
                 loop_enabled: false,
@@ -1901,12 +1905,28 @@ impl AudioEngine {
 
 impl DawEngine for AudioEngine {
     fn play(&mut self) {
+        self.playback_anchor_beats = self.current_beats;
         self.previous_beats = self.current_beats;
         self.playing = true;
         self.push_transport();
     }
 
     fn pause(&mut self) {
+        if self.playing {
+            self.current_beats = self.playback_anchor_beats;
+            self.previous_beats = self.current_beats;
+        }
+        self.playing = false;
+        self.silence_sequencer();
+        self.push_transport();
+    }
+
+    fn pause_in_place(&mut self) {
+        if !self.playing {
+            return;
+        }
+        self.playback_anchor_beats = self.current_beats;
+        self.previous_beats = self.current_beats;
         self.playing = false;
         self.silence_sequencer();
         self.push_transport();
@@ -1933,12 +1953,17 @@ impl DawEngine for AudioEngine {
     fn seek_beats(&mut self, beats: f32) {
         self.current_beats = beats.max(0.0);
         self.previous_beats = self.current_beats;
+        self.playback_anchor_beats = self.current_beats;
         self.silence_sequencer();
         self.push_transport();
     }
 
     fn current_beats(&self) -> f32 {
         self.current_beats
+    }
+
+    fn playback_anchor_beats(&self) -> f32 {
+        self.playback_anchor_beats
     }
 
     fn set_beats_per_second(&mut self, beats_per_second: f32) {

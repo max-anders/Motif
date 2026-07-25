@@ -114,16 +114,16 @@ cargo run --release
 
 - **Back to playlist** or **Escape** - return to arrangement
 - **Open from playlist** - horizontal zoom starts at the zoom-out floor (whole clip in view); wheel zoom afterward as usual
-- **Left-click empty grid** - add a note (1 beat, snapped to 1/16)
+- **Left-click empty grid** - add a note (1 beat, snapped to 1/16; rejected if it would overlap another note on the same pitch)
 - **Left-click note** - select note
 - **Ctrl/Cmd+A** - select all notes in the clip (remappable)
-- **Shift+Up / Shift+Down** - move selected note(s) up/down one semitone (remappable)
+- **Shift+Up / Shift+Down** - move selected note(s) up/down one semitone (remappable; blocked/clamped if same-pitch overlap)
 - **Ctrl/Cmd+Shift+Up / Down** - move selected note(s) up/down one octave (remappable)
 - **Drag empty grid** - marquee multi-select
-- **Drag note body** - move selected note(s) (pitch/start)
+- **Drag note body** - move selected note(s) (pitch/start; same-pitch notes cannot overlap; adjacent OK)
 - **Alt + drag note body or resize** - free horizontal placement (no 1/16 snap)
 - **Shift + drag note body** - duplicate selection, then move the copies
-- **Drag left/right edge** - resize note
+- **Drag left/right edge** - resize note (stops at same-pitch neighbors)
 - **Press / drag piano keys** - audition pitches (active track instrument)
 - **Left-click / drag ruler** - move playhead (mapped to arrangement time)
 - **Shift + left-click**, **right-click empty grid**, or **right-click drag** on the grid - move playhead (right-click on a note still deletes)
@@ -141,10 +141,11 @@ cargo run --release
 
 ### Transport
 
-- **Play / Pause** - play arrangement notes through each track's instrument (playhead loops)
+- **Play / Pause** - play arrangement notes through each track's instrument (playhead loops). Pause returns the playhead to where playback started (triangle mark on the ruler). **Shift+Space** / Shift+click Pause leaves the playhead in place
 - **Stop** - stop, silence, and return to start
 - **Metronome** - checkbox in the transport bar; quarter-note clicks at project BPM while playing (downbeat accent on beat 1). Default **on**; persisted in `settings.json`. No clicks when stopped or during piano-key audition alone.
 - **Space** - play/pause (factory default; remappable)
+- **Shift+Space** - pause in place / play (factory default; remappable)
 - **File** menu - New / Open... / Open Recent / Projects... / Save / Save As...
 - **Ctrl/Cmd+N** - new project (remappable)
 - **Ctrl/Cmd+O** - open `.motif` via native file dialog (remappable)

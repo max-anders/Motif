@@ -1,6 +1,6 @@
-//! LFO / MSEG modulator chips shown under device tiles in the Devices view and strip.
+//! Modulator chips (preset LFO shapes + editable custom curve) under device tiles.
 
-use egui::{Pos2, RichText, Sense, Stroke, Ui, Vec2};
+use egui::{Color32, Pos2, RichText, Sense, Stroke, Ui, Vec2};
 
 use crate::engine::DawEngine;
 use crate::model::{
@@ -10,20 +10,144 @@ use crate::model::{
 use crate::ui::theme::ThemeColors;
 
 pub const CHIP_WIDTH: f32 = 146.0;
-const CHIP_INNER_WIDTH: f32 = CHIP_WIDTH - 12.0;
-const LFO_CONTROLS_WIDTH: f32 = CHIP_INNER_WIDTH;
-/// Typical rendered height for a standard LFO chip (strip panel budgeting).
-pub const CHIP_HEIGHT_STANDARD: f32 = 158.0;
-/// Rendered height for an MSEG chip (header + canvas row).
-pub const CHIP_HEIGHT_MSEG: f32 = 184.0;
-const MSEG_GRID_STRIP_WIDTH: f32 = 36.0;
-const MSEG_CANVAS_WIDTH: f32 = 168.0;
-const MSEG_CANVAS_HEIGHT: f32 = 148.0;
-const MSEG_CHIP_INNER_WIDTH: f32 =
-    MSEG_GRID_STRIP_WIDTH + 6.0 + MSEG_CANVAS_WIDTH + 8.0 + LFO_CONTROLS_WIDTH;
+const MODULATOR_CONTROLS_WIDTH: f32 = CHIP_WIDTH - 12.0;
+const MODULATOR_CANVAS_WIDTH: f32 = 300.0;
+const MODULATOR_CANVAS_HEIGHT: f32 = 260.0;
+const MODULATOR_CHIP_INNER_WIDTH: f32 = MODULATOR_CANVAS_WIDTH + 8.0 + MODULATOR_CONTROLS_WIDTH;
+const DOCK_CANVAS_HEIGHT: f32 = 150.0;
 const MSEG_POINT_RADIUS: f32 = 4.0;
+const PRESET_WAVE_SAMPLES: usize = 128;
+/// Coarse preset-to-MSEG conversion; editable points, not a high-res bake.
+const MSEG_BAKE_STEPS: usize = 4;
+const MODULATOR_ROW_GAP: f32 = 8.0;
+const MODULATOR_STACK_GAP: f32 = 8.0;
+const MOD_SECTION_GAP: f32 = 8.0;
+const MOD_INNER_GAP: f32 = 5.0;
+const CHIP_INNER_MARGIN: f32 = 8.0;
+/// Horizontal inset on the mod column frame in the devices dock.
+pub const MOD_DOCK_FRAME_H_MARGIN: f32 = 8.0;
 
-/// Render modulators for one target (instrument or a specific insert FX), plus an add button.
+/// Wide (canvas + controls side-by-side) vs compact (stacked for the right dock).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModulatorLayout {
+    Wide,
+    Compact,
+}
+
+/// Strip panel height budget for a wide modulator chip (canvas + controls).
+pub const CHIP_HEIGHT_STANDARD: f32 = 320.0;
+/// Alias kept for callers that referenced the MSEG-specific height.
+pub const CHIP_HEIGHT_MSEG: f32 = CHIP_HEIGHT_STANDARD;
+
+/// Device key for the instrument slot in modulator target selection.
+pub const INSTRUMENT_MOD_TARGET_KEY: u64 = 0;
+
+/// Build a target filter from a stored device key (`0` = instrument).
+pub fn target_filter_from_device_key(device_key: u64) -> TargetFilter {
+    if device_key == INSTRUMENT_MOD_TARGET_KEY {
+        TargetFilter::Instrument
+    } else {
+        TargetFilter::Device { device_id: device_key }
+    }
+}
+
+/// Clamp a stored device key to a target that still exists on the track.
+pub fn normalize_modulator_target_key(track: &Track, device_key: u64) -> u64 {
+    if device_key == INSTRUMENT_MOD_TARGET_KEY {
+        return INSTRUMENT_MOD_TARGET_KEY;
+    }
+    if track.devices.iter().any(|device| device.id == device_key) {
+        device_key
+    } else {
+        INSTRUMENT_MOD_TARGET_KEY
+    }
+}
+
+/// Human-readable modulator target for the strip panel header.
+pub fn modulator_target_label(track: &Track, target_filter: TargetFilter) -> String {
+    match target_filter {
+        TargetFilter::Instrument => format!(
+            "Instrument ({})",
+            truncate_label(track.instrument.display_name(), 18)
+        ),
+        TargetFilter::Device { device_id } => track
+            .devices
+            .iter()
+            .find(|device| device.id == device_id)
+            .map(|device| truncate_label(&device.name, 22))
+            .unwrap_or_else(|| "FX".to_string()),
+    }
+}
+
+pub fn modulator_count_for_target(track: &Track, target_filter: TargetFilter) -> usize {
+    track
+        .modulators
+        .iter()
+        .filter(|modulator| target_filter.matches(&modulator.target))
+        .count()
+}
+
+/// Modulator body width inside the dock column (after frame horizontal inset).
+pub fn mod_dock_content_width(mod_column_width: f32) -> f32 {
+    (mod_column_width - MOD_DOCK_FRAME_H_MARGIN * 2.0).max(CHIP_WIDTH)
+}
+
+/// Shared modulator editor for one target.
+#[allow(clippy::too_many_arguments)]
+pub fn show_modulator_panel(
+    ui: &mut Ui,
+    project: &mut Project,
+    track: &Track,
+    track_id: u64,
+    target_filter: TargetFilter,
+    layout: ModulatorLayout,
+    fixed_content_width: Option<f32>,
+    engine: &dyn DawEngine,
+    history: &mut EditHistory,
+    theme: &ThemeColors,
+) {
+    ui.label(
+        RichText::new(format!(
+            "Mods: {}",
+            modulator_target_label(track, target_filter)
+        ))
+        .small()
+        .strong()
+        .color(theme.track_header_text),
+    );
+    ui.add_space(4.0);
+    let content_width = fixed_content_width.unwrap_or_else(|| ui.available_width());
+    if layout == ModulatorLayout::Compact {
+        ui.set_max_width(content_width);
+        show_modulators_for_target(
+            ui,
+            project,
+            track,
+            track_id,
+            target_filter,
+            layout,
+            content_width,
+            engine,
+            history,
+            theme,
+        );
+    } else {
+        show_modulators_for_target(
+            ui,
+            project,
+            track,
+            track_id,
+            target_filter,
+            layout,
+            content_width,
+            engine,
+            history,
+            theme,
+        );
+    }
+}
+
+/// All modulators for one target (horizontal row or vertical stack).
 #[allow(clippy::too_many_arguments)]
 pub fn show_modulators_for_target(
     ui: &mut Ui,
@@ -31,47 +155,118 @@ pub fn show_modulators_for_target(
     track: &Track,
     track_id: u64,
     target_filter: TargetFilter,
+    layout: ModulatorLayout,
+    content_width: f32,
     engine: &dyn DawEngine,
     history: &mut EditHistory,
     theme: &ThemeColors,
 ) {
-    let modulator_ids: Vec<u64> = track
+    let modulator_entries: Vec<(usize, u64)> = track
         .modulators
         .iter()
         .filter(|modulator| target_filter.matches(&modulator.target))
         .map(|modulator| modulator.id)
+        .enumerate()
         .collect();
 
-    for modulator_id in modulator_ids {
-        show_modulator_chip(
-            ui,
-            project,
-            track,
-            track_id,
-            modulator_id,
-            engine,
-            history,
-            theme,
-        );
-        ui.add_space(4.0);
+    let device_key = match target_filter {
+        TargetFilter::Instrument => INSTRUMENT_MOD_TARGET_KEY,
+        TargetFilter::Device { device_id } => device_id,
+    };
+
+    if modulator_entries.is_empty() {
+        let button_width = match layout {
+            ModulatorLayout::Compact => content_width.max(CHIP_WIDTH),
+            ModulatorLayout::Wide => CHIP_WIDTH,
+        };
+        if ui
+            .add(
+                egui::Button::new(RichText::new("+ Mod").small().color(theme.text_muted))
+                    .fill(theme.widget_bg)
+                    .min_size(Vec2::new(button_width, 22.0)),
+            )
+            .on_hover_text("Add modulator for this device")
+            .clicked()
+        {
+            history.push_before(project.clone());
+            let target = target_filter.to_target();
+            project.add_modulator(track_id, target, "");
+        }
+        return;
     }
 
-    let add_label = match target_filter {
-        TargetFilter::Instrument => "+ LFO",
-        TargetFilter::Device { .. } => "+ LFO",
-    };
-    if ui
-        .add(
-            egui::Button::new(RichText::new(add_label).small().color(theme.text_muted))
-                .fill(theme.widget_bg)
-                .min_size(Vec2::new(CHIP_WIDTH, 22.0)),
-        )
-        .on_hover_text("Add LFO / MSEG modulator for this device")
-        .clicked()
-    {
-        history.push_before(project.clone());
-        let target = target_filter.to_target();
-        project.add_modulator(track_id, target, "Parameter");
+    match layout {
+        ModulatorLayout::Wide => {
+            egui::ScrollArea::horizontal()
+                .id_salt(("modulators_row", track_id, device_key))
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    ui.horizontal_top(|ui| {
+                        ui.spacing_mut().item_spacing.x = MODULATOR_ROW_GAP;
+                        for (index, modulator_id) in &modulator_entries {
+                            show_modulator_chip(
+                                ui,
+                                project,
+                                track,
+                                track_id,
+                                *modulator_id,
+                                *index,
+                                layout,
+                                MODULATOR_CHIP_INNER_WIDTH,
+                                engine,
+                                history,
+                                theme,
+                            );
+                        }
+                        show_add_mod_tile(
+                            ui,
+                            project,
+                            track_id,
+                            target_filter,
+                            layout,
+                            MODULATOR_CHIP_INNER_WIDTH,
+                            history,
+                            theme,
+                        );
+                    });
+                });
+        }
+        ModulatorLayout::Compact => {
+            let column_width = content_width.max(CHIP_WIDTH);
+            egui::ScrollArea::vertical()
+                .id_salt(("modulators_stack", track_id, device_key))
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    ui.set_min_width(column_width);
+                    ui.set_max_width(column_width);
+                    ui.spacing_mut().item_spacing.y = MODULATOR_STACK_GAP;
+                    for (index, modulator_id) in &modulator_entries {
+                        show_modulator_chip(
+                            ui,
+                            project,
+                            track,
+                            track_id,
+                            *modulator_id,
+                            *index,
+                            layout,
+                            column_width,
+                            engine,
+                            history,
+                            theme,
+                        );
+                    }
+                    show_add_mod_tile(
+                        ui,
+                        project,
+                        track_id,
+                        target_filter,
+                        layout,
+                        column_width,
+                        history,
+                        theme,
+                    );
+                });
+        }
     }
 }
 
@@ -106,6 +301,23 @@ impl TargetFilter {
     }
 }
 
+fn mod_chip_width(layout: ModulatorLayout, content_width: f32) -> f32 {
+    match layout {
+        ModulatorLayout::Wide => MODULATOR_CHIP_INNER_WIDTH,
+        ModulatorLayout::Compact => content_width.max(CHIP_WIDTH),
+    }
+}
+
+fn mod_canvas_size(layout: ModulatorLayout, chip_width: f32) -> Vec2 {
+    match layout {
+        ModulatorLayout::Wide => Vec2::new(MODULATOR_CANVAS_WIDTH, MODULATOR_CANVAS_HEIGHT),
+        ModulatorLayout::Compact => {
+            let inner_width = (chip_width - CHIP_INNER_MARGIN * 2.0).max(120.0);
+            Vec2::new(inner_width, DOCK_CANVAS_HEIGHT)
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn show_modulator_chip(
     ui: &mut Ui,
@@ -113,6 +325,9 @@ fn show_modulator_chip(
     track: &Track,
     track_id: u64,
     modulator_id: u64,
+    modulator_index: usize,
+    layout: ModulatorLayout,
+    content_width: f32,
     engine: &dyn DawEngine,
     history: &mut EditHistory,
     theme: &ThemeColors,
@@ -121,29 +336,55 @@ fn show_modulator_chip(
         return;
     };
 
+    let is_custom = snapshot.shape == LfoShape::Custom;
+    let title = modulator_display_name(modulator_index, &snapshot);
+    let chip_width = mod_chip_width(layout, content_width);
+    let canvas_size = mod_canvas_size(layout, chip_width);
+
     egui::Frame::new()
         .fill(theme.widget_bg)
         .stroke(Stroke::new(1.0_f32, theme.separator))
         .corner_radius(4.0)
-        .inner_margin(6.0)
+        .inner_margin(CHIP_INNER_MARGIN)
         .show(ui, |ui| {
-            let is_mseg = snapshot.shape == LfoShape::Custom;
-            ui.set_width(if is_mseg {
-                MSEG_CHIP_INNER_WIDTH
-            } else {
-                CHIP_INNER_WIDTH
-            });
-            ui.spacing_mut().item_spacing = Vec2::new(2.0, 2.0);
+            ui.set_min_width(chip_width);
+            ui.set_max_width(chip_width);
+            ui.spacing_mut().item_spacing = Vec2::new(4.0, MOD_INNER_GAP);
 
             ui.horizontal(|ui| {
                 ui.label(
-                    RichText::new(if is_mseg { "MSEG" } else { "LFO" })
+                    RichText::new(title)
                         .small()
                         .strong()
                         .color(theme.track_header_text),
                 );
+
+                let mut name = snapshot.name.clone();
+                if ui
+                    .add(
+                        egui::TextEdit::singleline(&mut name)
+                            .desired_width(if layout == ModulatorLayout::Compact {
+                                56.0
+                            } else {
+                                72.0
+                            })
+                            .hint_text("Label")
+                            .font(egui::TextStyle::Body),
+                    )
+                    .changed()
+                {
+                    history.push_before(project.clone());
+                    if let Some(modulator) = project.modulator_mut(track_id, modulator_id) {
+                        modulator.name = name;
+                    }
+                }
+
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.small_button("x").on_hover_text("Remove modulator").clicked() {
+                    if ui
+                        .small_button("x")
+                        .on_hover_text("Remove modulator")
+                        .clicked()
+                    {
                         history.push_before(project.clone());
                         project.remove_modulator(track_id, modulator_id);
                     }
@@ -157,57 +398,149 @@ fn show_modulator_chip(
                 });
             });
 
-            if is_mseg {
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    ui.vertical(|ui| {
-                        ui.set_width(MSEG_GRID_STRIP_WIDTH + 6.0 + MSEG_CANVAS_WIDTH);
-                        show_mseg_editor(
+            ui.add_space(6.0);
+            match layout {
+                ModulatorLayout::Wide => {
+                    ui.horizontal_top(|ui| {
+                        ui.vertical(|ui| {
+                            ui.set_min_width(MODULATOR_CANVAS_WIDTH);
+                            ui.set_max_width(MODULATOR_CANVAS_WIDTH);
+                            if is_custom {
+                                show_mseg_grid_bar(
+                                    ui,
+                                    project,
+                                    track_id,
+                                    modulator_id,
+                                    snapshot.mseg_grid_divisions,
+                                    history,
+                                    theme,
+                                );
+                                ui.add_space(6.0);
+                            }
+                            show_modulator_canvas(
+                                ui,
+                                project,
+                                track_id,
+                                modulator_id,
+                                &snapshot,
+                                canvas_size,
+                                history,
+                                theme,
+                            );
+                        });
+                        ui.add_space(8.0);
+                        ui.vertical(|ui| {
+                            ui.set_min_width(MODULATOR_CONTROLS_WIDTH);
+                            ui.set_max_width(MODULATOR_CONTROLS_WIDTH);
+                            paint_modulator_controls(
+                                ui,
+                                project,
+                                track,
+                                track_id,
+                                modulator_id,
+                                &snapshot,
+                                engine,
+                                history,
+                                theme,
+                            );
+                        });
+                    });
+                }
+                ModulatorLayout::Compact => {
+                    if is_custom {
+                        show_mseg_grid_bar(
                             ui,
                             project,
                             track_id,
                             modulator_id,
-                            &snapshot,
+                            snapshot.mseg_grid_divisions,
                             history,
                             theme,
                         );
-                    });
-                    ui.add_space(8.0);
-                    ui.vertical(|ui| {
-                        ui.set_width(LFO_CONTROLS_WIDTH);
-                        paint_lfo_controls(
-                            ui,
-                            project,
-                            track,
-                            track_id,
-                            modulator_id,
-                            &snapshot,
-                            engine,
-                            history,
-                            theme,
-                        );
-                    });
-                });
-            } else {
-                paint_lfo_controls(
-                    ui,
-                    project,
-                    track,
-                    track_id,
-                    modulator_id,
-                    &snapshot,
-                    engine,
-                    history,
-                    theme,
-                );
+                        ui.add_space(6.0);
+                    }
+                    show_modulator_canvas(
+                        ui,
+                        project,
+                        track_id,
+                        modulator_id,
+                        &snapshot,
+                        canvas_size,
+                        history,
+                        theme,
+                    );
+                    ui.add_space(MOD_SECTION_GAP);
+                    paint_modulator_controls(
+                        ui,
+                        project,
+                        track,
+                        track_id,
+                        modulator_id,
+                        &snapshot,
+                        engine,
+                        history,
+                        theme,
+                    );
+                }
             }
 
             let _ = track;
         });
 }
 
+fn show_add_mod_tile(
+    ui: &mut Ui,
+    project: &mut Project,
+    track_id: u64,
+    target_filter: TargetFilter,
+    layout: ModulatorLayout,
+    content_width: f32,
+    history: &mut EditHistory,
+    theme: &ThemeColors,
+) {
+    match layout {
+        ModulatorLayout::Compact => {
+            if ui
+                .add(
+                    egui::Button::new(RichText::new("+ Mod").small().color(theme.text_muted))
+                        .fill(theme.widget_bg)
+                        .min_size(Vec2::new(content_width.max(CHIP_WIDTH), 28.0)),
+                )
+                .on_hover_text("Add modulator for this device")
+                .clicked()
+            {
+                history.push_before(project.clone());
+                let target = target_filter.to_target();
+                project.add_modulator(track_id, target, "");
+            }
+        }
+        ModulatorLayout::Wide => {
+            ui.allocate_ui_with_layout(
+                Vec2::new(CHIP_WIDTH, MODULATOR_CANVAS_HEIGHT + 48.0),
+                egui::Layout::top_down(egui::Align::Center),
+                |ui| {
+                    ui.add_space(MODULATOR_CANVAS_HEIGHT * 0.35);
+                    if ui
+                        .add(
+                            egui::Button::new(RichText::new("+ Mod").small().color(theme.text_muted))
+                                .fill(theme.widget_bg)
+                                .min_size(Vec2::new(CHIP_WIDTH - 12.0, 28.0)),
+                        )
+                        .on_hover_text("Add modulator for this device")
+                        .clicked()
+                    {
+                        history.push_before(project.clone());
+                        let target = target_filter.to_target();
+                        project.add_modulator(track_id, target, "");
+                    }
+                },
+            );
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
-fn paint_lfo_controls(
+fn paint_modulator_controls(
     ui: &mut Ui,
     project: &mut Project,
     track: &Track,
@@ -218,210 +551,248 @@ fn paint_lfo_controls(
     history: &mut EditHistory,
     theme: &ThemeColors,
 ) {
-            let param_label = if snapshot.param_name.is_empty() {
-                "(pick parameter)"
-            } else {
-                &snapshot.param_name
-            };
-            ui.label(
-                RichText::new(truncate_label(param_label, 18))
-                    .small()
-                    .color(theme.text_muted),
-            );
+    ui.spacing_mut().item_spacing.y = MOD_INNER_GAP;
 
-            ui.horizontal(|ui| {
-                ui.menu_button("Param", |ui| {
-                    let device_id = match &snapshot.target {
-                        AutomationTarget::Instrument { .. } => None,
-                        AutomationTarget::Device { device_id, .. } => Some(*device_id),
-                    };
-                    let params = engine.plugin_parameters(track_id, device_id);
-                    if params.is_empty() {
-                        ui.label(
-                            RichText::new("No parameters")
-                                .small()
-                                .color(theme.text_muted),
-                        );
-                    } else {
-                        for param in params {
-                            if !param.automatable {
-                                continue;
-                            }
-                            if ui.button(truncate_label(&param.name, 28)).clicked() {
-                                history.push_before(project.clone());
-                                if let Some(modulator) =
-                                    project.modulator_mut(track_id, modulator_id)
-                                {
-                                    modulator.param_name = param.name.clone();
-                                    modulator.target = match &modulator.target {
-                                        AutomationTarget::Instrument { .. } => {
-                                            AutomationTarget::Instrument {
-                                                param_id: param.id,
-                                            }
-                                        }
-                                        AutomationTarget::Device { device_id, .. } => {
-                                            AutomationTarget::Device {
-                                                device_id: *device_id,
-                                                param_id: param.id,
-                                            }
-                                        }
-                                    };
+    let param_label = modulator_param_display_name(&snapshot.param_name)
+        .map(|name| truncate_label(name, 18))
+        .unwrap_or_else(|| "(pick parameter)".to_string());
+    ui.label(
+        RichText::new(param_label)
+            .small()
+            .color(theme.text_muted),
+    );
+
+    ui.horizontal(|ui| {
+        let param_menu_label = modulator_param_display_name(&snapshot.param_name)
+            .map(|name| truncate_label(name, 14))
+            .unwrap_or_else(|| "Pick parameter...".to_string());
+        let param_assigned = modulator_param_assigned(&snapshot.param_name);
+        let (fill, stroke, text_color) = chip_menu_colors(param_assigned, theme);
+        let param_width = ui.available_width();
+        egui::Frame::new()
+            .fill(fill)
+            .stroke(Stroke::new(1.0_f32, stroke))
+            .corner_radius(3.0)
+            .show(ui, |ui| {
+                ui.set_min_width(param_width);
+                ui.menu_button(
+                    RichText::new(param_menu_label).small().color(text_color),
+                    |ui| {
+                        let device_id = match &snapshot.target {
+                            AutomationTarget::Instrument { .. } => None,
+                            AutomationTarget::Device { device_id, .. } => Some(*device_id),
+                        };
+                        let params = engine.plugin_parameters(track_id, device_id);
+                        if params.is_empty() {
+                            ui.label(
+                                RichText::new("No parameters")
+                                    .small()
+                                    .color(theme.text_muted),
+                            );
+                        } else {
+                            for param in params {
+                                if !param.automatable {
+                                    continue;
                                 }
-                                ui.close_menu();
-                            }
-                        }
-                    }
-                });
-
-                ui.menu_button(shape_label(snapshot.shape), |ui| {
-                    for shape in [
-                        LfoShape::Sine,
-                        LfoShape::Triangle,
-                        LfoShape::Saw,
-                        LfoShape::Square,
-                        LfoShape::Custom,
-                    ] {
-                        if ui
-                            .selectable_label(snapshot.shape == shape, shape_label(shape))
-                            .clicked()
-                        {
-                            history.push_before(project.clone());
-                            if let Some(modulator) = project.modulator_mut(track_id, modulator_id)
-                            {
-                                modulator.shape = shape;
-                                if shape == LfoShape::Custom && modulator.mseg_points.is_empty() {
-                                    modulator.mseg_points = default_mseg_points();
+                                if ui.button(truncate_label(&param.name, 28)).clicked() {
+                                    history.push_before(project.clone());
+                                    if let Some(modulator) =
+                                        project.modulator_mut(track_id, modulator_id)
+                                    {
+                                        modulator.param_name = param.name.clone();
+                                        modulator.target = match &modulator.target {
+                                            AutomationTarget::Instrument { .. } => {
+                                                AutomationTarget::Instrument {
+                                                    param_id: param.id,
+                                                }
+                                            }
+                                            AutomationTarget::Device { device_id, .. } => {
+                                                AutomationTarget::Device {
+                                                    device_id: *device_id,
+                                                    param_id: param.id,
+                                                }
+                                            }
+                                        };
+                                    }
+                                    ui.close_menu();
                                 }
                             }
-                            ui.close_menu();
                         }
-                    }
-                });
+                    },
+                );
             });
+    });
 
-            ui.horizontal(|ui| {
-                let is_sync = matches!(snapshot.rate, LfoRate::SyncBeats { .. });
-                if ui.selectable_label(is_sync, "Sync").clicked() {
-                    history.push_before(project.clone());
-                    if let Some(modulator) = project.modulator_mut(track_id, modulator_id) {
-                        let beats = match modulator.rate {
-                            LfoRate::SyncBeats { beats } => beats,
-                            LfoRate::Hz { .. } => 1.0,
-                        };
-                        modulator.rate = LfoRate::SyncBeats { beats };
-                    }
-                }
-                if ui.selectable_label(!is_sync, "Hz").clicked() {
-                    history.push_before(project.clone());
-                    if let Some(modulator) = project.modulator_mut(track_id, modulator_id) {
-                        let hz = match modulator.rate {
-                            LfoRate::Hz { hz } => hz,
-                            LfoRate::SyncBeats { .. } => 1.0,
-                        };
-                        modulator.rate = LfoRate::Hz { hz };
-                    }
-                }
-            });
+    ui.add_space(MOD_SECTION_GAP);
+    show_shape_selector(
+        ui,
+        project,
+        track_id,
+        modulator_id,
+        snapshot.shape,
+        history,
+        theme,
+    );
 
-            let rate_label = if snapshot.shape == LfoShape::Custom {
-                "cycle"
-            } else {
-                "beats"
-            };
-            match snapshot.rate {
-                LfoRate::SyncBeats { beats } => {
-                    let mut beats = beats;
-                    if ui
-                        .add(
-                            egui::Slider::new(&mut beats, 0.0625..=16.0)
-                                .text(rate_label)
-                                .logarithmic(true),
-                        )
-                        .changed()
-                    {
-                        history.push_before(project.clone());
-                        if let Some(modulator) = project.modulator_mut(track_id, modulator_id) {
-                            modulator.rate = LfoRate::SyncBeats { beats };
-                        }
-                    }
-                }
-                LfoRate::Hz { hz } => {
-                    let mut hz = hz;
-                    if ui
-                        .add(egui::Slider::new(&mut hz, 0.01..=30.0).text("Hz").logarithmic(true))
-                        .changed()
-                    {
-                        history.push_before(project.clone());
-                        if let Some(modulator) = project.modulator_mut(track_id, modulator_id) {
-                            modulator.rate = LfoRate::Hz { hz };
-                        }
-                    }
-                }
+    ui.add_space(MOD_SECTION_GAP);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        let half = (ui.available_width() - 4.0) * 0.5;
+        let toggle_size = Vec2::new(half.max(36.0), 22.0);
+        let is_sync = matches!(snapshot.rate, LfoRate::SyncBeats { .. });
+        if chip_toggle_button(ui, "Sync", is_sync, theme, toggle_size) {
+            history.push_before(project.clone());
+            if let Some(modulator) = project.modulator_mut(track_id, modulator_id) {
+                let beats = match modulator.rate {
+                    LfoRate::SyncBeats { beats } => beats,
+                    LfoRate::Hz { .. } => 1.0,
+                };
+                modulator.rate = LfoRate::SyncBeats { beats };
             }
+        }
+        if chip_toggle_button(ui, "Hz", !is_sync, theme, toggle_size) {
+            history.push_before(project.clone());
+            if let Some(modulator) = project.modulator_mut(track_id, modulator_id) {
+                let hz = match modulator.rate {
+                    LfoRate::Hz { hz } => hz,
+                    LfoRate::SyncBeats { .. } => 1.0,
+                };
+                modulator.rate = LfoRate::Hz { hz };
+            }
+        }
+    });
 
-            let mut depth = snapshot.depth;
-            if ui
-                .add(egui::Slider::new(&mut depth, 0.0..=1.0).text("depth"))
-                .changed()
+    ui.add_space(4.0);
+    let rate_label = if snapshot.shape == LfoShape::Custom {
+        "cycle"
+    } else {
+        "beats"
+    };
+    match snapshot.rate {
+        LfoRate::SyncBeats { beats } => {
+            let mut beats = beats;
+            if mod_slider(
+                ui,
+                egui::Slider::new(&mut beats, 0.0625..=16.0)
+                    .text(rate_label)
+                    .logarithmic(true),
+                theme,
+            )
+            .changed()
             {
                 history.push_before(project.clone());
                 if let Some(modulator) = project.modulator_mut(track_id, modulator_id) {
-                    modulator.depth = depth;
+                    modulator.rate = LfoRate::SyncBeats { beats };
                 }
             }
-
-            ui.horizontal(|ui| {
-                let mut bipolar = snapshot.bipolar;
-                if ui.checkbox(&mut bipolar, "Bipolar").changed() {
-                    history.push_before(project.clone());
-                    if let Some(modulator) = project.modulator_mut(track_id, modulator_id) {
-                        modulator.bipolar = bipolar;
-                    }
+        }
+        LfoRate::Hz { hz } => {
+            let mut hz = hz;
+            if mod_slider(
+                ui,
+                egui::Slider::new(&mut hz, 0.01..=30.0).text("Hz").logarithmic(true),
+                theme,
+            )
+            .changed()
+            {
+                history.push_before(project.clone());
+                if let Some(modulator) = project.modulator_mut(track_id, modulator_id) {
+                    modulator.rate = LfoRate::Hz { hz };
                 }
-            });
+            }
+        }
+    }
+
+    let mut depth = snapshot.depth;
+    if mod_slider(
+        ui,
+        egui::Slider::new(&mut depth, 0.0..=1.0).text("depth"),
+        theme,
+    )
+    .changed()
+    {
+        history.push_before(project.clone());
+        if let Some(modulator) = project.modulator_mut(track_id, modulator_id) {
+            modulator.depth = depth;
+        }
+    }
+
+    ui.add_space(MOD_SECTION_GAP);
+    ui.horizontal(|ui| {
+        let mut bipolar = snapshot.bipolar;
+        if ui.checkbox(&mut bipolar, "Bipolar").changed() {
+            history.push_before(project.clone());
+            if let Some(modulator) = project.modulator_mut(track_id, modulator_id) {
+                modulator.bipolar = bipolar;
+            }
+        }
+    });
 
     let _ = track;
 }
 
-fn show_mseg_editor(
+fn show_mseg_grid_bar(
+    ui: &mut Ui,
+    project: &mut Project,
+    track_id: u64,
+    modulator_id: u64,
+    grid_divisions: u8,
+    history: &mut EditHistory,
+    theme: &ThemeColors,
+) {
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Grid").small().color(theme.text_muted));
+        ui.add_space(4.0);
+        for (label, divisions) in [("Off", 0_u8), ("1/4", 4), ("1/8", 8), ("1/16", 16)] {
+            let selected = grid_divisions == divisions;
+            if chip_toggle_button(ui, label, selected, theme, Vec2::new(30.0, 20.0)) {
+                history.push_before(project.clone());
+                if let Some(modulator) = project.modulator_mut(track_id, modulator_id) {
+                    modulator.mseg_grid_divisions = divisions;
+                }
+            }
+        }
+    });
+}
+
+fn show_modulator_canvas(
     ui: &mut Ui,
     project: &mut Project,
     track_id: u64,
     modulator_id: u64,
     snapshot: &LfoModulator,
+    canvas_size: Vec2,
     history: &mut EditHistory,
     theme: &ThemeColors,
 ) {
-    ui.horizontal(|ui| {
-        ui.vertical(|ui| {
-            ui.set_width(MSEG_GRID_STRIP_WIDTH);
-            ui.label(RichText::new("Grid").small().color(theme.text_muted));
-            for (label, divisions) in [("Off", 0_u8), ("1/4", 4), ("1/8", 8), ("1/16", 16)] {
-                let selected = snapshot.mseg_grid_divisions == divisions;
-                if ui.selectable_label(selected, label).clicked() {
-                    history.push_before(project.clone());
-                    if let Some(modulator) = project.modulator_mut(track_id, modulator_id) {
-                        modulator.mseg_grid_divisions = divisions;
-                    }
-                }
-            }
-        });
+    let is_custom = snapshot.shape == LfoShape::Custom;
+    let sense = if is_custom {
+        Sense::click_and_drag()
+    } else {
+        Sense::hover()
+    };
+    let (canvas, response) = ui.allocate_exact_size(canvas_size, sense);
+    let painter = ui.painter().with_clip_rect(canvas);
+    painter.rect_filled(canvas, 2.0, theme.panel_bg);
+    painter.rect_stroke(
+        canvas,
+        2.0,
+        Stroke::new(1.0_f32, theme.separator),
+        egui::StrokeKind::Inside,
+    );
 
-        ui.add_space(6.0);
-
-        let (canvas, response) = ui.allocate_exact_size(
-            Vec2::new(MSEG_CANVAS_WIDTH, MSEG_CANVAS_HEIGHT),
-            Sense::click_and_drag(),
+    if snapshot.bipolar {
+        let mid_y = canvas.center().y;
+        painter.line_segment(
+            [
+                Pos2::new(canvas.left(), mid_y),
+                Pos2::new(canvas.right(), mid_y),
+            ],
+            Stroke::new(1.0_f32, theme.separator.gamma_multiply(0.45)),
         );
-        let painter = ui.painter().with_clip_rect(canvas);
-        painter.rect_filled(canvas, 2.0, theme.panel_bg);
-        painter.rect_stroke(
-            canvas,
-            2.0,
-            Stroke::new(1.0_f32, theme.separator),
-            egui::StrokeKind::Inside,
-        );
+    }
 
+    if is_custom {
         let grid_divisions = snapshot.mseg_grid_divisions;
         if grid_divisions > 0 {
             let grid_stroke = Stroke::new(1.0_f32, theme.separator.gamma_multiply(0.35));
@@ -439,66 +810,360 @@ fn show_mseg_editor(
                 );
             }
         }
+        paint_custom_curve(canvas, &painter, &snapshot.mseg_points, theme.accent, true);
+        handle_custom_curve_input(
+            canvas,
+            &response,
+            project,
+            track_id,
+            modulator_id,
+            snapshot,
+            history,
+        );
+    } else {
+        paint_preset_curve(canvas, &painter, snapshot.shape, snapshot.bipolar, theme.accent);
+    }
 
-        let points = &snapshot.mseg_points;
-        if !points.is_empty() {
-            let mut sorted: Vec<&AutomationPoint> = points.iter().collect();
-            sorted.sort_by(|a, b| a.beat.total_cmp(&b.beat));
-            let stroke = Stroke::new(1.5_f32, theme.accent);
-            let mut prev: Option<Pos2> = None;
-            for point in &sorted {
-                let pos = mseg_point_to_pos(canvas, point.beat, point.value);
-                if let Some(prev_pos) = prev {
-                    painter.line_segment([prev_pos, pos], stroke);
-                }
-                painter.circle_filled(pos, MSEG_POINT_RADIUS, theme.accent);
-                prev = Some(pos);
-            }
-        }
+    if !is_custom {
+        response.on_hover_text("Preset waveform (click MSEG to draw your own)");
+    }
+}
 
-        if let Some(pointer) = response.interact_pointer_pos() {
-            let near = nearest_mseg_point_index(canvas, points, pointer);
-            if response.dragged_by(egui::PointerButton::Primary) {
-                if let Some(index) = near {
-                    if response.drag_started() {
-                        history.push_before(project.clone());
-                    }
-                    if let Some(modulator) = project.modulator_mut(track_id, modulator_id) {
-                        let (cycle, value) =
-                            mseg_pos_to_cycle_value(canvas, pointer, modulator.mseg_grid_divisions);
-                        modulator.mseg_points[index].beat = cycle;
-                        modulator.mseg_points[index].value = value;
-                        modulator
-                            .mseg_points
-                            .sort_by(|a, b| a.beat.total_cmp(&b.beat));
-                    }
-                }
-            } else if response.clicked_by(egui::PointerButton::Primary) && near.is_none() {
-                let (cycle, value) =
-                    mseg_pos_to_cycle_value(canvas, pointer, snapshot.mseg_grid_divisions);
-                history.push_before(project.clone());
-                if let Some(modulator) = project.modulator_mut(track_id, modulator_id) {
-                    modulator.mseg_points.push(AutomationPoint {
-                        beat: cycle,
-                        value,
-                        curve: CurveKind::Linear,
-                    });
-                    modulator
-                        .mseg_points
-                        .sort_by(|a, b| a.beat.total_cmp(&b.beat));
-                }
-            } else if response.clicked_by(egui::PointerButton::Secondary) {
-                history.push_before(project.clone());
-                if let Some(modulator) = project.modulator_mut(track_id, modulator_id) {
-                    if modulator.mseg_points.len() > 2 {
-                        if let Some(index) = near {
-                            modulator.mseg_points.remove(index);
-                        }
-                    }
-                }
+fn show_shape_selector(
+    ui: &mut Ui,
+    project: &mut Project,
+    track_id: u64,
+    modulator_id: u64,
+    current_shape: LfoShape,
+    history: &mut EditHistory,
+    theme: &ThemeColors,
+) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        let preset_width = ((ui.available_width() - 4.0 * 3.0) / 4.0).max(24.0);
+        let preset_size = Vec2::new(preset_width, 22.0);
+        for shape in [
+            LfoShape::Sine,
+            LfoShape::Triangle,
+            LfoShape::Saw,
+            LfoShape::Square,
+        ] {
+            if chip_toggle_button(
+                ui,
+                shape_label(shape),
+                current_shape == shape,
+                theme,
+                preset_size,
+            ) {
+                set_modulator_shape(project, track_id, modulator_id, shape, history);
             }
         }
     });
+    ui.add_space(4.0);
+    let is_custom = current_shape == LfoShape::Custom;
+    let mseg_width = ui.available_width();
+    let mseg_label = if is_custom {
+        RichText::new("MSEG (editing)").small().strong()
+    } else {
+        RichText::new("Draw custom (MSEG)").small().strong()
+    };
+    if ui
+        .add(chip_action_button(
+            mseg_label,
+            is_custom,
+            theme,
+            Vec2::new(mseg_width, 26.0),
+        ))
+        .on_hover_text("Draw a custom multi-segment envelope")
+        .clicked()
+    {
+        set_modulator_shape(
+            project,
+            track_id,
+            modulator_id,
+            LfoShape::Custom,
+            history,
+        );
+    }
+}
+
+fn chip_button_colors(selected: bool, theme: &ThemeColors) -> (Color32, Color32, Color32) {
+    if selected {
+        (
+            theme.accent,
+            theme.accent,
+            theme.panel_bg,
+        )
+    } else {
+        (
+            theme.panel_bg,
+            theme.separator,
+            theme.button_text,
+        )
+    }
+}
+
+fn chip_menu_colors(assigned: bool, theme: &ThemeColors) -> (Color32, Color32, Color32) {
+    (
+        theme.panel_bg,
+        theme.separator,
+        if assigned {
+            theme.text_primary
+        } else {
+            theme.text_muted
+        },
+    )
+}
+
+fn chip_button(
+    text: RichText,
+    selected: bool,
+    theme: &ThemeColors,
+    min_size: Vec2,
+) -> egui::Button<'static> {
+    let (fill, stroke, text_color) = chip_button_colors(selected, theme);
+    egui::Button::new(text.color(text_color))
+        .fill(fill)
+        .stroke(Stroke::new(1.0_f32, stroke))
+        .corner_radius(3.0)
+        .min_size(min_size)
+}
+
+fn chip_toggle_button(
+    ui: &mut Ui,
+    label: &str,
+    selected: bool,
+    theme: &ThemeColors,
+    min_size: Vec2,
+) -> bool {
+    ui.add(chip_button(
+        RichText::new(label).small().strong(),
+        selected,
+        theme,
+        min_size,
+    ))
+    .clicked()
+}
+
+fn chip_action_button(
+    text: RichText,
+    active: bool,
+    theme: &ThemeColors,
+    min_size: Vec2,
+) -> egui::Button<'static> {
+    if active {
+        chip_button(text, true, theme, min_size)
+    } else {
+        egui::Button::new(text.color(theme.accent))
+            .fill(theme.panel_bg)
+            .stroke(Stroke::new(1.5_f32, theme.accent.gamma_multiply(0.75)))
+            .corner_radius(3.0)
+            .min_size(min_size)
+    }
+}
+
+fn mod_slider(
+    ui: &mut Ui,
+    slider: egui::Slider<'_>,
+    theme: &ThemeColors,
+) -> egui::Response {
+    egui::Frame::new()
+        .fill(theme.panel_bg)
+        .stroke(Stroke::new(
+            1.0_f32,
+            theme.separator.gamma_multiply(0.55),
+        ))
+        .corner_radius(3.0)
+        .inner_margin(egui::Margin::symmetric(6, 4))
+        .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.add(slider.trailing_fill(true))
+        })
+        .response
+}
+
+fn set_modulator_shape(
+    project: &mut Project,
+    track_id: u64,
+    modulator_id: u64,
+    shape: LfoShape,
+    history: &mut EditHistory,
+) {
+    history.push_before(project.clone());
+    let Some(modulator) = project.modulator_mut(track_id, modulator_id) else {
+        return;
+    };
+    let prev_shape = modulator.shape;
+    modulator.shape = shape;
+    if shape == LfoShape::Custom {
+        if prev_shape != LfoShape::Custom {
+            modulator.mseg_points = bake_shape_to_mseg_points(prev_shape, modulator.bipolar);
+        } else if modulator.mseg_points.is_empty() {
+            modulator.mseg_points = default_mseg_points();
+        }
+    }
+}
+
+fn paint_preset_curve(
+    canvas: egui::Rect,
+    painter: &egui::Painter,
+    shape: LfoShape,
+    bipolar: bool,
+    color: Color32,
+) {
+    let stroke = Stroke::new(1.5_f32, color);
+    let mut prev: Option<Pos2> = None;
+    for step in 0..=PRESET_WAVE_SAMPLES {
+        let cycle = step as f32 / PRESET_WAVE_SAMPLES as f32;
+        let wave = preview_lfo_wave(shape, f64::from(cycle)) as f32;
+        let pos = signal_to_canvas_pos(canvas, cycle, wave, bipolar);
+        if let Some(prev_pos) = prev {
+            painter.line_segment([prev_pos, pos], stroke);
+        }
+        prev = Some(pos);
+    }
+}
+
+fn paint_custom_curve(
+    canvas: egui::Rect,
+    painter: &egui::Painter,
+    points: &[AutomationPoint],
+    color: Color32,
+    show_handles: bool,
+) {
+    if points.is_empty() {
+        return;
+    }
+    let mut sorted: Vec<&AutomationPoint> = points.iter().collect();
+    sorted.sort_by(|a, b| a.beat.total_cmp(&b.beat));
+    let stroke = Stroke::new(1.5_f32, color);
+    let mut prev: Option<Pos2> = None;
+    for point in &sorted {
+        let pos = mseg_point_to_pos(canvas, point.beat, point.value);
+        if let Some(prev_pos) = prev {
+            painter.line_segment([prev_pos, pos], stroke);
+        }
+        if show_handles {
+            painter.circle_filled(pos, MSEG_POINT_RADIUS, color);
+        }
+        prev = Some(pos);
+    }
+}
+
+fn handle_custom_curve_input(
+    canvas: egui::Rect,
+    response: &egui::Response,
+    project: &mut Project,
+    track_id: u64,
+    modulator_id: u64,
+    snapshot: &LfoModulator,
+    history: &mut EditHistory,
+) {
+    let Some(pointer) = response.interact_pointer_pos() else {
+        return;
+    };
+    let points = &snapshot.mseg_points;
+    let near = nearest_mseg_point_index(canvas, points, pointer);
+    if response.dragged_by(egui::PointerButton::Primary) {
+        if let Some(index) = near {
+            if response.drag_started() {
+                history.push_before(project.clone());
+            }
+            if let Some(modulator) = project.modulator_mut(track_id, modulator_id) {
+                let (cycle, value) =
+                    mseg_pos_to_cycle_value(canvas, pointer, modulator.mseg_grid_divisions);
+                modulator.mseg_points[index].beat = cycle;
+                modulator.mseg_points[index].value = value;
+                modulator
+                    .mseg_points
+                    .sort_by(|a, b| a.beat.total_cmp(&b.beat));
+            }
+        }
+    } else if response.clicked_by(egui::PointerButton::Primary) && near.is_none() {
+        let (cycle, value) =
+            mseg_pos_to_cycle_value(canvas, pointer, snapshot.mseg_grid_divisions);
+        history.push_before(project.clone());
+        if let Some(modulator) = project.modulator_mut(track_id, modulator_id) {
+            modulator.mseg_points.push(AutomationPoint {
+                beat: cycle,
+                value,
+                curve: CurveKind::Linear,
+            });
+            modulator
+                .mseg_points
+                .sort_by(|a, b| a.beat.total_cmp(&b.beat));
+        }
+    } else if response.clicked_by(egui::PointerButton::Secondary) {
+        history.push_before(project.clone());
+        if let Some(modulator) = project.modulator_mut(track_id, modulator_id) {
+            if modulator.mseg_points.len() > 2 {
+                if let Some(index) = near {
+                    modulator.mseg_points.remove(index);
+                }
+            }
+        }
+    }
+}
+
+/// Matches [`crate::engine::audio`] preset evaluation for canvas preview.
+fn preview_lfo_wave(shape: LfoShape, phase01: f64) -> f64 {
+    let p = phase01.rem_euclid(1.0);
+    match shape {
+        LfoShape::Sine => (p * std::f64::consts::TAU).sin(),
+        LfoShape::Triangle => {
+            if p < 0.25 {
+                p * 4.0
+            } else if p < 0.75 {
+                2.0 - p * 4.0
+            } else {
+                p * 4.0 - 4.0
+            }
+        }
+        LfoShape::Saw => 2.0 * p - 1.0,
+        LfoShape::Square => {
+            if p < 0.5 {
+                1.0
+            } else {
+                -1.0
+            }
+        }
+        LfoShape::Custom => 0.0,
+    }
+}
+
+fn signal_to_canvas_pos(canvas: egui::Rect, cycle: f32, bipolar_wave: f32, bipolar: bool) -> Pos2 {
+    let x = canvas.left() + cycle.clamp(0.0, 1.0) * canvas.width();
+    let y = if bipolar {
+        canvas.center().y - bipolar_wave.clamp(-1.0, 1.0) * canvas.height() * 0.5
+    } else {
+        let unipolar = ((bipolar_wave + 1.0) * 0.5).clamp(0.0, 1.0);
+        canvas.bottom() - unipolar * canvas.height()
+    };
+    Pos2::new(x, y)
+}
+
+fn bake_shape_to_mseg_points(shape: LfoShape, _bipolar: bool) -> Vec<AutomationPoint> {
+    if shape == LfoShape::Custom {
+        return default_mseg_points();
+    }
+    let steps = match shape {
+        LfoShape::Sine => 6,
+        LfoShape::Triangle | LfoShape::Saw => 2,
+        LfoShape::Square => 4,
+        LfoShape::Custom => 0,
+    };
+    (0..=steps)
+        .map(|step| {
+            let cycle = step as f32 / steps as f32;
+            let wave = preview_lfo_wave(shape, f64::from(cycle)) as f32;
+            let value = ((wave + 1.0) * 0.5).clamp(0.0, 1.0);
+            AutomationPoint {
+                beat: cycle,
+                value,
+                curve: CurveKind::Linear,
+            }
+        })
+        .collect()
 }
 
 fn mseg_point_to_pos(canvas: egui::Rect, cycle: f32, value: f32) -> Pos2 {
@@ -543,7 +1208,8 @@ fn nearest_mseg_point_index(
                 .unwrap_or(std::cmp::Ordering::Equal)
         })
         .filter(|(_, point)| {
-            mseg_point_to_pos(canvas, point.beat, point.value).distance(pos) <= MSEG_POINT_RADIUS * 2.5
+            mseg_point_to_pos(canvas, point.beat, point.value).distance(pos)
+                <= MSEG_POINT_RADIUS * 2.5
         })
         .map(|(index, _)| index)
 }
@@ -568,13 +1234,38 @@ fn default_mseg_points() -> Vec<AutomationPoint> {
     ]
 }
 
+fn modulator_display_name(index: usize, modulator: &LfoModulator) -> String {
+    let label = if modulator.name.trim().is_empty() {
+        format!("Mod {}", index + 1)
+    } else {
+        modulator.name.trim().to_string()
+    };
+    if let Some(param_name) = modulator_param_display_name(&modulator.param_name) {
+        format!("{} ({})", label, truncate_label(param_name, 14))
+    } else {
+        label
+    }
+}
+
+fn modulator_param_assigned(param_name: &str) -> bool {
+    !param_name.is_empty() && param_name != "Parameter"
+}
+
+fn modulator_param_display_name(param_name: &str) -> Option<&str> {
+    if modulator_param_assigned(param_name) {
+        Some(param_name)
+    } else {
+        None
+    }
+}
+
 fn shape_label(shape: LfoShape) -> &'static str {
     match shape {
         LfoShape::Sine => "Sine",
         LfoShape::Triangle => "Tri",
         LfoShape::Saw => "Saw",
         LfoShape::Square => "Sqr",
-        LfoShape::Custom => "MSEG",
+        LfoShape::Custom => "Custom",
     }
 }
 

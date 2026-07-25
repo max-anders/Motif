@@ -60,6 +60,9 @@ pub struct LfoModulator {
     /// Cached for display when the plugin is not loaded.
     #[serde(default)]
     pub param_name: String,
+    /// Optional user label; empty shows "Mod N" in the UI.
+    #[serde(default)]
+    pub name: String,
     #[serde(default)]
     pub shape: LfoShape,
     #[serde(default)]
@@ -95,6 +98,7 @@ impl LfoModulator {
             id,
             target,
             param_name: String::new(),
+            name: String::new(),
             shape: LfoShape::Sine,
             rate: LfoRate::default(),
             depth: default_depth(),

@@ -19,7 +19,10 @@ mod transport;
 pub use add_browser::{AddBrowserAction, AddBrowserUi, BrowserTab};
 pub use app_settings::AppSettings;
 pub use instrument_menu::{choice_to_instrument, track_name_for_choice};
-pub use devices::{DevicesUi, DEVICES_STRIP_HEIGHT};
+pub use devices::{
+    sync_devices_dock_panel_width, DevicesUi, DEVICES_DOCK_MAX_WIDTH, DEVICES_DOCK_MIN_WIDTH,
+    DEVICES_DOCK_WIDTH, DEVICES_DOCK_WIDTH_DEVICES,
+};
 pub use inspector::show_inspector;
 pub use mixer::MixerUi;
 pub use performance::PerformanceUi;

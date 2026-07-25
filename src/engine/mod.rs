@@ -107,12 +107,17 @@ pub struct LoopPlayback {
 
 pub trait DawEngine {
     fn play(&mut self);
+    /// Pause and restore the playhead to where playback started.
     fn pause(&mut self);
+    /// Pause, leave the playhead where it is, and move the return-anchor there.
+    fn pause_in_place(&mut self);
     fn stop(&mut self);
     fn toggle_playback(&mut self);
     fn is_playing(&self) -> bool;
     fn seek_beats(&mut self, beats: f32);
     fn current_beats(&self) -> f32;
+    /// Beat where Pause will return the playhead (set on Play / seek / pause-in-place).
+    fn playback_anchor_beats(&self) -> f32;
     fn set_beats_per_second(&mut self, beats_per_second: f32);
     fn advance(&mut self, delta_seconds: f32, playback: LoopPlayback);
 

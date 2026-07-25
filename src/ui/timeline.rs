@@ -2,7 +2,7 @@ use std::hash::Hash;
 
 use egui::containers::scroll_area::ScrollBarVisibility;
 use egui::style::ScrollStyle;
-use egui::{Pos2, Rect, Response, ScrollArea, Ui, Vec2};
+use egui::{Color32, Pos2, Rect, Response, ScrollArea, Ui, Vec2};
 
 use crate::engine::DawEngine;
 use crate::model::{Project, MIN_LOOP_SPAN_BEATS, SNAP_BEATS};
@@ -322,6 +322,45 @@ pub fn draw_playhead(
         egui::Stroke::new(2.0_f32, theme.playhead),
     );
     painter.circle_filled(Pos2::new(x, ruler.center().y), 4.0, theme.playhead);
+}
+
+/// Small cue mark on the ruler for where Pause will return the playhead.
+/// Hidden when it coincides with the live playhead (no visual clutter at rest).
+pub fn draw_playback_anchor(
+    painter: &egui::Painter,
+    ruler: Rect,
+    body: Rect,
+    metrics: TimelineMetrics,
+    local_beat: f32,
+    playhead_beats: f32,
+    visible: bool,
+    theme: &ThemeColors,
+) {
+    if !visible || local_beat < 0.0 {
+        return;
+    }
+    if (local_beat - playhead_beats).abs() < 0.001 {
+        return;
+    }
+    let x = timeline_x(body, local_beat, metrics);
+    let color = Color32::from_rgba_unmultiplied(
+        theme.playhead.r(),
+        theme.playhead.g(),
+        theme.playhead.b(),
+        170,
+    );
+    let tip = Pos2::new(x, ruler.bottom() - 1.0);
+    let half = 4.0_f32;
+    let top_y = tip.y - 6.0;
+    painter.add(egui::Shape::convex_polygon(
+        vec![
+            Pos2::new(x - half, top_y),
+            Pos2::new(x + half, top_y),
+            tip,
+        ],
+        color,
+        egui::Stroke::NONE,
+    ));
 }
 
 /// Highlight the active loop/cycle region: a translucent band across the body,

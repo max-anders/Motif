@@ -3,7 +3,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use egui::containers::scroll_area::ScrollBarVisibility;
-use egui::{Align, Id, Layout, Pos2, Rect, RichText, Sense, Stroke, Ui, UiBuilder, Vec2};
+use egui::containers::panel::PanelState;
+use egui::{Align, Align2, Id, Layout, Pos2, Rect, RichText, Sense, Stroke, Ui, UiBuilder, Vec2};
 
 use crate::engine::{DawEngine, DecodedAudio, PluginCatalog, PluginRef};
 use crate::model::{Device, EditHistory, Project, Track, TrackInstrument};
@@ -12,7 +13,9 @@ use crate::ui::instrument_menu::{
     MENU_LIST_MAX_HEIGHT,
 };
 use crate::ui::modulator::{
-    show_modulators_for_target, TargetFilter, CHIP_HEIGHT_MSEG, CHIP_HEIGHT_STANDARD,
+    mod_dock_content_width, modulator_count_for_target, normalize_modulator_target_key,
+    show_modulator_panel, target_filter_from_device_key, ModulatorLayout, TargetFilter,
+    INSTRUMENT_MOD_TARGET_KEY, MOD_DOCK_FRAME_H_MARGIN,
 };
 use crate::ui::playlist::{
     draw_lane_timeline, draw_marquee, handle_single_track_clip_pointer, ms_toggle_button,
@@ -20,8 +23,8 @@ use crate::ui::playlist::{
 };
 use crate::ui::theme::ThemeColors;
 use crate::ui::timeline::{
-    apply_horizontal_wheel_controls, draw_loop_region, draw_playhead, draw_ruler,
-    handle_loop_region_pointer, handle_timeline_playhead_pointer, hit_test_loop_edge,
+    apply_horizontal_wheel_controls, draw_loop_region, draw_playhead, draw_playback_anchor,
+    draw_ruler, handle_loop_region_pointer, handle_timeline_playhead_pointer, hit_test_loop_edge,
     timeline_body_rect, with_solid_scrollbars, LoopEdge, TimelineMetrics, DEFAULT_BEAT_WIDTH,
     RULER_HEIGHT,
 };
@@ -33,27 +36,66 @@ const TILE_INNER_MARGIN: f32 = 6.0;
 const TILE_CONTENT_WIDTH: f32 = TILE_WIDTH - TILE_INNER_MARGIN * 2.0;
 const TILE_CONTENT_HEIGHT: f32 = TILE_HEIGHT - TILE_INNER_MARGIN * 2.0;
 const TILE_GAP: f32 = 8.0;
-const STRIP_HEADER_HEIGHT: f32 = 28.0;
+// Matches `with_solid_scrollbars` bar width so the lane sits flush above the bar.
+const MINI_SCROLLBAR_WIDTH: f32 = 10.0;
 const STRIP_PADDING: f32 = 8.0;
-const STRIP_HEADER_GAP: f32 = 4.0;
-const TILE_TO_MODULATOR_GAP: f32 = 4.0;
-const MODULATOR_ADD_BUTTON_HEIGHT: f32 = 22.0;
-const STRIP_MODULATOR_HEIGHT: f32 = CHIP_HEIGHT_STANDARD.max(CHIP_HEIGHT_MSEG);
-/// Default height for the bottom device strip (header + tile + modulator + scrollbar).
-pub const DEVICES_STRIP_HEIGHT: f32 = STRIP_HEADER_HEIGHT
-    + STRIP_HEADER_GAP
-    + STRIP_PADDING
-    + TILE_HEIGHT
-    + TILE_TO_MODULATOR_GAP
-    + STRIP_MODULATOR_HEIGHT
-    + TILE_TO_MODULATOR_GAP
-    + MODULATOR_ADD_BUTTON_HEIGHT
-    + MINI_SCROLLBAR_WIDTH;
+const TILE_TO_MODULATOR_GAP: f32 = 8.0;
+const DEVICE_COLUMN_WIDTH: f32 = TILE_WIDTH + STRIP_PADDING * 2.0;
+const MOD_COLUMN_MIN_WIDTH: f32 = 280.0;
+/// Devices-only dock width (no modulator column).
+pub const DEVICES_DOCK_WIDTH_DEVICES: f32 = DEVICE_COLUMN_WIDTH + STRIP_PADDING;
+/// Default width when the modulator column is open.
+pub const DEVICES_DOCK_WIDTH: f32 = DEVICE_COLUMN_WIDTH + MOD_COLUMN_MIN_WIDTH + 12.0;
+/// Minimum dock width with modulators visible.
+pub const DEVICES_DOCK_MIN_WIDTH: f32 = DEVICE_COLUMN_WIDTH + 200.0 + 16.0;
+/// Minimum dock width when only device tiles are shown.
+pub const DEVICES_DOCK_MIN_WIDTH_DEVICES: f32 = DEVICES_DOCK_WIDTH_DEVICES;
+/// Maximum dock width (~25% wider than default).
+pub const DEVICES_DOCK_MAX_WIDTH: f32 = DEVICES_DOCK_WIDTH * 1.25;
+
+const DEVICES_DOCK_PANEL_ID: &str = "devices_dock";
+
+/// Snap the right devices dock to devices-only or expanded width before `SidePanel::show`.
+pub fn sync_devices_dock_panel_width(
+    ctx: &egui::Context,
+    track_id: Option<u64>,
+    devices: &DevicesUi,
+) {
+    let panel_id = egui::Id::new(DEVICES_DOCK_PANEL_ID);
+    let mods_open = track_id.is_some_and(|id| devices.dock_shows_mod_column(id));
+
+    if mods_open {
+        if let Some(mut state) = PanelState::load(ctx, panel_id) {
+            if state.rect.width() + 0.5 < DEVICES_DOCK_MIN_WIDTH {
+                set_right_panel_width(&mut state, DEVICES_DOCK_WIDTH);
+                store_panel_state(ctx, panel_id, state);
+            }
+        }
+        return;
+    }
+
+    if let Some(mut state) = PanelState::load(ctx, panel_id) {
+        let target = DEVICES_DOCK_WIDTH_DEVICES;
+        if (state.rect.width() - target).abs() > 0.5 {
+            set_right_panel_width(&mut state, target);
+            store_panel_state(ctx, panel_id, state);
+        }
+    }
+}
+
+fn store_panel_state(ctx: &egui::Context, panel_id: egui::Id, state: PanelState) {
+    ctx.data_mut(|d| d.insert_persisted(panel_id, state));
+}
+
+fn set_right_panel_width(state: &mut PanelState, width: f32) {
+    let max_x = state.rect.max.x;
+    state.rect.min.x = max_x - width;
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ChainLayout {
     Page,
-    Strip,
+    Dock,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -63,12 +105,11 @@ pub struct DevicesStripOutput {
 }
 // Ruler + one lane + the horizontal scrollbar strip; no vertical scroll, no gap.
 const MINI_PLAYLIST_HEIGHT: f32 = RULER_HEIGHT + LANE_HEIGHT + MINI_SCROLLBAR_WIDTH;
-// Matches `with_solid_scrollbars` bar width so the lane sits flush above the bar.
-const MINI_SCROLLBAR_WIDTH: f32 = 10.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DeviceTileAction {
     None,
+    ToggleMods,
     ToggleBypass,
     Remove,
     OpenEditor,
@@ -94,6 +135,10 @@ pub struct DevicesUi {
     mini_beat_width: f32,
     mini_scroll_offset: Vec2,
     mini_drag_moved: bool,
+    /// Selected modulator target per track (`0` = instrument, else FX device id).
+    selected_modulator_target: HashMap<u64, u64>,
+    /// Per-track modulator column visibility in the dock strip.
+    show_mod_panel: HashMap<u64, bool>,
 }
 
 impl Default for DevicesUi {
@@ -113,6 +158,8 @@ impl Default for DevicesUi {
             mini_beat_width: DEFAULT_BEAT_WIDTH,
             mini_scroll_offset: Vec2::ZERO,
             mini_drag_moved: false,
+            selected_modulator_target: HashMap::new(),
+            show_mod_panel: HashMap::new(),
         }
     }
 }
@@ -132,6 +179,28 @@ impl DevicesUi {
 
     pub fn take_open_clip_request(&mut self) -> Option<u64> {
         self.open_clip_request.take()
+    }
+
+    pub fn dock_shows_mod_column(&self, track_id: u64) -> bool {
+        self.show_mod_panel.get(&track_id).copied().unwrap_or(false)
+    }
+
+    fn toggle_mod_panel_for_target(
+        &mut self,
+        track_id: u64,
+        target_key: u64,
+    ) {
+        let open = self.show_mod_panel.entry(track_id).or_insert(false);
+        let selected = self
+            .selected_modulator_target
+            .entry(track_id)
+            .or_insert(INSTRUMENT_MOD_TARGET_KEY);
+        if *open && *selected == target_key {
+            *open = false;
+        } else {
+            *selected = target_key;
+            *open = true;
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -321,7 +390,7 @@ impl DevicesUi {
             device_errors,
             &track_snapshot,
             theme,
-            ChainLayout::Strip,
+            ChainLayout::Dock,
         );
 
         output
@@ -490,6 +559,17 @@ impl DevicesUi {
                         );
                     }
                     let playhead = engine.current_beats();
+                    let anchor = engine.playback_anchor_beats();
+                    draw_playback_anchor(
+                        &timeline_painter,
+                        ruler,
+                        lane,
+                        metrics,
+                        anchor,
+                        playhead,
+                        true,
+                        theme,
+                    );
                     draw_playhead(
                         &timeline_painter,
                         ruler,
@@ -554,35 +634,123 @@ impl DevicesUi {
                                 track,
                                 theme,
                                 true,
+                                false,
                             );
                         });
+                        ui.add_space(TILE_TO_MODULATOR_GAP);
+                        self.show_modulator_panel_for_track(
+                            ui,
+                            project,
+                            engine,
+                            history,
+                            track,
+                            theme,
+                            ModulatorLayout::Wide,
+                            None,
+                        );
                     });
             }
-            ChainLayout::Strip => {
-                ui.add_space(STRIP_PADDING);
-                egui::ScrollArea::horizontal()
-                    .id_salt(("devices_fx_strip", track.id))
-                    .auto_shrink([false, false])
-                    .scroll_bar_visibility(ScrollBarVisibility::AlwaysVisible)
-                    .show(ui, |ui| {
-                        ui.spacing_mut().item_spacing = Vec2::new(TILE_GAP, TILE_GAP);
-                        ui.horizontal(|ui| {
-                            ui.add_space(STRIP_PADDING);
-                            self.paint_device_chain_tiles(
-                                ui,
-                                project,
-                                engine,
-                                catalog,
-                                history,
-                                device_errors,
-                                track,
-                                theme,
-                                true,
+            ChainLayout::Dock => {
+                let show_mods = self.show_mod_panel.get(&track.id).copied().unwrap_or(false);
+                let body_height = ui.available_height();
+                ui.horizontal_top(|ui| {
+                    ui.allocate_ui_with_layout(
+                        Vec2::new(DEVICE_COLUMN_WIDTH, body_height),
+                        Layout::top_down(Align::Min),
+                        |ui| {
+                            ui.label(
+                                RichText::new("Devices")
+                                    .small()
+                                    .strong()
+                                    .color(theme.track_header_text),
                             );
-                        });
-                    });
+                            ui.add_space(4.0);
+                            egui::ScrollArea::vertical()
+                                .id_salt(("devices_dock_chain", track.id))
+                                .auto_shrink([false, true])
+                                .show(ui, |ui| {
+                                    ui.set_width(TILE_WIDTH);
+                                    ui.spacing_mut().item_spacing.y = TILE_GAP;
+                                    self.paint_device_chain_tiles(
+                                        ui,
+                                        project,
+                                        engine,
+                                        catalog,
+                                        history,
+                                        device_errors,
+                                        track,
+                                        theme,
+                                        show_mods,
+                                        true,
+                                    );
+                                });
+                        },
+                    );
+                    if show_mods {
+                        ui.separator();
+                        let mod_column_width =
+                            (ui.available_width() - STRIP_PADDING).max(0.0);
+                        let mod_content_width = mod_dock_content_width(mod_column_width);
+                        ui.allocate_ui_with_layout(
+                            Vec2::new(mod_column_width, body_height),
+                            Layout::top_down(Align::Min),
+                            |ui| {
+                                egui::Frame::new()
+                                    .inner_margin(egui::Margin::symmetric(
+                                        MOD_DOCK_FRAME_H_MARGIN as i8,
+                                        0,
+                                    ))
+                                    .show(ui, |ui| {
+                                        ui.set_max_width(mod_content_width);
+                                        self.show_modulator_panel_for_track(
+                                            ui,
+                                            project,
+                                            engine,
+                                            history,
+                                            track,
+                                            theme,
+                                            ModulatorLayout::Compact,
+                                            Some(mod_content_width),
+                                        );
+                                    });
+                            },
+                        );
+                        ui.add_space(STRIP_PADDING);
+                    }
+                });
             }
         }
+    }
+
+    fn show_modulator_panel_for_track(
+        &mut self,
+        ui: &mut Ui,
+        project: &mut Project,
+        engine: &mut dyn DawEngine,
+        history: &mut EditHistory,
+        track: &Track,
+        theme: &ThemeColors,
+        mod_layout: ModulatorLayout,
+        fixed_content_width: Option<f32>,
+    ) {
+        let selected_key = self
+            .selected_modulator_target
+            .entry(track.id)
+            .or_insert(INSTRUMENT_MOD_TARGET_KEY);
+        *selected_key = normalize_modulator_target_key(track, *selected_key);
+        let target_filter = target_filter_from_device_key(*selected_key);
+        show_modulator_panel(
+            ui,
+            project,
+            track,
+            track.id,
+            target_filter,
+            mod_layout,
+            fixed_content_width,
+            engine,
+            history,
+            theme,
+        );
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -596,35 +764,48 @@ impl DevicesUi {
         device_errors: &HashMap<(u64, u64), String>,
         track: &Track,
         theme: &ThemeColors,
-        show_modulators: bool,
+        highlight_mod_target: bool,
+        mod_button_toggles_panel: bool,
     ) {
-        ui.vertical(|ui| {
-            instrument_tile(
-                ui,
-                project,
-                track,
-                engine,
-                catalog,
-                history,
-                &mut self.change_instrument_search,
-                &mut self.plugin_editor_request,
-                track.id,
-                theme,
-            );
-            if show_modulators {
-                ui.add_space(4.0);
-                show_modulators_for_target(
-                    ui,
-                    project,
-                    track,
-                    track.id,
-                    TargetFilter::Instrument,
-                    engine,
-                    history,
-                    theme,
-                );
+        {
+            let key = self
+                .selected_modulator_target
+                .entry(track.id)
+                .or_insert(INSTRUMENT_MOD_TARGET_KEY);
+            *key = normalize_modulator_target_key(track, *key);
+        }
+        let current_target = self
+            .selected_modulator_target
+            .get(&track.id)
+            .copied()
+            .unwrap_or(INSTRUMENT_MOD_TARGET_KEY);
+
+        let instrument_selected =
+            highlight_mod_target && current_target == INSTRUMENT_MOD_TARGET_KEY;
+        let instrument_mod_count =
+            modulator_count_for_target(track, TargetFilter::Instrument);
+        let (_, instrument_action) = instrument_tile(
+            ui,
+            project,
+            track,
+            engine,
+            catalog,
+            history,
+            &mut self.change_instrument_search,
+            &mut self.plugin_editor_request,
+            track.id,
+            theme,
+            instrument_selected,
+            instrument_mod_count,
+        );
+        if instrument_action == DeviceTileAction::ToggleMods {
+            if mod_button_toggles_panel {
+                self.toggle_mod_panel_for_target(track.id, INSTRUMENT_MOD_TARGET_KEY);
+            } else {
+                self.selected_modulator_target
+                    .insert(track.id, INSTRUMENT_MOD_TARGET_KEY);
             }
-        });
+        }
 
         let mut drag_from: Option<usize> = None;
         let mut drag_to: Option<usize> = None;
@@ -634,95 +815,100 @@ impl DevicesUi {
             let editor_open = engine.plugin_editor_is_open(PluginRef::device(track.id, device.id));
             let slot_ready = engine.plugin_slot_ready(PluginRef::device(track.id, device.id));
 
-            // Drag handle only -- wrapping the whole tile in `dnd_drag_source` overlays
-            // Sense::drag + Grab cursor on Edit/Byp/x and steals their clicks.
             let payload = (track.id, index);
             let drag_id = Id::new(("device_tile_drag", track.id, device.id));
             let device_id = device.id;
             let device_name = device.name.clone();
             let device_bypassed = device.bypassed;
-            ui.vertical(|ui| {
-                let (tile_response, action) = device_tile_contents(
-                    ui,
-                    device,
-                    status,
-                    editor_open,
-                    slot_ready,
-                    theme,
-                    drag_id,
-                    payload,
-                );
+            let device_selected =
+                highlight_mod_target && current_target == device_id;
+            let device_mod_count =
+                modulator_count_for_target(track, TargetFilter::Device { device_id });
 
-                if let Some(pointer) = ui.input(|input| input.pointer.interact_pos()) {
-                    if let Some(hovered) = tile_response.dnd_hover_payload::<(u64, usize)>() {
-                        if hovered.0 == track.id {
-                            let insert_idx = if pointer.x < tile_response.rect.center().x {
-                                index
-                            } else {
-                                index + 1
-                            };
-                            // Light insert cue while reordering.
-                            let x = if insert_idx == index {
-                                tile_response.rect.left()
-                            } else {
-                                tile_response.rect.right()
-                            };
-                            ui.painter().vline(
-                                x,
-                                tile_response.rect.y_range(),
-                                Stroke::new(2.0_f32, theme.accent),
-                            );
-                            if let Some(released) =
-                                tile_response.dnd_release_payload::<(u64, usize)>()
-                            {
-                                if released.0 == track.id {
-                                    drag_from = Some(released.1);
-                                    drag_to = Some(insert_idx);
-                                }
+            let (tile_response, action) = device_tile_contents(
+                ui,
+                device,
+                status,
+                editor_open,
+                slot_ready,
+                theme,
+                drag_id,
+                payload,
+                device_selected,
+                device_mod_count,
+            );
+
+            if let Some(pointer) = ui.input(|input| input.pointer.interact_pos()) {
+                if let Some(hovered) = tile_response.dnd_hover_payload::<(u64, usize)>() {
+                    if hovered.0 == track.id {
+                        let insert_idx = if pointer.x < tile_response.rect.center().x {
+                            index
+                        } else {
+                            index + 1
+                        };
+                        let x = if insert_idx == index {
+                            tile_response.rect.left()
+                        } else {
+                            tile_response.rect.right()
+                        };
+                        ui.painter().vline(
+                            x,
+                            tile_response.rect.y_range(),
+                            Stroke::new(2.0_f32, theme.accent),
+                        );
+                        if let Some(released) =
+                            tile_response.dnd_release_payload::<(u64, usize)>()
+                        {
+                            if released.0 == track.id {
+                                drag_from = Some(released.1);
+                                drag_to = Some(insert_idx);
                             }
                         }
                     }
                 }
+            }
 
-                match action {
-                    DeviceTileAction::None => {}
-                    DeviceTileAction::ToggleBypass => {
-                        history.push_before(project.clone());
-                        project.set_device_bypass(track.id, device_id, !device_bypassed);
-                    }
-                    DeviceTileAction::Remove => {
-                        history.push_before(project.clone());
-                        project.remove_device(track.id, device_id);
-                    }
-                    DeviceTileAction::OpenEditor => {
-                        self.plugin_editor_request = Some(PluginEditorRequest::Open {
-                            track_id: track.id,
-                            device_id: Some(device_id),
-                            title: device_name.clone(),
-                        });
-                    }
-                    DeviceTileAction::CloseEditor => {
-                        self.plugin_editor_request = Some(PluginEditorRequest::Close {
-                            track_id: track.id,
-                            device_id: Some(device_id),
-                        });
+            if action == DeviceTileAction::ToggleMods {
+                if mod_button_toggles_panel {
+                    self.toggle_mod_panel_for_target(track.id, device_id);
+                } else {
+                    self.selected_modulator_target.insert(track.id, device_id);
+                }
+            }
+
+            match action {
+                DeviceTileAction::None | DeviceTileAction::ToggleMods => {}
+                DeviceTileAction::ToggleBypass => {
+                    history.push_before(project.clone());
+                    project.set_device_bypass(track.id, device_id, !device_bypassed);
+                }
+                DeviceTileAction::Remove => {
+                    history.push_before(project.clone());
+                    project.remove_device(track.id, device_id);
+                    if self
+                        .selected_modulator_target
+                        .get(&track.id)
+                        .copied()
+                        == Some(device_id)
+                    {
+                        self.selected_modulator_target
+                            .insert(track.id, INSTRUMENT_MOD_TARGET_KEY);
                     }
                 }
-
-                if show_modulators {
-                    ui.add_space(4.0);
-                    show_modulators_for_target(
-                        ui,
-                        project,
-                        track,
-                        track.id,
-                        TargetFilter::Device { device_id },
-                        engine,
-                        history,
-                        theme,
-                    );
+                DeviceTileAction::OpenEditor => {
+                    self.plugin_editor_request = Some(PluginEditorRequest::Open {
+                        track_id: track.id,
+                        device_id: Some(device_id),
+                        title: device_name.clone(),
+                    });
                 }
-            });
+                DeviceTileAction::CloseEditor => {
+                    self.plugin_editor_request = Some(PluginEditorRequest::Close {
+                        track_id: track.id,
+                        device_id: Some(device_id),
+                    });
+                }
+            }
         }
 
         if let (Some(from), Some(mut to)) = (drag_from, drag_to) {
@@ -736,8 +922,56 @@ impl DevicesUi {
             }
         }
 
-        add_fx_tile(ui, project, catalog, &mut self.add_fx_search, track.id);
+        add_fx_tile(ui, project, catalog, &mut self.add_fx_search, track.id, theme);
     }
+}
+
+fn mod_tile_button(ui: &mut Ui, active: bool, theme: &ThemeColors) -> bool {
+    let fill = if active {
+        theme.accent
+    } else {
+        theme.widget_bg
+    };
+    let stroke = if active {
+        theme.accent
+    } else {
+        theme.separator
+    };
+    let text = if active {
+        theme.panel_bg
+    } else {
+        theme.button_text
+    };
+    ui.add(
+        egui::Button::new(RichText::new("Mod").small().strong().color(text))
+            .fill(fill)
+            .stroke(Stroke::new(1.0_f32, stroke))
+            .corner_radius(3.0)
+            .min_size(Vec2::new(30.0, 18.0)),
+    )
+    .on_hover_text(if active {
+        "Hide modulators for this device"
+    } else {
+        "Show LFO / MSEG modulators"
+    })
+    .clicked()
+}
+
+fn device_tile_action_button(
+    ui: &mut Ui,
+    label: &str,
+    theme: &ThemeColors,
+    hover: &str,
+) -> bool {
+    ui.add(
+        egui::Button::new(RichText::new(label).small().color(theme.button_text))
+            .fill(theme.widget_bg)
+            .stroke(Stroke::new(1.0_f32, theme.separator))
+            .corner_radius(3.0)
+            .min_size(Vec2::new(30.0, 18.0)),
+    )
+    .on_hover_text(hover)
+    .clicked()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -752,7 +986,10 @@ fn instrument_tile(
     plugin_editor_request: &mut Option<PluginEditorRequest>,
     track_id: u64,
     theme: &ThemeColors,
-) {
+    selected: bool,
+    mod_count: usize,
+) -> (egui::Response, DeviceTileAction) {
+    let mut action = DeviceTileAction::None;
     let is_plugin = matches!(track.instrument, TrackInstrument::Plugin { .. });
     let editor_open = engine.plugin_editor_is_open(PluginRef::instrument(track_id));
     let slot_ready = engine.plugin_slot_ready(PluginRef::instrument(track_id));
@@ -763,8 +1000,19 @@ fn instrument_tile(
         theme.widget_bg_active,
         theme.accent,
         ("devices_instrument_tile", track_id),
+        selected,
+        mod_count,
+        theme,
     );
-    tile_ui.label(RichText::new("Instrument").color(theme.text_muted).small());
+    tile_ui.horizontal(|ui| {
+        ui.label(
+            RichText::new("INST")
+                .small()
+                .strong()
+                .monospace()
+                .color(theme.accent),
+        );
+    });
     tile_ui.label(
         RichText::new(truncate_label(track.instrument.display_name(), 16))
             .color(theme.track_header_text)
@@ -778,9 +1026,12 @@ fn instrument_tile(
             .monospace(),
     );
     tile_ui.with_layout(Layout::bottom_up(Align::LEFT), |ui| {
-        if is_plugin {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 3.0;
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 3.0;
+            if mod_tile_button(ui, selected, theme) {
+                action = DeviceTileAction::ToggleMods;
+            }
+            if is_plugin {
                 let label = if editor_open {
                     "Close"
                 } else if slot_ready {
@@ -789,7 +1040,14 @@ fn instrument_tile(
                     "..."
                 };
                 if ui
-                    .add_enabled(editor_open || slot_ready, egui::Button::new(label).small())
+                    .add_enabled(
+                        editor_open || slot_ready,
+                        egui::Button::new(RichText::new(label).small().color(theme.button_text))
+                            .fill(theme.widget_bg)
+                            .stroke(Stroke::new(1.0_f32, theme.separator))
+                            .corner_radius(3.0)
+                            .min_size(Vec2::new(34.0, 18.0)),
+                    )
                     .on_hover_text(if editor_open {
                         "Close plugin editor"
                     } else if slot_ready {
@@ -812,41 +1070,41 @@ fn instrument_tile(
                         }
                     });
                 }
-            });
-        }
-    });
-
-    tile_response
-        .on_hover_text("Right-click to change instrument")
-        .context_menu(|ui| {
-            ui.label("Change instrument");
-            ui.separator();
-            if let Some(choice) = show_instrument_picker(
-                ui,
-                catalog,
-                change_instrument_search,
-                &format!("devfx_chg_{track_id}"),
-                false,
-                MENU_LIST_MAX_HEIGHT,
-            ) {
-                let rename = match &choice {
-                    InstrumentChoice::Plugin(entry) => Some(entry.name.clone()),
-                    InstrumentChoice::BuiltInPiano => None,
-                };
-                let instrument = choice_to_instrument(choice);
-                history.push_before(project.clone());
-                if let Some(track) = project.track_mut(track_id) {
-                    if let Some(name) = rename {
-                        track.name = name;
-                    }
-                    // New instrument identity -- drop prior plugin blob.
-                    track.plugin_state = None;
-                    track.instrument = instrument;
-                }
-                change_instrument_search.clear();
-                ui.close_menu();
             }
         });
+    });
+
+    let response = tile_response.on_hover_text("Right-click to change instrument.");
+    response.context_menu(|ui| {
+        ui.label("Change instrument");
+        ui.separator();
+        if let Some(choice) = show_instrument_picker(
+            ui,
+            catalog,
+            change_instrument_search,
+            &format!("devfx_chg_{track_id}"),
+            false,
+            MENU_LIST_MAX_HEIGHT,
+        ) {
+            let rename = match &choice {
+                InstrumentChoice::Plugin(entry) => Some(entry.name.clone()),
+                InstrumentChoice::BuiltInPiano => None,
+            };
+            let instrument = choice_to_instrument(choice);
+            history.push_before(project.clone());
+            if let Some(track) = project.track_mut(track_id) {
+                if let Some(name) = rename {
+                    track.name = name;
+                }
+                // New instrument identity -- drop prior plugin blob.
+                track.plugin_state = None;
+                track.instrument = instrument;
+            }
+            change_instrument_search.clear();
+            ui.close_menu();
+        }
+    });
+    (response, action)
 }
 
 fn device_tile_shell(
@@ -854,16 +1112,34 @@ fn device_tile_shell(
     fill: egui::Color32,
     stroke: egui::Color32,
     id_salt: impl std::hash::Hash,
+    selected: bool,
+    mod_count: usize,
+    theme: &ThemeColors,
 ) -> (egui::Response, Ui) {
-    // Hover is enough for drop-target `contains_pointer`; drag lives on the grip only.
-    let (rect, response) = ui.allocate_exact_size(Vec2::new(TILE_WIDTH, TILE_HEIGHT), Sense::hover());
+    let stroke_color = if selected { theme.accent } else { stroke };
+    let stroke_width = if selected { 2.0_f32 } else { 1.0_f32 };
+    let (rect, response) =
+        ui.allocate_exact_size(Vec2::new(TILE_WIDTH, TILE_HEIGHT), Sense::hover());
     ui.painter().rect_filled(rect, TILE_ROUNDING, fill);
     ui.painter().rect_stroke(
         rect,
         TILE_ROUNDING,
-        Stroke::new(1.0_f32, stroke),
+        Stroke::new(stroke_width, stroke_color),
         egui::StrokeKind::Inside,
     );
+
+    if mod_count > 0 {
+        let badge_center = Pos2::new(rect.right() - 10.0, rect.top() + 10.0);
+        ui.painter()
+            .circle_filled(badge_center, 8.0, theme.accent);
+        ui.painter().text(
+            badge_center,
+            Align2::CENTER_CENTER,
+            format!("{mod_count}"),
+            egui::FontId::proportional(9.0),
+            theme.panel_bg,
+        );
+    }
 
     let content_rect = rect.shrink(TILE_INNER_MARGIN);
     let mut content_ui = ui.new_child(
@@ -887,6 +1163,8 @@ fn device_tile_contents(
     theme: &ThemeColors,
     drag_id: Id,
     drag_payload: (u64, usize),
+    selected: bool,
+    mod_count: usize,
 ) -> (egui::Response, DeviceTileAction) {
     let mut action = DeviceTileAction::None;
     let fill = if device.bypassed {
@@ -899,11 +1177,21 @@ fn device_tile_contents(
         fill,
         theme.separator,
         ("device_tile", device.id),
+        selected,
+        mod_count,
+        theme,
     );
     tile_ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
         ui.label(
-            RichText::new(truncate_label(&device.name, 14))
+            RichText::new("FX")
+                .small()
+                .strong()
+                .monospace()
+                .color(theme.text_muted),
+        );
+        ui.label(
+            RichText::new(truncate_label(&device.name, 12))
                 .color(theme.track_header_text)
                 .strong()
                 .small(),
@@ -940,15 +1228,11 @@ fn device_tile_contents(
     tile_ui.with_layout(Layout::bottom_up(Align::LEFT), |ui| {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 3.0;
+            if mod_tile_button(ui, selected, theme) {
+                action = DeviceTileAction::ToggleMods;
+            }
             if ms_toggle_button(ui, "Byp", device.bypassed, theme) {
                 action = DeviceTileAction::ToggleBypass;
-            }
-            if ui
-                .small_button("x")
-                .on_hover_text("Remove device")
-                .clicked()
-            {
-                action = DeviceTileAction::Remove;
             }
             let label = if editor_open {
                 "Close"
@@ -958,7 +1242,14 @@ fn device_tile_contents(
                 "..."
             };
             if ui
-                .add_enabled(editor_open || slot_ready, egui::Button::new(label).small())
+                .add_enabled(
+                    editor_open || slot_ready,
+                    egui::Button::new(RichText::new(label).small().color(theme.button_text))
+                        .fill(theme.widget_bg)
+                        .stroke(Stroke::new(1.0_f32, theme.separator))
+                        .corner_radius(3.0)
+                        .min_size(Vec2::new(34.0, 18.0)),
+                )
                 .on_hover_text(if editor_open {
                     "Close plugin editor"
                 } else if slot_ready {
@@ -974,6 +1265,9 @@ fn device_tile_contents(
                     DeviceTileAction::OpenEditor
                 };
             }
+            if device_tile_action_button(ui, "x", theme, "Remove device") {
+                action = DeviceTileAction::Remove;
+            }
         });
     });
     (tile_response, action)
@@ -985,13 +1279,22 @@ fn add_fx_tile(
     catalog: &PluginCatalog,
     add_fx_search: &mut String,
     track_id: u64,
+    theme: &ThemeColors,
 ) {
-    ui.allocate_ui_with_layout(
-        Vec2::new(TILE_WIDTH, TILE_HEIGHT),
-        Layout::top_down(Align::Center),
-        |ui| {
-            ui.centered_and_justified(|ui| {
-                ui.menu_button("+ Add FX", |ui| {
+    let (rect, _) =
+        ui.allocate_exact_size(Vec2::new(TILE_WIDTH, TILE_HEIGHT), Sense::hover());
+    ui.painter().rect_filled(rect, TILE_ROUNDING, theme.panel_bg);
+    ui.painter().rect_stroke(
+        rect,
+        TILE_ROUNDING,
+        Stroke::new(1.0_f32, theme.separator.gamma_multiply(0.85)),
+        egui::StrokeKind::Inside,
+    );
+    ui.allocate_ui_at_rect(rect.shrink(TILE_INNER_MARGIN), |ui| {
+        ui.centered_and_justified(|ui| {
+            ui.menu_button(
+                RichText::new("+ Add FX").small().color(theme.text_muted),
+                |ui| {
                     if let Some(entry) = show_effect_picker(
                         ui,
                         catalog,
@@ -1004,10 +1307,10 @@ fn add_fx_tile(
                         add_fx_search.clear();
                         ui.close_menu();
                     }
-                });
-            });
-        },
-    );
+                },
+            );
+        });
+    });
 }
 
 fn truncate_label(text: &str, max_chars: usize) -> String {

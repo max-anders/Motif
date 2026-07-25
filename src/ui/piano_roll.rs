@@ -8,8 +8,9 @@ use crate::model::{
 };
 use crate::ui::theme::ThemeColors;
 use crate::ui::timeline::{
-    apply_piano_roll_wheel_controls, daw_editor_scroll_area, draw_playhead, draw_ruler,
-    handle_timeline_playhead_pointer, is_timeline_pointer, timeline_x, with_solid_scrollbars,
+    apply_piano_roll_wheel_controls, daw_editor_scroll_area, draw_playhead, draw_playback_anchor,
+    draw_ruler, handle_timeline_playhead_pointer, is_timeline_pointer, timeline_x,
+    with_solid_scrollbars,
     x_to_beat, TimelineMetrics, DEFAULT_BEAT_WIDTH, MAX_BEAT_WIDTH, MIN_BEAT_WIDTH, RULER_HEIGHT,
     TIMELINE_GUTTER_WIDTH,
 };
@@ -73,6 +74,8 @@ struct ActiveDrag {
     pointer_start_beats: f32,
     pointer_start_pitch: i32,
     originals: Vec<Note>,
+    /// Notes movers may overlap during this drag (Shift+drag duplicate sources).
+    ignore_ids: Vec<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -92,6 +95,8 @@ pub struct PianoRollUi {
     active_drag: Option<ActiveDrag>,
     marquee: Option<MarqueeDrag>,
     dragging_playhead: bool,
+    /// True if pointer moved enough during an active note drag to count as a drag.
+    drag_moved: bool,
     audition_pitch: Option<u8>,
     /// Track instrument used for keyboard / preview audition.
     audition_track_id: u64,
@@ -166,6 +171,7 @@ impl Default for PianoRollUi {
             active_drag: None,
             marquee: None,
             dragging_playhead: false,
+            drag_moved: false,
             audition_pitch: None,
             audition_track_id: 0,
             audition_held: false,
@@ -313,6 +319,8 @@ impl PianoRollUi {
         let local_playhead = global_playhead - clip_start;
         let playhead_visible = local_playhead >= 0.0 && local_playhead <= total_beats;
         let playhead_draw = if playhead_visible { local_playhead } else { -1.0 };
+        let local_anchor = engine.playback_anchor_beats() - clip_start;
+        let anchor_visible = local_anchor >= 0.0 && local_anchor <= total_beats;
 
         let clip_notes: Vec<Note> = project
             .midi_clip(clip_id)
@@ -482,6 +490,7 @@ impl PianoRollUi {
                 &mut self.selected_note_ids,
                 &mut self.active_drag,
                 &mut self.marquee,
+                &mut self.drag_moved,
                 &mut self.default_duration_beats,
                 &mut self.audition_pitch,
                 &mut self.audition_held,
@@ -519,8 +528,19 @@ impl PianoRollUi {
         // Playhead spans ruler + grid, clipped to the right of the key column so
         // it never draws over the keyboard or corner.
         let playhead_clip = Rect::from_min_max(Pos2::new(grid_area.left(), full.top()), full.max);
+        let clip_painter = ui.painter().with_clip_rect(playhead_clip);
+        draw_playback_anchor(
+            &clip_painter,
+            ruler_area,
+            beat_grid,
+            metrics.timeline(),
+            local_anchor,
+            local_playhead,
+            anchor_visible,
+            theme,
+        );
         draw_playhead(
-            &ui.painter().with_clip_rect(playhead_clip),
+            &clip_painter,
             ruler_area,
             beat_grid,
             metrics.timeline(),
@@ -1036,37 +1056,20 @@ fn apply_move_drag(
     };
 
     let raw_delta_beats = current_beats - drag.pointer_start_beats;
-    let mut delta_beats = if snap_horizontal {
+    let desired_delta_beats = if snap_horizontal {
         Project::snap_beats(primary.start_beats + raw_delta_beats).max(0.0) - primary.start_beats
     } else {
         raw_delta_beats
     };
+    let desired_delta_pitch = current_pitch - drag.pointer_start_pitch;
 
-    let min_start = drag
-        .originals
-        .iter()
-        .map(|note| note.start_beats)
-        .fold(f32::INFINITY, f32::min);
-    if min_start + delta_beats < 0.0 {
-        delta_beats = -min_start;
-    }
-
-    let raw_delta_pitch = current_pitch - drag.pointer_start_pitch;
-    let min_pitch = drag
-        .originals
-        .iter()
-        .map(|note| note.pitch as i32)
-        .min()
-        .unwrap_or(MIN_PITCH as i32);
-    let max_pitch = drag
-        .originals
-        .iter()
-        .map(|note| note.pitch as i32)
-        .max()
-        .unwrap_or(MAX_PITCH as i32);
-    let delta_pitch = raw_delta_pitch
-        .max(MIN_PITCH as i32 - min_pitch)
-        .min(MAX_PITCH as i32 - max_pitch);
+    let (delta_beats, delta_pitch) = project.clamp_note_move_deltas(
+        clip_id,
+        &drag.originals,
+        desired_delta_beats,
+        desired_delta_pitch,
+        &drag.ignore_ids,
+    );
 
     for original in &drag.originals {
         if let Some(note) = project
@@ -1125,12 +1128,6 @@ fn apply_resize_drag(
     let Some(original) = drag.originals.first() else {
         return;
     };
-    let Some(note) = project
-        .midi_clip_mut(clip_id)
-        .and_then(|clip| clip.note_mut(drag.note_id))
-    else {
-        return;
-    };
 
     let snapped_beats = |beats: f32| {
         if snap_horizontal {
@@ -1142,17 +1139,35 @@ fn apply_resize_drag(
 
     match drag.mode {
         DragMode::ResizeStart => {
-            let new_start = snapped_beats(current_beats.max(0.0));
+            let bound =
+                project.note_resize_start_bound(clip_id, drag.note_id, original.pitch, original.start_beats);
             let end = original.end_beats();
-            note.start_beats = new_start.min(end - SNAP_BEATS);
-            note.duration_beats = (end - note.start_beats).max(SNAP_BEATS);
-            note.pitch = original.pitch;
+            let new_start = snapped_beats(current_beats.max(0.0))
+                .max(bound)
+                .min(end - SNAP_BEATS);
+            if let Some(note) = project
+                .midi_clip_mut(clip_id)
+                .and_then(|clip| clip.note_mut(drag.note_id))
+            {
+                note.start_beats = new_start;
+                note.duration_beats = (end - new_start).max(SNAP_BEATS);
+                note.pitch = original.pitch;
+            }
         }
         DragMode::ResizeEnd => {
-            let new_end = snapped_beats(current_beats.max(0.0));
-            note.start_beats = original.start_beats;
-            note.duration_beats = (new_end - original.start_beats).max(SNAP_BEATS);
-            note.pitch = original.pitch;
+            let bound =
+                project.note_resize_end_bound(clip_id, drag.note_id, original.pitch, original.end_beats());
+            let new_end = snapped_beats(current_beats.max(0.0))
+                .min(bound)
+                .max(original.start_beats + SNAP_BEATS);
+            if let Some(note) = project
+                .midi_clip_mut(clip_id)
+                .and_then(|clip| clip.note_mut(drag.note_id))
+            {
+                note.start_beats = original.start_beats;
+                note.duration_beats = (new_end - original.start_beats).max(SNAP_BEATS);
+                note.pitch = original.pitch;
+            }
         }
         DragMode::Move => {}
     }
@@ -1160,9 +1175,11 @@ fn apply_resize_drag(
 
 fn finish_active_drag(
     active_drag: &mut Option<ActiveDrag>,
-    project: &Project,
+    project: &mut Project,
     history: &mut EditHistory,
     clip_id: u64,
+    selected_note_ids: &mut HashSet<u64>,
+    drag_moved: bool,
     default_duration_beats: &mut f32,
     engine: &mut dyn DawEngine,
     track_id: u64,
@@ -1170,17 +1187,16 @@ fn finish_active_drag(
     audition_held: &mut bool,
     audition_until: &mut Option<f64>,
 ) {
-    if let Some(drag) = active_drag.take() {
-        history.commit(project);
-        if matches!(drag.mode, DragMode::ResizeStart | DragMode::ResizeEnd) {
-            if let Some(note) = project
-                .midi_clip(clip_id)
-                .and_then(|clip| clip.note(drag.note_id))
-            {
-                *default_duration_beats = note.duration_beats;
-            }
-        }
-        if matches!(drag.mode, DragMode::Move) && *audition_held {
+    let Some(drag) = active_drag.take() else {
+        return;
+    };
+
+    // Shift+click without move: discard stacked copies.
+    if !drag.ignore_ids.is_empty() && !drag_moved {
+        history.abort(project);
+        selected_note_ids.clear();
+        selected_note_ids.extend(drag.ignore_ids.iter().copied());
+        if *audition_held {
             clear_audition(
                 engine,
                 track_id,
@@ -1188,6 +1204,70 @@ fn finish_active_drag(
                 audition_held,
                 audition_until,
             );
+        }
+        return;
+    }
+
+    if !drag.ignore_ids.is_empty() {
+        settle_notes_no_overlap(project, clip_id, &drag.originals);
+    }
+
+    history.commit(project);
+    if matches!(drag.mode, DragMode::ResizeStart | DragMode::ResizeEnd) {
+        if let Some(note) = project
+            .midi_clip(clip_id)
+            .and_then(|clip| clip.note(drag.note_id))
+        {
+            *default_duration_beats = note.duration_beats;
+        }
+    }
+    if matches!(drag.mode, DragMode::Move) && *audition_held {
+        clear_audition(
+            engine,
+            track_id,
+            audition_pitch,
+            audition_held,
+            audition_until,
+        );
+    }
+}
+
+/// Nudge notes right on the grid until each is free of same-pitch overlaps.
+fn settle_notes_no_overlap(project: &mut Project, clip_id: u64, originals: &[Note]) {
+    let mut ids: Vec<u64> = originals.iter().map(|note| note.id).collect();
+    ids.sort_by(|a, b| {
+        let sa = project
+            .midi_clip(clip_id)
+            .and_then(|clip| clip.note(*a))
+            .map(|note| note.start_beats)
+            .unwrap_or(0.0);
+        let sb = project
+            .midi_clip(clip_id)
+            .and_then(|clip| clip.note(*b))
+            .map(|note| note.start_beats)
+            .unwrap_or(0.0);
+        sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal)
+    });
+    for note_id in ids {
+        let Some((pitch, duration, mut start)) = project
+            .midi_clip(clip_id)
+            .and_then(|clip| clip.note(note_id))
+            .map(|note| (note.pitch, note.duration_beats, note.start_beats))
+        else {
+            continue;
+        };
+        let mut steps = 0;
+        while !project.note_range_free(clip_id, pitch, start, duration, &[note_id])
+            && steps < 10_000
+        {
+            start = Project::snap_beats(start + SNAP_BEATS);
+            steps += 1;
+        }
+        if let Some(note) = project
+            .midi_clip_mut(clip_id)
+            .and_then(|clip| clip.note_mut(note_id))
+        {
+            note.start_beats = start;
         }
     }
 }
@@ -1236,6 +1316,7 @@ fn handle_pointer(
     selected_note_ids: &mut HashSet<u64>,
     active_drag: &mut Option<ActiveDrag>,
     marquee: &mut Option<MarqueeDrag>,
+    drag_moved: &mut bool,
     default_duration_beats: &mut f32,
     audition_pitch: &mut Option<u8>,
     audition_held: &mut bool,
@@ -1265,6 +1346,8 @@ fn handle_pointer(
             project,
             history,
             clip_id,
+            selected_note_ids,
+            *drag_moved,
             default_duration_beats,
             engine,
             track_id,
@@ -1273,6 +1356,7 @@ fn handle_pointer(
             audition_until,
         );
         *marquee = None;
+        *drag_moved = false;
     }
 
     let Some(pointer) = response
@@ -1327,6 +1411,7 @@ fn handle_pointer(
 
     if let Some(drag) = active_drag.clone() {
         if primary_down && (response.dragged() || response.drag_started()) {
+            *drag_moved = true;
             let snap_horizontal = !response.ctx.input(|input| input.modifiers.alt);
             let current_beats = x_to_beat(grid, pointer.x, timeline);
             let current_pitch = y_to_pitch(grid, pointer.y, metrics) as i32;
@@ -1448,9 +1533,12 @@ fn handle_pointer(
 
             // Shift+Move: leave originals, drag duplicates (same as playlist clips).
             let mut primary_id = note.id;
+            let mut ignore_ids = Vec::new();
             if matches!(mode, DragMode::Move) && shift_held {
                 let source_ids: Vec<u64> = selected_note_ids.iter().copied().collect();
-                let new_ids = project.duplicate_notes_in_clip(clip_id, &source_ids, 0.0, 0);
+                ignore_ids = source_ids.clone();
+                let new_ids =
+                    project.duplicate_notes_in_clip(clip_id, &source_ids, 0.0, 0, true);
                 if let Some(mapped_primary) = source_ids
                     .iter()
                     .position(|id| *id == note.id)
@@ -1488,7 +1576,9 @@ fn handle_pointer(
                 pointer_start_beats: x_to_beat(grid, press_pos.x, timeline),
                 pointer_start_pitch: y_to_pitch(grid, press_pos.y, metrics) as i32,
                 originals,
+                ignore_ids,
             });
+            *drag_moved = false;
 
             let current_beats = x_to_beat(grid, pointer.x, timeline);
             let current_pitch = y_to_pitch(grid, pointer.y, metrics) as i32;

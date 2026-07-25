@@ -46,6 +46,23 @@ impl MidiClip {
         note
     }
 
+    /// True if `[start, end)` overlaps any same-pitch note whose id is not in `ignore_ids`.
+    /// Touching endpoints do not count (half-open), matching clip overlap.
+    pub fn note_range_overlaps_any(
+        &self,
+        pitch: u8,
+        start: f32,
+        end: f32,
+        ignore_ids: &[u64],
+    ) -> bool {
+        self.notes.iter().any(|note| {
+            if note.pitch != pitch || ignore_ids.contains(&note.id) {
+                return false;
+            }
+            Project::beat_ranges_overlap(start, end, note.start_beats, note.end_beats())
+        })
+    }
+
     pub fn remove_note(&mut self, id: u64) {
         self.notes.retain(|note| note.id != id);
     }

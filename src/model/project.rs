@@ -167,6 +167,166 @@ impl Project {
         !track.range_overlaps_any(start, start + length, ignore_ids)
     }
 
+    /// Whether `[start_beats, start_beats + duration_beats)` is free at `pitch` in the clip.
+    pub fn note_range_free(
+        &self,
+        clip_id: u64,
+        pitch: u8,
+        start_beats: f32,
+        duration_beats: f32,
+        ignore_ids: &[u64],
+    ) -> bool {
+        let Some(clip) = self.midi_clip(clip_id) else {
+            return false;
+        };
+        let start = Self::snap_beats(start_beats.max(0.0));
+        let duration = Self::snap_beats(duration_beats.max(SNAP_BEATS));
+        !clip.note_range_overlaps_any(pitch, start, start + duration, ignore_ids)
+    }
+
+    /// Clamp time+pitch deltas so movers do not overlap non-ignored same-pitch notes.
+    /// `ignore_ids` are additional notes movers may overlap (Shift+drag sources).
+    pub fn clamp_note_move_deltas(
+        &self,
+        clip_id: u64,
+        originals: &[Note],
+        mut delta_beats: f32,
+        mut delta_pitch: i32,
+        ignore_ids: &[u64],
+    ) -> (f32, i32) {
+        if originals.is_empty() {
+            return (delta_beats, delta_pitch);
+        }
+        let Some(clip) = self.midi_clip(clip_id) else {
+            return (delta_beats, delta_pitch);
+        };
+
+        let min_pitch = originals
+            .iter()
+            .map(|note| note.pitch as i32)
+            .min()
+            .unwrap_or(MIN_PITCH as i32);
+        let max_pitch = originals
+            .iter()
+            .map(|note| note.pitch as i32)
+            .max()
+            .unwrap_or(MAX_PITCH as i32);
+        delta_pitch = delta_pitch
+            .max(MIN_PITCH as i32 - min_pitch)
+            .min(MAX_PITCH as i32 - max_pitch);
+
+        let min_start = originals
+            .iter()
+            .map(|note| note.start_beats)
+            .fold(f32::INFINITY, f32::min);
+        if min_start + delta_beats < 0.0 {
+            delta_beats = -min_start;
+        }
+
+        let moving: std::collections::HashSet<u64> =
+            originals.iter().map(|note| note.id).collect();
+
+        let clamp_time_for_pitch = |dp: i32, mut db: f32| -> f32 {
+            let min_start = originals
+                .iter()
+                .map(|note| note.start_beats)
+                .fold(f32::INFINITY, f32::min);
+            if min_start + db < 0.0 {
+                db = -min_start;
+            }
+            for original in originals {
+                let pitch = Self::clamp_pitch(original.pitch as i32 + dp);
+                let start = original.start_beats;
+                let end = start + original.duration_beats;
+                for other in &clip.notes {
+                    if other.pitch != pitch
+                        || moving.contains(&other.id)
+                        || ignore_ids.contains(&other.id)
+                    {
+                        continue;
+                    }
+                    let o_start = other.start_beats;
+                    let o_end = other.end_beats();
+                    if db >= 0.0 {
+                        if end <= o_start {
+                            db = db.min(o_start - end);
+                        }
+                    } else if start >= o_end {
+                        db = db.max(o_end - start);
+                    }
+                }
+            }
+            db
+        };
+
+        let placement_ok = |db: f32, dp: i32| -> bool {
+            for original in originals {
+                let pitch = Self::clamp_pitch(original.pitch as i32 + dp);
+                let start = (original.start_beats + db).max(0.0);
+                let end = start + original.duration_beats;
+                let mut ignore = Vec::with_capacity(moving.len() + ignore_ids.len());
+                ignore.extend(moving.iter().copied());
+                ignore.extend_from_slice(ignore_ids);
+                if clip.note_range_overlaps_any(pitch, start, end, &ignore) {
+                    return false;
+                }
+            }
+            true
+        };
+
+        let mut dp = delta_pitch;
+        loop {
+            let db = clamp_time_for_pitch(dp, delta_beats);
+            if placement_ok(db, dp) {
+                return (db, dp);
+            }
+            if dp == 0 {
+                return (0.0, 0);
+            }
+            dp -= dp.signum();
+        }
+    }
+
+    /// Left edge a note resize-start drag may not cross (neighbor end, or 0).
+    pub fn note_resize_start_bound(
+        &self,
+        clip_id: u64,
+        note_id: u64,
+        pitch: u8,
+        original_start: f32,
+    ) -> f32 {
+        let Some(clip) = self.midi_clip(clip_id) else {
+            return 0.0;
+        };
+        clip.notes
+            .iter()
+            .filter(|note| {
+                note.id != note_id && note.pitch == pitch && note.end_beats() <= original_start
+            })
+            .map(Note::end_beats)
+            .fold(0.0_f32, f32::max)
+    }
+
+    /// Right edge a note resize-end drag may not cross (`f32::INFINITY` if none).
+    pub fn note_resize_end_bound(
+        &self,
+        clip_id: u64,
+        note_id: u64,
+        pitch: u8,
+        original_end: f32,
+    ) -> f32 {
+        let Some(clip) = self.midi_clip(clip_id) else {
+            return f32::INFINITY;
+        };
+        clip.notes
+            .iter()
+            .filter(|note| {
+                note.id != note_id && note.pitch == pitch && note.start_beats >= original_end
+            })
+            .map(|note| note.start_beats)
+            .fold(f32::INFINITY, f32::min)
+    }
+
     /// Clamp a multi-clip move delta so no mover overlaps a non-moving clip on its track.
     /// `ignore_ids` are additional clips movers may overlap (Shift+drag sources).
     pub fn clamp_clip_move_delta(
@@ -533,11 +693,16 @@ impl Project {
         start_beats: f32,
         duration_beats: f32,
     ) -> Option<Note> {
+        let start = Self::snap_beats(start_beats.max(0.0));
+        let duration = Self::snap_beats(duration_beats.max(SNAP_BEATS));
+        if !self.note_range_free(clip_id, pitch, start, duration, &[]) {
+            return None;
+        }
         let id = self.next_note_id();
         self.bump_note_id();
         let note = self
             .midi_clip_mut(clip_id)?
-            .add_note_with_id(id, pitch, start_beats, duration_beats);
+            .add_note_with_id(id, pitch, start, duration);
         Some(note)
     }
 
@@ -611,13 +776,17 @@ impl Project {
     }
 
     /// Duplicate notes inside a clip. Returns new note ids in the same order as `note_ids`
-    /// (skipping missing ids). Pitch/start offsets are applied after cloning.
+    /// for successful placements only (skips missing ids and same-pitch overlaps).
+    ///
+    /// When `allow_overlap_sources` is true (Shift+drag), copies may start on top of the
+    /// notes being duplicated; they still cannot overlap any other note at the same pitch.
     pub fn duplicate_notes_in_clip(
         &mut self,
         clip_id: u64,
         note_ids: &[u64],
         delta_beats: f32,
         delta_pitch: i32,
+        allow_overlap_sources: bool,
     ) -> Vec<u64> {
         let Some(clip) = self.midi_clip(clip_id) else {
             return Vec::new();
@@ -630,25 +799,43 @@ impl Project {
             return Vec::new();
         }
 
+        let source_ignore: Vec<u64> = if allow_overlap_sources {
+            templates.iter().map(|note| note.id).collect()
+        } else {
+            Vec::new()
+        };
+
         let mut new_ids = Vec::with_capacity(templates.len());
+        let mut placed: Vec<(u8, f32, f32)> = Vec::new();
         for template in templates {
+            let pitch = Self::clamp_pitch(template.pitch as i32 + delta_pitch);
+            let start = Self::snap_beats((template.start_beats + delta_beats).max(0.0));
+            let duration = Self::snap_beats(template.duration_beats.max(SNAP_BEATS));
+            let end = start + duration;
+            if !self.note_range_free(clip_id, pitch, start, duration, &source_ignore) {
+                continue;
+            }
+            if placed.iter().any(|(p, p_start, p_end)| {
+                *p == pitch && Self::beat_ranges_overlap(start, end, *p_start, *p_end)
+            }) {
+                continue;
+            }
             let id = self.next_note_id();
             self.bump_note_id();
-            let pitch = Self::clamp_pitch(template.pitch as i32 + delta_pitch);
-            let start = (template.start_beats + delta_beats).max(0.0);
             if let Some(clip) = self.midi_clip_mut(clip_id) {
-                clip.add_note_with_id(id, pitch, start, template.duration_beats);
+                clip.add_note_with_id(id, pitch, start, duration);
                 if let Some(note) = clip.note_mut(id) {
                     note.velocity = template.velocity;
                 }
+                placed.push((pitch, start, end));
                 new_ids.push(id);
             }
         }
         new_ids
     }
 
-    /// Transpose notes in a clip by semitones (clamped to MIDI range). Returns true when
-    /// at least one selected note moved.
+    /// Transpose notes in a clip by semitones (clamped to MIDI range and same-pitch
+    /// free space). Returns true when at least one selected note moved.
     pub fn transpose_notes_in_clip(
         &mut self,
         clip_id: u64,
@@ -661,9 +848,9 @@ impl Project {
         let Some(clip) = self.midi_clip(clip_id) else {
             return false;
         };
-        let selected: Vec<&Note> = note_ids
+        let selected: Vec<Note> = note_ids
             .iter()
-            .filter_map(|id| clip.note(*id))
+            .filter_map(|id| clip.note(*id).copied())
             .collect();
         if selected.is_empty() {
             return false;
@@ -678,13 +865,35 @@ impl Project {
             .map(|note| note.pitch as i32)
             .max()
             .unwrap_or(MAX_PITCH as i32);
-        let delta = delta_semitones
+        let mut delta = delta_semitones
             .max(MIN_PITCH as i32 - min_pitch)
             .min(MAX_PITCH as i32 - max_pitch);
         if delta == 0 {
             return false;
         }
-        let ids: std::collections::HashSet<u64> = note_ids.iter().copied().collect();
+
+        let ids: std::collections::HashSet<u64> = selected.iter().map(|note| note.id).collect();
+        let ignore: Vec<u64> = ids.iter().copied().collect();
+        let transpose_ok = |dp: i32| -> bool {
+            selected.iter().all(|note| {
+                let pitch = Self::clamp_pitch(note.pitch as i32 + dp);
+                self.note_range_free(
+                    clip_id,
+                    pitch,
+                    note.start_beats,
+                    note.duration_beats,
+                    &ignore,
+                )
+            })
+        };
+
+        while delta != 0 && !transpose_ok(delta) {
+            delta -= delta.signum();
+        }
+        if delta == 0 {
+            return false;
+        }
+
         let Some(clip) = self.midi_clip_mut(clip_id) else {
             return false;
         };
@@ -708,7 +917,8 @@ impl Project {
     }
 
     /// Paste clipboard notes into a clip. `origin_beats` is clip-local; entry starts are
-    /// relative to that origin. Returns new note ids.
+    /// relative to that origin. Returns new note ids for placements that fit without
+    /// same-pitch overlap (including with earlier notes in this paste).
     pub fn paste_notes_into_clip(
         &mut self,
         clip_id: u64,
@@ -720,15 +930,27 @@ impl Project {
         }
         let origin = Self::snap_beats(origin_beats.max(0.0));
         let mut new_ids = Vec::with_capacity(notes.len());
+        let mut placed: Vec<(u8, f32, f32)> = Vec::new();
         for template in notes {
+            let start = Self::snap_beats((origin + template.start_beats).max(0.0));
+            let duration = Self::snap_beats(template.duration_beats.max(SNAP_BEATS));
+            let end = start + duration;
+            if !self.note_range_free(clip_id, template.pitch, start, duration, &[]) {
+                continue;
+            }
+            if placed.iter().any(|(p, p_start, p_end)| {
+                *p == template.pitch && Self::beat_ranges_overlap(start, end, *p_start, *p_end)
+            }) {
+                continue;
+            }
             let id = self.next_note_id();
             self.bump_note_id();
-            let start = (origin + template.start_beats).max(0.0);
             if let Some(clip) = self.midi_clip_mut(clip_id) {
-                clip.add_note_with_id(id, template.pitch, start, template.duration_beats);
+                clip.add_note_with_id(id, template.pitch, start, duration);
                 if let Some(note) = clip.note_mut(id) {
                     note.velocity = template.velocity;
                 }
+                placed.push((template.pitch, start, end));
                 new_ids.push(id);
             }
         }
@@ -1348,6 +1570,89 @@ mod tests {
     fn adjacent_clips_do_not_overlap_half_open() {
         assert!(!Project::beat_ranges_overlap(0.0, 4.0, 4.0, 8.0));
         assert!(Project::beat_ranges_overlap(0.0, 4.0, 3.75, 8.0));
+    }
+
+    #[test]
+    fn add_note_rejects_same_pitch_overlap() {
+        let mut project = Project::default();
+        let clip_id = project.tracks[0].clips[0].id();
+        assert!(project.add_note_to_clip(clip_id, 60, 0.0, 1.0).is_some());
+        assert!(project.add_note_to_clip(clip_id, 60, 0.5, 1.0).is_none());
+        assert!(project.add_note_to_clip(clip_id, 60, 1.0, 1.0).is_some());
+        assert!(project.add_note_to_clip(clip_id, 64, 0.0, 1.0).is_some());
+    }
+
+    #[test]
+    fn clamp_note_move_stops_at_same_pitch_neighbor() {
+        let mut project = Project::default();
+        let clip_id = project.tracks[0].clips[0].id();
+        let left = project
+            .add_note_to_clip(clip_id, 60, 0.0, 1.0)
+            .expect("left");
+        let right = project
+            .add_note_to_clip(clip_id, 60, 2.0, 1.0)
+            .expect("right");
+        let originals = vec![left];
+        let (delta, pitch) =
+            project.clamp_note_move_deltas(clip_id, &originals, 10.0, 0, &[]);
+        assert_eq!(pitch, 0);
+        assert!((delta - 1.0).abs() < 1e-5);
+        let originals_right = vec![right];
+        let (delta_left, _) =
+            project.clamp_note_move_deltas(clip_id, &originals_right, -10.0, 0, &[]);
+        assert!((delta_left - (-1.0)).abs() < 1e-5);
+    }
+
+    #[test]
+    fn duplicate_notes_without_space_is_skipped() {
+        let mut project = Project::default();
+        let clip_id = project.tracks[0].clips[0].id();
+        let src = project
+            .add_note_to_clip(clip_id, 60, 0.0, 1.0)
+            .expect("src");
+        project
+            .add_note_to_clip(clip_id, 60, 1.0, 1.0)
+            .expect("blocker");
+        let created = project.duplicate_notes_in_clip(clip_id, &[src.id], 1.0, 0, false);
+        assert!(created.is_empty());
+    }
+
+    #[test]
+    fn duplicate_notes_stacked_may_overlap_sources_only() {
+        let mut project = Project::default();
+        let clip_id = project.tracks[0].clips[0].id();
+        let src = project
+            .add_note_to_clip(clip_id, 60, 0.0, 1.0)
+            .expect("src");
+        project
+            .add_note_to_clip(clip_id, 60, 2.0, 1.0)
+            .expect("neighbor");
+        let created = project.duplicate_notes_in_clip(clip_id, &[src.id], 0.0, 0, true);
+        assert_eq!(created.len(), 1);
+        let copy = project
+            .midi_clip(clip_id)
+            .and_then(|clip| clip.note(created[0]))
+            .expect("copy");
+        assert_eq!(copy.start_beats, 0.0);
+        assert_eq!(copy.pitch, 60);
+    }
+
+    #[test]
+    fn note_resize_bounds_respect_same_pitch_neighbors() {
+        let mut project = Project::default();
+        let clip_id = project.tracks[0].clips[0].id();
+        let left = project
+            .add_note_to_clip(clip_id, 60, 0.0, 1.0)
+            .expect("left");
+        let right = project
+            .add_note_to_clip(clip_id, 60, 2.0, 1.0)
+            .expect("right");
+        assert!(
+            (project.note_resize_end_bound(clip_id, left.id, 60, 1.0) - 2.0).abs() < 1e-5
+        );
+        assert!(
+            (project.note_resize_start_bound(clip_id, right.id, 60, 2.0) - 1.0).abs() < 1e-5
+        );
     }
 
     #[test]
