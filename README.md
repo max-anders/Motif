@@ -154,7 +154,8 @@ cargo run --release
 - **Projects...** - in-app Recent Projects loader
 - Window title and toolbar show the project name with `*` when unsaved
 - **Perf** toolbar / **Ctrl/Cmd+Shift+P** - Performance view (CPU graph, per-track DSP ms, xruns / lock skips; remappable)
-- **Mixer** toolbar / **Ctrl/Cmd+M** - mixer view (remappable)
+- **Mixer** toolbar / **M** - mixer view (remappable)
+- **Devices** toolbar / **D** - toggle the bottom device strip (instruments, FX, macros, modulators; remappable)
 - Transport strip also shows live **CPU % / buffer / latency / xruns / locks**
 - **Settings** - themes, shortcut remapping (multiple keys per action, conflict Override), Plugin Manager (Rescan / extra paths), Editing (undo depth), Project (autosave recovery interval, recent list); saved to `settings.json` + `plugin_cache.json`
 - **Escape** - leave piano roll, mixer, devices, Performance, or Settings (factory default; remappable)

@@ -179,6 +179,31 @@ impl DawApp {
             .unwrap_or_else(|| EditorCloseBinding::default().display())
     }
 
+    fn devices_strip_shortcut_hint(&self) -> String {
+        let chord = self
+            .settings
+            .shortcuts
+            .primary_key_chord(Action::ToggleDevices)
+            .map(|chord| chord.display())
+            .unwrap_or_else(|| "D".to_string());
+        format!(
+            "Show or hide the device strip (instruments, FX, macros, modulators).\n\
+             Shortcut: {chord} (remappable in Settings)."
+        )
+    }
+
+    fn mixer_shortcut_hint(&self) -> String {
+        let chord = self
+            .settings
+            .shortcuts
+            .primary_key_chord(Action::ToggleMixer)
+            .map(|chord| chord.display())
+            .unwrap_or_else(|| "M".to_string());
+        format!(
+            "Open or close the mixer view.\nShortcut: {chord} (remappable in Settings)."
+        )
+    }
+
     fn sync_plugin_editor_close_binding(&mut self) {
         let binding = self.plugin_editor_close_binding();
         self.engine.set_plugin_editor_close_binding(binding);
@@ -1759,7 +1784,10 @@ impl eframe::App for DawApp {
                 self.show_file_menu(ui);
 
                 if !matches!(self.center_view, CenterView::Settings | CenterView::Mixer)
-                    && ui.button("Mixer").clicked()
+                    && ui
+                        .button("Mixer")
+                        .on_hover_text(self.mixer_shortcut_hint())
+                        .clicked()
                 {
                     self.open_mixer();
                 }
@@ -1779,6 +1807,7 @@ impl eframe::App for DawApp {
                         } else {
                             "Devices"
                         })
+                        .on_hover_text(self.devices_strip_shortcut_hint())
                         .clicked()
                 {
                     self.toggle_devices_strip();

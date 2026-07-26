@@ -438,14 +438,14 @@ impl ShortcutRegistry {
                     Action::BackToPlaylist,
                     Binding::Key(Chord::new(Key::Escape)),
                 ),
-                (Action::ToggleMixer, Binding::Key(Chord::ctrl_or_cmd(Key::M))),
+                (Action::ToggleMixer, Binding::Key(Chord::new(Key::M))),
                 (
                     Action::TogglePerformance,
                     Binding::Key(Chord::ctrl_or_cmd_shift(Key::P)),
                 ),
                 (
                     Action::ToggleDevices,
-                    Binding::Key(Chord::ctrl_or_cmd_shift(Key::M)),
+                    Binding::Key(Chord::new(Key::D)),
                 ),
                 (
                     Action::TogglePluginEditor,
@@ -541,6 +541,36 @@ impl ShortcutRegistry {
             };
             if migrate && chord.ctrl_or_cmd && chord.shift && !chord.alt {
                 chord.shift = false;
+            }
+        }
+
+        // Devices used Ctrl/Cmd+Shift+M; factory default is now D (easier reach).
+        for (action, binding) in &mut self.bindings {
+            let Binding::Key(chord) = binding else {
+                continue;
+            };
+            if matches!(action, Action::ToggleDevices)
+                && chord.key == Key::M
+                && chord.ctrl_or_cmd
+                && chord.shift
+                && !chord.alt
+            {
+                *chord = Chord::new(Key::D);
+            }
+        }
+
+        // Mixer used Ctrl/Cmd+M; factory default is now M (easier reach).
+        for (action, binding) in &mut self.bindings {
+            let Binding::Key(chord) = binding else {
+                continue;
+            };
+            if matches!(action, Action::ToggleMixer)
+                && chord.key == Key::M
+                && chord.ctrl_or_cmd
+                && !chord.shift
+                && !chord.alt
+            {
+                *chord = Chord::new(Key::M);
             }
         }
 
