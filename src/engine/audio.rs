@@ -16,7 +16,7 @@ use std::thread;
 use std::time::Instant;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{SampleFormat, Stream, StreamConfig};
+use cpal::{BufferSize, SampleFormat, Stream, StreamConfig, SupportedBufferSize};
 use truce_rack::core::transport::TransportInfo;
 
 use crate::model::{
@@ -72,6 +72,11 @@ impl AudioPerfShared {
 }
 
 const LOADING_STATUS: &str = "Loading plugin...";
+
+/// Output period requested from cpal when the device advertises a range.
+/// ~11 ms at 44.1 kHz - low enough to feel tight, high enough to stay xrun-free
+/// in a debug build with plugins loaded.
+const TARGET_BUFFER_FRAMES: u32 = 512;
 
 /// Plugin-GUI (or host-observed) parameter touch for the last-tweaked MRU.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -138,6 +143,16 @@ struct SamplePlayback {
     length_beats: f32,
     gain: f32,
     buffer: Arc<DecodedAudio>,
+}
+
+impl PartialEq for SamplePlayback {
+    fn eq(&self, other: &Self) -> bool {
+        self.clip_id == other.clip_id
+            && self.start_beats == other.start_beats
+            && self.length_beats == other.length_beats
+            && self.gain == other.gain
+            && Arc::ptr_eq(&self.buffer, &other.buffer)
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -272,6 +287,9 @@ enum AudioCommand {
         loop_start_beats: f32,
         loop_end_beats: f32,
     },
+    /// Clear all RT voices, FX, samples, automation, modulators, and macros.
+    /// Plugin instances are retired via `retire_tx` (never dropped on the RT thread).
+    ResetAll,
 }
 
 struct AudioCallbackState {
@@ -313,6 +331,16 @@ struct AudioCallbackState {
     retire_tx: Sender<RetiredResource>,
     /// Plugin-GUI param touches for the UI last-tweaked MRU (drop if full).
     param_touch_tx: SyncSender<ParamTouchEvent>,
+    /// Reusable RT scratch (see `render_stereo` / `push_params_*`).
+    meter_scratch: Vec<(u64, f32, f32)>,
+    track_perf_scratch: Vec<TrackPerformance>,
+    track_id_scratch: Vec<u64>,
+    track_phases_scratch: HashMap<(u64, u64), f64>,
+    lfo_phases_ui_scratch: Vec<(u64, u64, f32)>,
+    param_touch_scratch: Vec<u32>,
+    param_id_scratch: HashSet<u32>,
+    mod_index_scratch: Vec<usize>,
+    live_mod_id_scratch: HashSet<u64>,
 }
 
 fn normalize_mseg_points(points: &mut Vec<AutomationPoint>, legacy_length: f32) {
@@ -340,6 +368,25 @@ impl AudioCallbackState {
         if !chain.is_empty() {
             let _ = self.retire_tx.send(RetiredResource::FxChain(chain));
         }
+    }
+
+    fn reset_all(&mut self) {
+        let retire_tx = self.retire_tx.clone();
+        for (_, voice) in self.voices.drain() {
+            if matches!(voice, TrackVoice::Plugin(_)) {
+                let _ = retire_tx.send(RetiredResource::Voice(voice));
+            }
+        }
+        for (_, chain) in self.fx_chains.drain() {
+            if !chain.is_empty() {
+                let _ = retire_tx.send(RetiredResource::FxChain(chain));
+            }
+        }
+        self.sample_clips.clear();
+        self.automation.clear();
+        self.modulators.clear();
+        self.macros.clear();
+        self.lfo_phases.clear();
     }
 
     fn process_commands(&mut self) {
@@ -451,10 +498,13 @@ impl AudioCallbackState {
                         self.modulators.remove(&track_id);
                         self.lfo_phases.retain(|&(tid, _), _| tid != track_id);
                     } else {
-                        let live_ids: HashSet<u64> =
-                            modulators.iter().map(|modulator| modulator.id).collect();
-                        self.lfo_phases
-                            .retain(|&(tid, mid), _| tid != track_id || live_ids.contains(&mid));
+                        self.live_mod_id_scratch.clear();
+                        for modulator in &modulators {
+                            self.live_mod_id_scratch.insert(modulator.id);
+                        }
+                        self.lfo_phases.retain(|&(tid, mid), _| {
+                            tid != track_id || self.live_mod_id_scratch.contains(&mid)
+                        });
                         self.modulators.insert(track_id, modulators);
                     }
                 }
@@ -487,6 +537,9 @@ impl AudioCallbackState {
                     self.metronome.set_beats_per_bar(beats_per_bar);
                     self.metronome.set_loop_start_beats(loop_start_beats);
                     self.metronome.set_loop_end_beats(loop_end_beats);
+                }
+                Ok(AudioCommand::ResetAll) => {
+                    self.reset_all();
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => break,
@@ -654,6 +707,8 @@ impl AudioCallbackState {
     }
 
     fn push_params_for_instrument(
+        param_id_scratch: &mut HashSet<u32>,
+        mod_index_scratch: &mut Vec<usize>,
         track_id: u64,
         lanes: &[RtAutomationLane],
         modulators: &[RtModulator],
@@ -665,45 +720,45 @@ impl AudioCallbackState {
         apply_macros: bool,
         plugin: &mut HostedPlugin,
     ) {
-        let mut param_ids: HashSet<u32> = HashSet::new();
+        param_id_scratch.clear();
         if apply_automation {
             for lane in lanes {
                 if let RtAutomationTarget::Instrument { param_id } = lane.target {
-                    param_ids.insert(param_id);
+                    param_id_scratch.insert(param_id);
                 }
             }
         }
         if apply_modulation {
             for modulator in modulators {
                 if let RtAutomationTarget::Instrument { param_id } = modulator.target {
-                    param_ids.insert(param_id);
+                    param_id_scratch.insert(param_id);
                 }
             }
         }
         if apply_macros {
             for macro_param in macros {
                 if let RtAutomationTarget::Instrument { param_id } = macro_param.target {
-                    param_ids.insert(param_id);
+                    param_id_scratch.insert(param_id);
                 }
             }
         }
 
-        for param_id in param_ids {
+        for &param_id in param_id_scratch.iter() {
             let lane = lanes.iter().find(|lane| {
                 matches!(
                     lane.target,
                     RtAutomationTarget::Instrument { param_id: id } if id == param_id
                 )
             });
-            let mods: Vec<&RtModulator> = modulators
-                .iter()
-                .filter(|modulator| {
-                    matches!(
-                        modulator.target,
-                        RtAutomationTarget::Instrument { param_id: id } if id == param_id
-                    )
-                })
-                .collect();
+            mod_index_scratch.clear();
+            for (index, modulator) in modulators.iter().enumerate() {
+                if matches!(
+                    modulator.target,
+                    RtAutomationTarget::Instrument { param_id: id } if id == param_id
+                ) {
+                    mod_index_scratch.push(index);
+                }
+            }
             let macro_param = macros.iter().rev().find(|macro_param| {
                 matches!(
                     macro_param.target,
@@ -725,7 +780,8 @@ impl AudioCallbackState {
                             macro_param.max,
                             macro_param.step_count,
                         )
-                    } else if let Some(first) = mods.first() {
+                    } else if let Some(index) = mod_index_scratch.first() {
+                        let first = &modulators[*index];
                         (
                             first.center as f64,
                             first.min,
@@ -735,7 +791,8 @@ impl AudioCallbackState {
                     } else {
                         continue;
                     }
-                } else if let Some(first) = mods.first() {
+                } else if let Some(index) = mod_index_scratch.first() {
+                    let first = &modulators[*index];
                     (
                         first.center as f64,
                         first.min,
@@ -753,7 +810,8 @@ impl AudioCallbackState {
                         macro_param.max,
                         macro_param.step_count,
                     )
-                } else if let Some(first) = mods.first() {
+                } else if let Some(index) = mod_index_scratch.first() {
+                    let first = &modulators[*index];
                     (
                         first.center as f64,
                         first.min,
@@ -763,7 +821,8 @@ impl AudioCallbackState {
                 } else {
                     continue;
                 }
-            } else if let Some(first) = mods.first() {
+            } else if let Some(index) = mod_index_scratch.first() {
+                let first = &modulators[*index];
                 (
                     first.center as f64,
                     first.min,
@@ -775,7 +834,8 @@ impl AudioCallbackState {
             };
 
             if apply_modulation {
-                for modulator in mods {
+                for index in mod_index_scratch.iter().copied() {
+                    let modulator = &modulators[index];
                     let free_phase = lfo_phases
                         .get(&(track_id, modulator.id))
                         .copied()
@@ -791,6 +851,8 @@ impl AudioCallbackState {
     }
 
     fn push_params_for_device(
+        param_id_scratch: &mut HashSet<u32>,
+        mod_index_scratch: &mut Vec<usize>,
         track_id: u64,
         lanes: &[RtAutomationLane],
         modulators: &[RtModulator],
@@ -803,7 +865,7 @@ impl AudioCallbackState {
         apply_macros: bool,
         plugin: &mut HostedPlugin,
     ) {
-        let mut param_ids: HashSet<u32> = HashSet::new();
+        param_id_scratch.clear();
         if apply_automation {
             for lane in lanes {
                 if let RtAutomationTarget::Device {
@@ -812,7 +874,7 @@ impl AudioCallbackState {
                 } = lane.target
                 {
                     if lane_device_id == device_id {
-                        param_ids.insert(param_id);
+                        param_id_scratch.insert(param_id);
                     }
                 }
             }
@@ -825,7 +887,7 @@ impl AudioCallbackState {
                 } = modulator.target
                 {
                     if mod_device_id == device_id {
-                        param_ids.insert(param_id);
+                        param_id_scratch.insert(param_id);
                     }
                 }
             }
@@ -838,13 +900,13 @@ impl AudioCallbackState {
                 } = macro_param.target
                 {
                     if macro_device_id == device_id {
-                        param_ids.insert(param_id);
+                        param_id_scratch.insert(param_id);
                     }
                 }
             }
         }
 
-        for param_id in param_ids {
+        for &param_id in param_id_scratch.iter() {
             let lane = lanes.iter().find(|lane| {
                 matches!(
                     lane.target,
@@ -854,18 +916,18 @@ impl AudioCallbackState {
                     } if did == device_id && pid == param_id
                 )
             });
-            let mods: Vec<&RtModulator> = modulators
-                .iter()
-                .filter(|modulator| {
-                    matches!(
-                        modulator.target,
-                        RtAutomationTarget::Device {
-                            device_id: did,
-                            param_id: pid,
-                        } if did == device_id && pid == param_id
-                    )
-                })
-                .collect();
+            mod_index_scratch.clear();
+            for (index, modulator) in modulators.iter().enumerate() {
+                if matches!(
+                    modulator.target,
+                    RtAutomationTarget::Device {
+                        device_id: did,
+                        param_id: pid,
+                    } if did == device_id && pid == param_id
+                ) {
+                    mod_index_scratch.push(index);
+                }
+            }
             let macro_param = macros.iter().rev().find(|macro_param| {
                 matches!(
                     macro_param.target,
@@ -890,7 +952,8 @@ impl AudioCallbackState {
                             macro_param.max,
                             macro_param.step_count,
                         )
-                    } else if let Some(first) = mods.first() {
+                    } else if let Some(index) = mod_index_scratch.first() {
+                        let first = &modulators[*index];
                         (
                             first.center as f64,
                             first.min,
@@ -900,7 +963,8 @@ impl AudioCallbackState {
                     } else {
                         continue;
                     }
-                } else if let Some(first) = mods.first() {
+                } else if let Some(index) = mod_index_scratch.first() {
+                    let first = &modulators[*index];
                     (
                         first.center as f64,
                         first.min,
@@ -918,7 +982,8 @@ impl AudioCallbackState {
                         macro_param.max,
                         macro_param.step_count,
                     )
-                } else if let Some(first) = mods.first() {
+                } else if let Some(index) = mod_index_scratch.first() {
+                    let first = &modulators[*index];
                     (
                         first.center as f64,
                         first.min,
@@ -928,7 +993,8 @@ impl AudioCallbackState {
                 } else {
                     continue;
                 }
-            } else if let Some(first) = mods.first() {
+            } else if let Some(index) = mod_index_scratch.first() {
+                let first = &modulators[*index];
                 (
                     first.center as f64,
                     first.min,
@@ -940,7 +1006,8 @@ impl AudioCallbackState {
             };
 
             if apply_modulation {
-                for modulator in mods {
+                for index in mod_index_scratch.iter().copied() {
+                    let modulator = &modulators[index];
                     let free_phase = lfo_phases
                         .get(&(track_id, modulator.id))
                         .copied()
@@ -972,9 +1039,8 @@ impl AudioCallbackState {
 
         let transport = Some(self.transport);
         let default_channel = ChannelParams::default();
-        let mut meter_scratch: Vec<(u64, f32, f32)> = Vec::with_capacity(self.voices.len());
-        let mut track_perf_scratch: Vec<TrackPerformance> =
-            Vec::with_capacity(self.voices.len());
+        self.meter_scratch.clear();
+        self.track_perf_scratch.clear();
         let block_start_beat = self
             .transport
             .song_position_beats
@@ -984,8 +1050,14 @@ impl AudioCallbackState {
         let apply_modulation = self.transport.playing;
 
         let param_touch_tx = self.param_touch_tx.clone();
-        let track_ids: Vec<u64> = self.voices.keys().copied().collect();
-        for track_id in track_ids {
+        let automation = std::mem::take(&mut self.automation);
+        let modulators_map = std::mem::take(&mut self.modulators);
+        let macros_map = std::mem::take(&mut self.macros);
+        self.track_id_scratch.clear();
+        self.track_id_scratch.extend(self.voices.keys().copied());
+        let track_count = self.track_id_scratch.len();
+        for track_index in 0..track_count {
+            let track_id = self.track_id_scratch[track_index];
             let params = self
                 .channel_params
                 .get(&track_id)
@@ -993,26 +1065,27 @@ impl AudioCallbackState {
                 .unwrap_or(default_channel);
             self.tmp_l[..frames].fill(0.0);
             self.tmp_r[..frames].fill(0.0);
-            let lanes = self
-                .automation
+            let lanes = automation
                 .get(&track_id)
-                .cloned()
-                .unwrap_or_default();
-            let modulators = self
-                .modulators
+                .map(|lanes| lanes.as_slice())
+                .unwrap_or(&[]);
+            let modulators = modulators_map
                 .get(&track_id)
-                .cloned()
-                .unwrap_or_default();
-            let macros = self.macros.get(&track_id).cloned().unwrap_or_default();
+                .map(|mods| mods.as_slice())
+                .unwrap_or(&[]);
+            let macros = macros_map
+                .get(&track_id)
+                .map(|macros| macros.as_slice())
+                .unwrap_or(&[]);
             let apply_macros = !macros.is_empty();
             if apply_modulation {
-                self.advance_lfo_phases(track_id, &modulators, frames);
+                self.advance_lfo_phases(track_id, modulators, frames);
             }
-            // Snapshot phases before borrowing voices mutably.
-            let mut track_phases: HashMap<(u64, u64), f64> = HashMap::new();
-            for modulator in &modulators {
+            self.track_phases_scratch.clear();
+            for modulator in modulators {
                 if let Some(phase) = self.lfo_phases.get(&(track_id, modulator.id)) {
-                    track_phases.insert((track_id, modulator.id), *phase);
+                    self.track_phases_scratch
+                        .insert((track_id, modulator.id), *phase);
                 }
             }
 
@@ -1021,9 +1094,9 @@ impl AudioCallbackState {
             let mut lock_skips = 0_u32;
 
             let voice_started = Instant::now();
-            match self.voices.get_mut(&track_id) {
-                Some(TrackVoice::Piano(synth)) => {
-                    voice_kind = TrackVoiceKind::Piano;
+            if matches!(self.voices.get(&track_id), Some(TrackVoice::Piano(_))) {
+                voice_kind = TrackVoiceKind::Piano;
+                if let Some(TrackVoice::Piano(synth)) = self.voices.get_mut(&track_id) {
                     for i in 0..frames {
                         let sample = synth.render_sample();
                         self.tmp_l[i] = sample;
@@ -1031,45 +1104,45 @@ impl AudioCallbackState {
                     }
                     active_voices = synth.active_voice_count();
                 }
-                Some(TrackVoice::Plugin(plugin)) => {
-                    voice_kind = TrackVoiceKind::Plugin;
-                    if let Ok(mut guard) = plugin.try_lock() {
-                        if apply_automation || apply_modulation || apply_macros {
-                            Self::push_params_for_instrument(
-                                track_id,
-                                &lanes,
-                                &modulators,
-                                &macros,
-                                &track_phases,
-                                block_start_beat,
-                                apply_automation,
-                                apply_modulation,
-                                apply_macros,
-                                &mut guard,
-                            );
-                        }
-                        let touches = guard.process_block(
-                            frames,
-                            transport,
-                            &mut self.tmp_l[..frames],
-                            &mut self.tmp_r[..frames],
+            } else if let Some(TrackVoice::Plugin(plugin)) = self.voices.get(&track_id) {
+                voice_kind = TrackVoiceKind::Plugin;
+                if let Ok(mut guard) = plugin.try_lock() {
+                    if apply_automation || apply_modulation || apply_macros {
+                        Self::push_params_for_instrument(
+                            &mut self.param_id_scratch,
+                            &mut self.mod_index_scratch,
+                            track_id,
+                            lanes,
+                            modulators,
+                            macros,
+                            &self.track_phases_scratch,
+                            block_start_beat,
+                            apply_automation,
+                            apply_modulation,
+                            apply_macros,
+                            &mut guard,
                         );
-                        for param_id in touches {
-                            let _ = param_touch_tx.try_send(ParamTouchEvent {
-                                track_id,
-                                device_id: None,
-                                param_id,
-                            });
-                        }
-                    } else {
-                        lock_skips += 1;
-                        self.perf.lock_skips.fetch_add(1, Ordering::Relaxed);
                     }
+                    guard.process_block(
+                        frames,
+                        transport,
+                        &mut self.tmp_l[..frames],
+                        &mut self.tmp_r[..frames],
+                        &mut self.param_touch_scratch,
+                    );
+                    for &param_id in &self.param_touch_scratch {
+                        let _ = param_touch_tx.try_send(ParamTouchEvent {
+                            track_id,
+                            device_id: None,
+                            param_id,
+                        });
+                    }
+                } else {
+                    lock_skips += 1;
+                    self.perf.lock_skips.fetch_add(1, Ordering::Relaxed);
                 }
-                Some(TrackVoice::Silent) => {
-                    voice_kind = TrackVoiceKind::Silent;
-                }
-                None => {}
+            } else if matches!(self.voices.get(&track_id), Some(TrackVoice::Silent)) {
+                voice_kind = TrackVoiceKind::Silent;
             }
             let voice_ms = voice_started.elapsed().as_secs_f64() as f32 * 1000.0;
 
@@ -1113,19 +1186,21 @@ impl AudioCallbackState {
             // Serial insert-FX chain, pre-fader: each non-bypassed device
             // replaces tmp_l/tmp_r in place before gain/pan is applied below.
             let fx_started = Instant::now();
-            if let Some(chain) = self.fx_chains.get(&track_id) {
-                for slot in chain {
+            if let Some(chain) = self.fx_chains.remove(&track_id) {
+                for slot in &chain {
                     if slot.bypassed {
                         continue;
                     }
                     if let Ok(mut guard) = slot.plugin.try_lock() {
                         if apply_automation || apply_modulation || apply_macros {
                             Self::push_params_for_device(
+                                &mut self.param_id_scratch,
+                                &mut self.mod_index_scratch,
                                 track_id,
-                                &lanes,
-                                &modulators,
-                                &macros,
-                                &track_phases,
+                                lanes,
+                                modulators,
+                                macros,
+                                &self.track_phases_scratch,
                                 block_start_beat,
                                 slot.device_id,
                                 apply_automation,
@@ -1134,13 +1209,14 @@ impl AudioCallbackState {
                                 &mut guard,
                             );
                         }
-                        let touches = guard.process_effect(
+                        guard.process_effect(
                             frames,
                             transport,
                             &mut self.tmp_l[..frames],
                             &mut self.tmp_r[..frames],
+                            &mut self.param_touch_scratch,
                         );
-                        for param_id in touches {
+                        for &param_id in &self.param_touch_scratch {
                             let _ = param_touch_tx.try_send(ParamTouchEvent {
                                 track_id,
                                 device_id: Some(slot.device_id),
@@ -1152,6 +1228,7 @@ impl AudioCallbackState {
                         self.perf.lock_skips.fetch_add(1, Ordering::Relaxed);
                     }
                 }
+                self.fx_chains.insert(track_id, chain);
             }
             let fx_ms = fx_started.elapsed().as_secs_f64() as f32 * 1000.0;
 
@@ -1167,8 +1244,8 @@ impl AudioCallbackState {
                 self.mix_l[i] += l;
                 self.mix_r[i] += r;
             }
-            meter_scratch.push((track_id, peak_l, peak_r));
-            track_perf_scratch.push(TrackPerformance {
+            self.meter_scratch.push((track_id, peak_l, peak_r));
+            self.track_perf_scratch.push(TrackPerformance {
                 track_id,
                 voice_kind,
                 voice_ms,
@@ -1194,26 +1271,29 @@ impl AudioCallbackState {
 
         // Cosmetic meters / perf: skip on contention so the RT thread never blocks.
         if let Ok(mut meters) = self.track_meters.try_lock() {
-            *meters = meter_scratch;
+            std::mem::swap(&mut *meters, &mut self.meter_scratch);
         }
         if let Ok(mut master_m) = self.master_meter.try_lock() {
             *master_m = (master_peak_l, master_peak_r);
         }
         if let Ok(mut phases) = self.lfo_phases_ui.try_lock() {
-            *phases = self
-                .lfo_phases
-                .iter()
-                .map(|(&(track_id, modulator_id), &phase)| {
-                    (track_id, modulator_id, phase as f32)
-                })
-                .collect();
+            self.lfo_phases_ui_scratch.clear();
+            for (&(track_id, modulator_id), &phase) in &self.lfo_phases {
+                self.lfo_phases_ui_scratch
+                    .push((track_id, modulator_id, phase as f32));
+            }
+            std::mem::swap(&mut *phases, &mut self.lfo_phases_ui_scratch);
         }
         if let Ok(mut tracks) = self.track_perf.try_lock() {
-            *tracks = track_perf_scratch;
+            std::mem::swap(&mut *tracks, &mut self.track_perf_scratch);
         }
 
         self.metronome
             .process_block(frames, &mut self.mix_l[..frames], &mut self.mix_r[..frames]);
+
+        self.automation = automation;
+        self.modulators = modulators_map;
+        self.macros = macros_map;
     }
 
     /// Record callback load vs buffer budget. RT-safe (atomics only).
@@ -1343,6 +1423,8 @@ pub struct AudioEngine {
     synced_modulators: HashMap<u64, Vec<RtModulator>>,
     /// Last macro payload sent to the audio thread per track.
     synced_macros: HashMap<u64, Vec<RtMacroParam>>,
+    /// Last sample-clip payload sent to the audio thread per track.
+    synced_samples: HashMap<u64, Vec<SamplePlayback>>,
     /// In-flight background plugin loads (track -> desired instrument).
     pending_loads: HashMap<u64, TrackInstrument>,
     load_tx: Option<SyncSender<VoiceLoadResult>>,
@@ -1440,6 +1522,7 @@ impl AudioEngine {
                     synced_automation: HashMap::new(),
                     synced_modulators: HashMap::new(),
                     synced_macros: HashMap::new(),
+                    synced_samples: HashMap::new(),
                     pending_loads: HashMap::new(),
                     load_tx: Some(load_tx),
                     load_rx,
@@ -1490,6 +1573,7 @@ impl AudioEngine {
                 synced_automation: HashMap::new(),
                 synced_modulators: HashMap::new(),
                 synced_macros: HashMap::new(),
+                synced_samples: HashMap::new(),
                 pending_loads: HashMap::new(),
                 load_tx: Some(load_tx),
                 load_rx,
@@ -2231,6 +2315,15 @@ impl AudioEngine {
 
         self.flush_pending_cmds();
     }
+
+    pub fn reset_audio_state(&mut self) {
+        self.send(AudioCommand::ResetAll);
+        self.synced_automation.clear();
+        self.synced_modulators.clear();
+        self.synced_macros.clear();
+        self.synced_samples.clear();
+        self.flush_pending_cmds();
+    }
 }
 
 impl DawEngine for AudioEngine {
@@ -2622,6 +2715,11 @@ impl DawEngine for AudioEngine {
         self.device_chain_dirty.clear();
         self.pending_device_loads.clear();
         self.synced_automation.clear();
+        self.synced_modulators.clear();
+        self.synced_macros.clear();
+        self.synced_samples.clear();
+        self.send(AudioCommand::ResetAll);
+        self.flush_pending_cmds();
     }
 
     fn plugin_slot_ready(&self, target: PluginRef) -> bool {
@@ -2871,10 +2969,15 @@ impl DawEngine for AudioEngine {
     ) {
         self.flush_pending_cmds();
         let live_ids: HashSet<u64> = project.tracks.iter().map(|t| t.id).collect();
-        for track_id in self.synced_channels.keys().copied().collect::<Vec<_>>() {
-            if !live_ids.contains(&track_id) {
-                self.send(AudioCommand::ClearTrackSamples { track_id });
-            }
+        let stale: Vec<u64> = self
+            .synced_samples
+            .keys()
+            .copied()
+            .filter(|track_id| !live_ids.contains(track_id))
+            .collect();
+        for track_id in stale {
+            self.synced_samples.remove(&track_id);
+            self.send(AudioCommand::ClearTrackSamples { track_id });
         }
 
         for track in &project.tracks {
@@ -2894,9 +2997,21 @@ impl DawEngine for AudioEngine {
                     buffer: Arc::clone(decoded),
                 });
             }
+
+            let changed = self
+                .synced_samples
+                .get(&track.id)
+                .map(|prev| prev != &clips)
+                .unwrap_or(true);
+            if !changed {
+                continue;
+            }
+
             if clips.is_empty() {
+                self.synced_samples.remove(&track.id);
                 self.send(AudioCommand::ClearTrackSamples { track_id: track.id });
             } else {
+                self.synced_samples.insert(track.id, clips.clone());
                 self.send(AudioCommand::SetTrackSamples {
                     track_id: track.id,
                     clips,
@@ -2943,82 +3058,113 @@ fn start_stream(
         .map_err(|error| format!("Default output config failed: {error}"))?;
 
     let sample_format = supported.sample_format();
-    let config: StreamConfig = supported.config();
-    let sample_rate = config.sample_rate.0 as f32;
-    let channels = config.channels as usize;
-    if let cpal::BufferSize::Fixed(frames) = config.buffer_size {
-        perf.buffer_frames.store(frames, Ordering::Relaxed);
-    }
+    let base_config: StreamConfig = supported.config();
+    let sample_rate = base_config.sample_rate.0 as f32;
+    let channels = base_config.channels as usize;
 
-    let (tx, rx) = mpsc::sync_channel::<AudioCommand>(64);
-    let state = AudioCallbackState {
-        voices: HashMap::new(),
-        channel_params: HashMap::new(),
-        fx_chains: HashMap::new(),
-        sample_clips: HashMap::new(),
-        automation: HashMap::new(),
-        modulators: HashMap::new(),
-        macros: HashMap::new(),
-        lfo_phases: HashMap::new(),
-        master_gain: 1.0,
-        commands: rx,
-        channels,
-        sample_rate,
-        transport: TransportInfo::default(),
-        metronome: MetronomeRunner::new(sample_rate),
-        mix_l: vec![0.0; 4096],
-        mix_r: vec![0.0; 4096],
-        tmp_l: vec![0.0; 4096],
-        tmp_r: vec![0.0; 4096],
-        track_meters,
-        master_meter,
-        lfo_phases_ui,
-        track_perf,
-        perf,
-        retire_tx,
-        param_touch_tx,
-    };
+    // The device default is whatever ALSA/PipeWire feels like (observed: 1882
+    // frames = 43 ms). Ask for a small fixed period first and fall back to the
+    // default only if the device refuses to build the stream.
+    let mut candidates: Vec<BufferSize> = Vec::new();
+    if let SupportedBufferSize::Range { min, max } = *supported.buffer_size() {
+        candidates.push(BufferSize::Fixed(TARGET_BUFFER_FRAMES.clamp(min, max)));
+    }
+    candidates.push(BufferSize::Default);
 
     let err_fn = |error| eprintln!("Motif audio stream error: {error}");
+    let mut last_error = String::from("No usable output configuration");
 
-    let stream = match sample_format {
-        SampleFormat::F32 => {
-            let mut state = state;
-            device
-                .build_output_stream(
-                    &config,
-                    move |data: &mut [f32], _| state.write_f32(data),
-                    err_fn,
-                    None,
-                )
-                .map_err(|error| format!("Build f32 stream failed: {error}"))?
-        }
-        SampleFormat::I16 => {
-            let mut state = state;
-            device
-                .build_output_stream(
-                    &config,
-                    move |data: &mut [i16], _| state.write_i16(data),
-                    err_fn,
-                    None,
-                )
-                .map_err(|error| format!("Build i16 stream failed: {error}"))?
-        }
-        SampleFormat::U16 => {
-            let mut state = state;
-            device
-                .build_output_stream(
-                    &config,
-                    move |data: &mut [u16], _| state.write_u16(data),
-                    err_fn,
-                    None,
-                )
-                .map_err(|error| format!("Build u16 stream failed: {error}"))?
-        }
-        other => {
-            return Err(format!("Unsupported sample format: {other:?}"));
-        }
-    };
+    for buffer_size in candidates {
+        let mut config = base_config.clone();
+        config.buffer_size = buffer_size;
 
-    Ok((stream, tx, sample_rate, device_name))
+        // Each attempt needs its own command channel: a failed build drops the
+        // receiver with the discarded callback state.
+        let (tx, rx) = mpsc::sync_channel::<AudioCommand>(64);
+        let state = AudioCallbackState {
+            voices: HashMap::new(),
+            channel_params: HashMap::new(),
+            fx_chains: HashMap::new(),
+            sample_clips: HashMap::new(),
+            automation: HashMap::new(),
+            modulators: HashMap::new(),
+            macros: HashMap::new(),
+            lfo_phases: HashMap::new(),
+            master_gain: 1.0,
+            commands: rx,
+            channels,
+            sample_rate,
+            transport: TransportInfo::default(),
+            metronome: MetronomeRunner::new(sample_rate),
+            mix_l: vec![0.0; 4096],
+            mix_r: vec![0.0; 4096],
+            tmp_l: vec![0.0; 4096],
+            tmp_r: vec![0.0; 4096],
+            track_meters: Arc::clone(&track_meters),
+            master_meter: Arc::clone(&master_meter),
+            lfo_phases_ui: Arc::clone(&lfo_phases_ui),
+            track_perf: Arc::clone(&track_perf),
+            perf: Arc::clone(&perf),
+            retire_tx: retire_tx.clone(),
+            param_touch_tx: param_touch_tx.clone(),
+            meter_scratch: Vec::new(),
+            track_perf_scratch: Vec::new(),
+            track_id_scratch: Vec::new(),
+            track_phases_scratch: HashMap::new(),
+            lfo_phases_ui_scratch: Vec::new(),
+            param_touch_scratch: Vec::new(),
+            param_id_scratch: HashSet::new(),
+            mod_index_scratch: Vec::new(),
+            live_mod_id_scratch: HashSet::new(),
+        };
+
+        let built = match sample_format {
+            SampleFormat::F32 => {
+                let mut state = state;
+                device
+                    .build_output_stream(
+                        &config,
+                        move |data: &mut [f32], _| state.write_f32(data),
+                        err_fn,
+                        None,
+                    )
+                    .map_err(|error| format!("Build f32 stream failed: {error}"))
+            }
+            SampleFormat::I16 => {
+                let mut state = state;
+                device
+                    .build_output_stream(
+                        &config,
+                        move |data: &mut [i16], _| state.write_i16(data),
+                        err_fn,
+                        None,
+                    )
+                    .map_err(|error| format!("Build i16 stream failed: {error}"))
+            }
+            SampleFormat::U16 => {
+                let mut state = state;
+                device
+                    .build_output_stream(
+                        &config,
+                        move |data: &mut [u16], _| state.write_u16(data),
+                        err_fn,
+                        None,
+                    )
+                    .map_err(|error| format!("Build u16 stream failed: {error}"))
+            }
+            other => return Err(format!("Unsupported sample format: {other:?}")),
+        };
+
+        match built {
+            Ok(stream) => {
+                if let BufferSize::Fixed(frames) = buffer_size {
+                    perf.buffer_frames.store(frames, Ordering::Relaxed);
+                }
+                return Ok((stream, tx, sample_rate, device_name));
+            }
+            Err(error) => last_error = error,
+        }
+    }
+
+    Err(last_error)
 }

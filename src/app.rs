@@ -590,6 +590,7 @@ impl DawApp {
     fn apply_loaded_project(&mut self, project: Project, path: Option<PathBuf>) {
         self.engine.stop();
         self.engine.all_notes_off();
+        self.engine.reset_audio_state();
         self.engine.set_beats_per_second(project.beats_per_second());
         self.project = project;
         self.saved_snapshot = self.project.clone();
@@ -1658,7 +1659,12 @@ impl DawApp {
 
 impl eframe::App for DawApp {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
-        let delta_seconds = ctx.input(|input| input.unstable_dt);
+        // UI stalls (plugin load, xrun storms) can report multi-second dt; cap so
+        // transport/sequencer never jump across a whole arrangement in one frame.
+        const MAX_TRANSPORT_DELTA_SECS: f32 = 0.1;
+        let delta_seconds = ctx
+            .input(|input| input.unstable_dt)
+            .min(MAX_TRANSPORT_DELTA_SECS);
         let playback = LoopPlayback {
             enabled: self.project.loop_enabled,
             start_beats: self.project.loop_start_beats,

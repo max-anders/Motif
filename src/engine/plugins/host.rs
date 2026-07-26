@@ -49,6 +49,12 @@ pub struct HostedPlugin {
     /// Pitches currently held (sequencer + audition) so pause can NoteOff them.
     held_notes: HashSet<u8>,
     sample_rate: f64,
+    /// RT scratch: param ids written by Motif this block (cleared/refilled each process).
+    motif_written_scratch: HashSet<u32>,
+    /// RT scratch: dedupe gui touches (cleared each process).
+    gui_touch_seen_scratch: HashSet<u32>,
+    /// RT scratch: held notes drained for all_notes_off without allocating.
+    held_notes_scratch: Vec<u8>,
 }
 
 impl HostedPlugin {
@@ -143,71 +149,65 @@ impl HostedPlugin {
         true
     }
 
-    /// Process one instrument block. Returns plugin-GUI param touches (for MRU).
+    /// Process one instrument block. Appends plugin-GUI param touches to `touches_out`.
     pub fn process_block(
         &mut self,
         frames: usize,
         transport: Option<TransportInfo>,
         mix_l: &mut [f32],
         mix_r: &mut [f32],
-    ) -> Vec<u32> {
+        touches_out: &mut Vec<u32>,
+    ) {
+        touches_out.clear();
         if frames == 0 || frames > MAX_BLOCK_FRAMES {
-            return Vec::new();
+            return;
         }
 
-        let motif_written = motif_written_param_ids(&self.events);
+        self.fill_motif_written_param_ids();
 
-        let HostedPlugin {
-            instance,
-            in_l,
-            in_r,
-            out_l,
-            out_r,
-            events,
-            out_events,
-            sample_rate,
-            held_notes: _,
-        } = self;
-
-        in_l[..frames].fill(0.0);
-        in_r[..frames].fill(0.0);
-        out_l[..frames].fill(0.0);
-        out_r[..frames].fill(0.0);
-        out_events.clear();
+        self.in_l[..frames].fill(0.0);
+        self.in_r[..frames].fill(0.0);
+        self.out_l[..frames].fill(0.0);
+        self.out_r[..frames].fill(0.0);
+        self.out_events.clear();
 
         let bus_in = [BusRange::new(0, 2)];
         let bus_out = [BusRange::new(0, 2)];
-        let input_refs: [&[f32]; 2] = [&in_l[..frames], &in_r[..frames]];
-        let mut output_refs: [&mut [f32]; 2] = [&mut out_l[..frames], &mut out_r[..frames]];
+        let input_refs: [&[f32]; 2] = [&self.in_l[..frames], &self.in_r[..frames]];
+        let mut output_refs: [&mut [f32]; 2] =
+            [&mut self.out_l[..frames], &mut self.out_r[..frames]];
 
         let result = {
             let mut buffer =
                 AudioBuffer::new(&input_refs, &mut output_refs, frames, &bus_in, &bus_out);
             let mut context = ProcessContext {
-                sample_rate: *sample_rate,
+                sample_rate: self.sample_rate,
                 max_block_size: MAX_BLOCK_FRAMES,
                 transport,
-                output_events: out_events,
+                output_events: &mut self.out_events,
             };
-            match instance {
-                PluginInstance::Clap(plugin) => plugin.process(&mut buffer, events, &mut context),
-                PluginInstance::Vst3(plugin) => plugin.process(&mut buffer, events, &mut context),
+            match &mut self.instance {
+                PluginInstance::Clap(plugin) => {
+                    plugin.process(&mut buffer, &mut self.events, &mut context)
+                }
+                PluginInstance::Vst3(plugin) => {
+                    plugin.process(&mut buffer, &mut self.events, &mut context)
+                }
             }
         };
 
-        events.clear();
+        self.events.clear();
         if result.is_err() {
-            return Vec::new();
+            return;
         }
 
-        let touches = collect_gui_param_touches(out_events, &motif_written);
+        self.collect_gui_param_touches(touches_out);
 
         let n = frames.min(mix_l.len()).min(mix_r.len());
         for i in 0..n {
-            mix_l[i] += out_l[i];
-            mix_r[i] += out_r[i];
+            mix_l[i] += self.out_l[i];
+            mix_r[i] += self.out_r[i];
         }
-        touches
     }
 
     /// Insert-effect processing: feeds `buf_l`/`buf_r` as the plugin's input
@@ -223,67 +223,61 @@ impl HostedPlugin {
         transport: Option<TransportInfo>,
         buf_l: &mut [f32],
         buf_r: &mut [f32],
-    ) -> Vec<u32> {
+        touches_out: &mut Vec<u32>,
+    ) {
+        touches_out.clear();
         if frames == 0 || frames > MAX_BLOCK_FRAMES {
-            return Vec::new();
+            return;
         }
         let n = frames.min(buf_l.len()).min(buf_r.len());
         if n == 0 {
-            return Vec::new();
+            return;
         }
 
-        let motif_written = motif_written_param_ids(&self.events);
+        self.fill_motif_written_param_ids();
 
-        let HostedPlugin {
-            instance,
-            in_l,
-            in_r,
-            out_l,
-            out_r,
-            events,
-            out_events,
-            sample_rate,
-            held_notes: _,
-        } = self;
-
-        in_l[..frames].fill(0.0);
-        in_r[..frames].fill(0.0);
-        in_l[..n].copy_from_slice(&buf_l[..n]);
-        in_r[..n].copy_from_slice(&buf_r[..n]);
-        out_l[..frames].fill(0.0);
-        out_r[..frames].fill(0.0);
-        out_events.clear();
+        self.in_l[..frames].fill(0.0);
+        self.in_r[..frames].fill(0.0);
+        self.in_l[..n].copy_from_slice(&buf_l[..n]);
+        self.in_r[..n].copy_from_slice(&buf_r[..n]);
+        self.out_l[..frames].fill(0.0);
+        self.out_r[..frames].fill(0.0);
+        self.out_events.clear();
 
         let bus_in = [BusRange::new(0, 2)];
         let bus_out = [BusRange::new(0, 2)];
-        let input_refs: [&[f32]; 2] = [&in_l[..frames], &in_r[..frames]];
-        let mut output_refs: [&mut [f32]; 2] = [&mut out_l[..frames], &mut out_r[..frames]];
+        let input_refs: [&[f32]; 2] = [&self.in_l[..frames], &self.in_r[..frames]];
+        let mut output_refs: [&mut [f32]; 2] =
+            [&mut self.out_l[..frames], &mut self.out_r[..frames]];
 
         let result = {
             let mut buffer =
                 AudioBuffer::new(&input_refs, &mut output_refs, frames, &bus_in, &bus_out);
             let mut context = ProcessContext {
-                sample_rate: *sample_rate,
+                sample_rate: self.sample_rate,
                 max_block_size: MAX_BLOCK_FRAMES,
                 transport,
-                output_events: out_events,
+                output_events: &mut self.out_events,
             };
-            match instance {
-                PluginInstance::Clap(plugin) => plugin.process(&mut buffer, events, &mut context),
-                PluginInstance::Vst3(plugin) => plugin.process(&mut buffer, events, &mut context),
+            match &mut self.instance {
+                PluginInstance::Clap(plugin) => {
+                    plugin.process(&mut buffer, &mut self.events, &mut context)
+                }
+                PluginInstance::Vst3(plugin) => {
+                    plugin.process(&mut buffer, &mut self.events, &mut context)
+                }
             }
         };
 
-        events.clear();
+        self.events.clear();
         if result.is_err() {
-            return Vec::new();
+            return;
         }
 
-        let touches = collect_gui_param_touches(out_events, &motif_written);
+        self.collect_gui_param_touches(touches_out);
 
-        buf_l[..n].copy_from_slice(&out_l[..n]);
-        buf_r[..n].copy_from_slice(&out_r[..n]);
-        touches
+        buf_l[..n].copy_from_slice(&self.out_l[..n]);
+        buf_r[..n].copy_from_slice(&self.out_r[..n]);
     }
 
     pub fn push_note_on(&mut self, pitch: u8, velocity: u8) {
@@ -314,8 +308,9 @@ impl HostedPlugin {
 
     pub fn all_notes_off(&mut self) {
         // Explicit NoteOffs: many instruments ignore CC123 alone (Vital included).
-        let held: Vec<u8> = self.held_notes.drain().collect();
-        for note in held {
+        self.held_notes_scratch.clear();
+        self.held_notes_scratch.extend(self.held_notes.drain());
+        for &note in &self.held_notes_scratch {
             self.events.push(Event {
                 sample_offset: 0,
                 body: EventBody::Midi(MidiData::NoteOff {
@@ -484,6 +479,25 @@ impl HostedPlugin {
         }
         .encode())
     }
+
+    fn fill_motif_written_param_ids(&mut self) {
+        self.motif_written_scratch.clear();
+        for event in self.events.iter() {
+            if let EventBody::ParamValue { param_id, .. } = event.body {
+                self.motif_written_scratch.insert(param_id);
+            }
+        }
+    }
+
+    /// Collect unique param ids touched by the plugin GUI this block into `touches_out`.
+    fn collect_gui_param_touches(&mut self, touches_out: &mut Vec<u32>) {
+        collect_gui_param_touches_impl(
+            &self.out_events,
+            &self.motif_written_scratch,
+            touches_out,
+            &mut self.gui_touch_seen_scratch,
+        );
+    }
 }
 
 /// Load from catalog metadata and activate at `sample_rate`.
@@ -568,6 +582,9 @@ pub fn load_and_activate(
         out_events: EventList::new(),
         held_notes: HashSet::new(),
         sample_rate,
+        motif_written_scratch: HashSet::new(),
+        gui_touch_seen_scratch: HashSet::new(),
+        held_notes_scratch: Vec::new(),
     })
 }
 
@@ -612,21 +629,14 @@ fn pick_layout(layouts: &[BusLayout]) -> BusLayout {
         .unwrap_or_else(BusLayout::stereo)
 }
 
-fn motif_written_param_ids(events: &EventList) -> HashSet<u32> {
-    events
-        .iter()
-        .filter_map(|event| match event.body {
-            EventBody::ParamValue { param_id, .. } => Some(param_id),
-            _ => None,
-        })
-        .collect()
-}
-
-/// Collect unique param ids touched by the plugin GUI this block.
-/// Prefers gesture-begin; also includes outbound ParamValue not written by Motif.
-fn collect_gui_param_touches(out_events: &EventList, motif_written: &HashSet<u32>) -> Vec<u32> {
-    let mut touches = Vec::new();
-    let mut seen = HashSet::new();
+fn collect_gui_param_touches_impl(
+    out_events: &EventList,
+    motif_written: &HashSet<u32>,
+    touches_out: &mut Vec<u32>,
+    seen_scratch: &mut HashSet<u32>,
+) {
+    touches_out.clear();
+    seen_scratch.clear();
     for event in out_events.iter() {
         let param_id = match event.body {
             EventBody::ParamGesture {
@@ -638,11 +648,10 @@ fn collect_gui_param_touches(out_events: &EventList, motif_written: &HashSet<u32
             }
             _ => continue,
         };
-        if seen.insert(param_id) {
-            touches.push(param_id);
+        if seen_scratch.insert(param_id) {
+            touches_out.push(param_id);
         }
     }
-    touches
 }
 
 #[cfg(test)]
@@ -651,22 +660,22 @@ mod tests {
 
     #[test]
     fn collect_gui_touches_prefers_gesture_filters_motif_writes() {
-        let mut out = EventList::new();
-        out.push(Event {
+        let mut out_events = EventList::new();
+        out_events.push(Event {
             sample_offset: 0,
             body: EventBody::ParamGesture {
                 param_id: 1,
                 active: true,
             },
         });
-        out.push(Event {
+        out_events.push(Event {
             sample_offset: 1,
             body: EventBody::ParamValue {
                 param_id: 2,
                 value: 0.5,
             },
         });
-        out.push(Event {
+        out_events.push(Event {
             sample_offset: 2,
             body: EventBody::ParamValue {
                 param_id: 3,
@@ -674,7 +683,9 @@ mod tests {
             },
         });
         let motif_written = HashSet::from([3]);
-        let touches = collect_gui_param_touches(&out, &motif_written);
+        let mut touches = Vec::new();
+        let mut seen = HashSet::new();
+        collect_gui_param_touches_impl(&out_events, &motif_written, &mut touches, &mut seen);
         assert_eq!(touches, vec![1, 2]);
     }
 }
