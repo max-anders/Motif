@@ -7,21 +7,20 @@ use eframe::egui;
 
 use crate::engine::{
     decode_audio_file, AudioEngine, DawEngine, DecodedAudio, EditorCloseBinding, LoopPlayback,
-    PluginCatalog, PluginRef, PLUGIN_CACHE_FILE,
+    ParamTouchEvent, PluginCatalog, PluginRef, PLUGIN_CACHE_FILE,
 };
 use crate::model::{
     clear_recovery, ensure_motif_extension, format_unix_time, legacy_project_path,
     load_project_from, load_recovery_meta, load_recovery_project, project_display_name,
     projects_dir, push_recent, save_project_to, write_recovery, EditClipboard, EditHistory,
-    Project, PROJECT_EXTENSION, RecoveryMeta,
+    Project, TrackInstrument, PROJECT_EXTENSION, RecoveryMeta,
 };
 use crate::ui::{
     choice_to_instrument, show_inspector, track_name_for_choice, Action, AddBrowserAction,
     AddBrowserUi, AppSettings, AudioImportRequest, BrowserTab, Chord, DevicesUi, MixerUi,
     PerformanceUi, PianoRollUi, PlaylistUi, PluginEditorRequest, PollFilter,
     ProjectBrowserAction, ProjectBrowserUi, SettingsAction, SettingsUi, TransportUi,
-    devices_dock_min_width, devices_dock_width, DEVICES_DOCK_MAX_WIDTH,
-    DEVICES_DOCK_WIDTH_DEVICES, SETTINGS_FILE, sync_devices_dock_panel_width,
+    SETTINGS_FILE,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -527,6 +526,52 @@ impl DawApp {
             Err(error) => {
                 self.status_message = format!("Settings save failed: {error}");
             }
+        }
+    }
+
+    /// Apply plugin-GUI param touches from the audio thread into last-tweaked MRU.
+    fn apply_param_touches(&mut self, touches: &[ParamTouchEvent]) {
+        if touches.is_empty() {
+            return;
+        }
+        let mut dirty = false;
+        for touch in touches {
+            let Some(track) = self.project.track(touch.track_id) else {
+                continue;
+            };
+            let unique_id = match touch.device_id {
+                None => match &track.instrument {
+                    TrackInstrument::Plugin { unique_id, .. } if !unique_id.is_empty() => {
+                        Some(unique_id.clone())
+                    }
+                    _ => None,
+                },
+                Some(device_id) => track
+                    .devices
+                    .iter()
+                    .find(|device| device.id == device_id)
+                    .map(|device| device.unique_id.clone())
+                    .filter(|uid| !uid.is_empty()),
+            };
+            let Some(unique_id) = unique_id else {
+                continue;
+            };
+            let name = self
+                .engine
+                .plugin_parameters(touch.track_id, touch.device_id)
+                .into_iter()
+                .find(|param| param.id == touch.param_id)
+                .map(|param| param.name)
+                .unwrap_or_default();
+            if self
+                .settings
+                .touch_param(&unique_id, touch.param_id, name)
+            {
+                dirty = true;
+            }
+        }
+        if dirty {
+            self.save_settings();
         }
     }
 
@@ -1630,6 +1675,11 @@ impl eframe::App for DawApp {
         self.engine.sync_macros(&self.project);
         self.engine.advance(delta_seconds, playback);
         self.engine.schedule_project(&self.project);
+        let param_touches = self.engine.drain_param_touches();
+        self.apply_param_touches(&param_touches);
+        if !param_touches.is_empty() {
+            ctx.request_repaint();
+        }
         let editor_poll = self.engine.poll_plugin_editors();
         if editor_poll.any_open {
             ctx.request_repaint();
@@ -1788,37 +1838,29 @@ impl eframe::App for DawApp {
         }
 
         if self.devices_strip_visible() {
-            let (favorites_open, mods_open, target_width, min_width) = {
-                let dock_track = self.selected_track.and_then(|id| self.project.track(id));
-                sync_devices_dock_panel_width(ctx, dock_track, &self.devices, &self.settings);
-                let favorites_open = dock_track.is_some_and(|track| {
-                    self.devices
-                        .dock_shows_favorites_column(track, &self.settings)
-                });
-                let mods_open = dock_track
-                    .is_some_and(|track| self.devices.dock_shows_mod_column(track.id));
-                (
-                    favorites_open,
-                    mods_open,
-                    devices_dock_width(favorites_open, mods_open),
-                    devices_dock_min_width(favorites_open, mods_open),
-                )
+            // Only the LFO column stretches: with it closed the dock is pinned to an
+            // exact width so it always snaps back instead of keeping a dragged width.
+            let plan = {
+                let DawApp {
+                    devices,
+                    project,
+                    selected_track,
+                    settings,
+                    ..
+                } = self;
+                let dock_track = selected_track.and_then(|id| project.track(id));
+                devices.dock_panel_width(dock_track, settings)
             };
-            let expandable = favorites_open || mods_open;
             let panel = egui::SidePanel::right("devices_dock");
-            let panel = if expandable {
+            let panel = if plan.resizable {
                 panel
-                    .default_width(target_width)
-                    .min_width(min_width)
-                    .max_width(DEVICES_DOCK_MAX_WIDTH)
+                    .default_width(plan.default_width)
+                    .width_range(plan.min_width..=plan.max_width)
                     .resizable(true)
             } else {
-                panel
-                    .default_width(DEVICES_DOCK_WIDTH_DEVICES)
-                    .width_range(DEVICES_DOCK_WIDTH_DEVICES..=DEVICES_DOCK_WIDTH_DEVICES)
-                    .resizable(false)
+                panel.exact_width(plan.default_width).resizable(false)
             };
-            panel.show(ctx, |ui| {
+            let panel_response = panel.show(ctx, |ui| {
                     let theme = self.settings.themes.colors().clone();
                     let strip_output = {
                         let DawApp {
@@ -1857,6 +1899,8 @@ impl eframe::App for DawApp {
                         self.handle_plugin_editor_request(ctx, frame, request);
                     }
                 });
+            self.devices
+                .note_dock_panel_width(panel_response.response.rect.width());
         }
 
         egui::CentralPanel::default()

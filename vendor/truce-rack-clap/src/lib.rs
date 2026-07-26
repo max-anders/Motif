@@ -32,12 +32,12 @@ use clap_sys::audio_buffer::clap_audio_buffer;
 use clap_sys::entry::clap_plugin_entry;
 use clap_sys::events::{
     CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_MIDI, CLAP_EVENT_NOTE_OFF, CLAP_EVENT_NOTE_ON,
-    CLAP_EVENT_PARAM_VALUE, CLAP_EVENT_TRANSPORT, CLAP_TRANSPORT_HAS_BEATS_TIMELINE,
-    CLAP_TRANSPORT_HAS_SECONDS_TIMELINE, CLAP_TRANSPORT_HAS_TEMPO,
-    CLAP_TRANSPORT_HAS_TIME_SIGNATURE, CLAP_TRANSPORT_IS_LOOP_ACTIVE, CLAP_TRANSPORT_IS_PLAYING,
-    CLAP_TRANSPORT_IS_RECORDING, clap_event_header, clap_event_midi, clap_event_note,
-    clap_event_param_value, clap_event_transport, clap_input_events, clap_output_events,
-    clap_transport_flags,
+    CLAP_EVENT_PARAM_GESTURE_BEGIN, CLAP_EVENT_PARAM_GESTURE_END, CLAP_EVENT_PARAM_VALUE,
+    CLAP_EVENT_TRANSPORT, CLAP_TRANSPORT_HAS_BEATS_TIMELINE, CLAP_TRANSPORT_HAS_SECONDS_TIMELINE,
+    CLAP_TRANSPORT_HAS_TEMPO, CLAP_TRANSPORT_HAS_TIME_SIGNATURE, CLAP_TRANSPORT_IS_LOOP_ACTIVE,
+    CLAP_TRANSPORT_IS_PLAYING, CLAP_TRANSPORT_IS_RECORDING, clap_event_header, clap_event_midi,
+    clap_event_note, clap_event_param_gesture, clap_event_param_value, clap_event_transport,
+    clap_input_events, clap_output_events, clap_transport_flags,
 };
 use clap_sys::fixedpoint::{CLAP_BEATTIME_FACTOR, CLAP_SECTIME_FACTOR};
 use clap_sys::ext::gui::{
@@ -1632,6 +1632,28 @@ unsafe fn clap_event_to_rack(header: &clap_event_header) -> Option<truce_rack_co
                 body: EventBody::ParamValue {
                     param_id: e.param_id,
                     value: e.value,
+                },
+            })
+        }
+        t if t == CLAP_EVENT_PARAM_GESTURE_BEGIN => {
+            let e: &clap_event_param_gesture =
+                unsafe { &*std::ptr::from_ref::<clap_event_header>(header).cast() };
+            Some(Event {
+                sample_offset: offset,
+                body: EventBody::ParamGesture {
+                    param_id: e.param_id,
+                    active: true,
+                },
+            })
+        }
+        t if t == CLAP_EVENT_PARAM_GESTURE_END => {
+            let e: &clap_event_param_gesture =
+                unsafe { &*std::ptr::from_ref::<clap_event_header>(header).cast() };
+            Some(Event {
+                sample_offset: offset,
+                body: EventBody::ParamGesture {
+                    param_id: e.param_id,
+                    active: false,
                 },
             })
         }

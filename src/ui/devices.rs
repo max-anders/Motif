@@ -3,7 +3,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use egui::containers::scroll_area::ScrollBarVisibility;
-use egui::containers::panel::PanelState;
 use egui::{Align, Align2, Id, Layout, Pos2, Rect, RichText, Sense, Stroke, Ui, UiBuilder, Vec2};
 
 use crate::engine::{DawEngine, DecodedAudio, PluginCatalog, PluginRef};
@@ -14,13 +13,13 @@ use crate::ui::instrument_menu::{
 };
 use crate::ui::app_settings::AppSettings;
 use crate::ui::favorites_panel::{
-    favorites_column_visible, show_favorites_panel, FAVORITES_COLUMN_WIDTH,
+    favorites_column_visible, show_favorites_menu, show_favorites_panel, unique_id_for_target,
+    FAVORITES_COLUMN_WIDTH,
 };
 use crate::ui::macro_panel::{show_macro_panel, MACRO_COLUMN_WIDTH};
 use crate::ui::modulator::{
-    mod_dock_content_width, modulator_count_for_target, normalize_modulator_target_key,
-    show_modulator_panel, target_filter_from_device_key, ModulatorLayout, TargetFilter,
-    INSTRUMENT_MOD_TARGET_KEY, MOD_DOCK_FRAME_H_MARGIN,
+    modulator_count_for_target, normalize_modulator_target_key, show_modulator_panel,
+    target_filter_from_device_key, ModulatorLayout, TargetFilter, INSTRUMENT_MOD_TARGET_KEY,
 };
 use crate::ui::playlist::{
     draw_lane_timeline, draw_marquee, handle_single_track_clip_pointer, ms_toggle_button,
@@ -45,87 +44,109 @@ const TILE_GAP: f32 = 8.0;
 const MINI_SCROLLBAR_WIDTH: f32 = 10.0;
 const STRIP_PADDING: f32 = 8.0;
 const TILE_TO_MODULATOR_GAP: f32 = 8.0;
-const DEVICE_COLUMN_WIDTH: f32 = TILE_WIDTH + STRIP_PADDING * 2.0;
-const MOD_COLUMN_MIN_WIDTH: f32 = 280.0;
-const FAVORITES_COLUMN_GAP: f32 = 8.0;
-/// Macros + Devices only (no favorites, no mods).
-pub const DEVICES_DOCK_WIDTH_DEVICES: f32 =
-    DEVICE_COLUMN_WIDTH + MACRO_COLUMN_WIDTH + STRIP_PADDING + 8.0;
-/// Default width with favorites + mods open (Macros | Devices | Favorites | Mods).
-pub const DEVICES_DOCK_WIDTH: f32 =
-    DEVICE_COLUMN_WIDTH
-        + MACRO_COLUMN_WIDTH
-        + FAVORITES_COLUMN_WIDTH
-        + MOD_COLUMN_MIN_WIDTH
-        + 28.0;
-/// Minimum dock width with favorites + mods visible.
-pub const DEVICES_DOCK_MIN_WIDTH: f32 =
-    DEVICE_COLUMN_WIDTH + MACRO_COLUMN_WIDTH + FAVORITES_COLUMN_WIDTH + 200.0 + 28.0;
-/// Minimum dock width when only macros + devices are shown.
-pub const DEVICES_DOCK_MIN_WIDTH_DEVICES: f32 = DEVICES_DOCK_WIDTH_DEVICES;
-/// Maximum dock width (~25% wider than full default).
-pub const DEVICES_DOCK_MAX_WIDTH: f32 = DEVICES_DOCK_WIDTH * 1.25;
+/// Horizontal inset applied inside every dock column, so headers and content
+/// line up on the same left edge from one column to the next.
+const COLUMN_PADDING: f32 = 8.0;
+const DEVICE_COLUMN_WIDTH: f32 = TILE_WIDTH + COLUMN_PADDING * 2.0;
+/// Gap + hairline between dock columns. Exact: the dock row zeroes horizontal
+/// item spacing so column widths sum to the panel width with no drift.
+const COLUMN_SEP_WIDTH: f32 = 9.0;
+/// LFO column bounds. This is the only dock column that absorbs panel resize.
+const MOD_COLUMN_MIN_WIDTH: f32 = 300.0;
+const MOD_COLUMN_DEFAULT_WIDTH: f32 = 360.0;
+const MOD_COLUMN_MAX_WIDTH: f32 = 760.0;
 
-const DEVICES_DOCK_PANEL_ID: &str = "devices_dock";
+/// `Frame::side_top_panel` inner margin (8 per side). `SidePanel` widths include
+/// it, the dock's own layout math does not.
+const PANEL_FRAME_H_MARGIN: f32 = 16.0;
 
-/// Target dock width for the current favorites/mods visibility.
-pub fn devices_dock_width(favorites_open: bool, mods_open: bool) -> f32 {
-    let mut width = DEVICES_DOCK_WIDTH_DEVICES;
-    if favorites_open {
-        width += FAVORITES_COLUMN_WIDTH + FAVORITES_COLUMN_GAP;
-    }
-    if mods_open {
-        width += MOD_COLUMN_MIN_WIDTH + 12.0;
-    }
-    width
+/// Combined content width of the non-resizable columns
+/// (macros, optional favorites, devices), excluding the panel frame margin.
+/// Each column carries its own `COLUMN_PADDING`, so no extra edge padding here.
+fn dock_fixed_content_width(favorites_open: bool) -> f32 {
+    let favorites = if favorites_open {
+        FAVORITES_COLUMN_WIDTH + COLUMN_SEP_WIDTH
+    } else {
+        0.0
+    };
+    MACRO_COLUMN_WIDTH + COLUMN_SEP_WIDTH + favorites + DEVICE_COLUMN_WIDTH
 }
 
-pub fn devices_dock_min_width(favorites_open: bool, mods_open: bool) -> f32 {
-    let mut width = DEVICES_DOCK_WIDTH_DEVICES;
-    if favorites_open {
-        width += FAVORITES_COLUMN_WIDTH + FAVORITES_COLUMN_GAP;
+/// `(min, max)` panel width for the current column visibility.
+///
+/// Only the LFO column stretches, so with it closed both bounds collapse to one
+/// exact width. `SidePanel` clamps its stored width into this range every frame,
+/// which is what makes the dock snap back instead of staying wide.
+fn dock_panel_width_bounds(favorites_open: bool, mods_open: bool) -> (f32, f32) {
+    let fixed = dock_fixed_content_width(favorites_open) + PANEL_FRAME_H_MARGIN;
+    if !mods_open {
+        return (fixed, fixed);
     }
-    if mods_open {
-        width += 200.0 + 12.0;
-    }
-    width
+    let base = fixed + COLUMN_SEP_WIDTH;
+    (base + MOD_COLUMN_MIN_WIDTH, base + MOD_COLUMN_MAX_WIDTH)
 }
 
-/// Snap the right devices dock width before `SidePanel::show`.
-pub fn sync_devices_dock_panel_width(
-    ctx: &egui::Context,
-    track: Option<&Track>,
-    devices: &DevicesUi,
-    settings: &AppSettings,
-) {
-    let panel_id = egui::Id::new(DEVICES_DOCK_PANEL_ID);
-    let favorites_open =
-        track.is_some_and(|t| devices.dock_shows_favorites_column(t, settings));
-    let mods_open = track.is_some_and(|t| devices.dock_shows_mod_column(t.id));
-    let target = devices_dock_width(favorites_open, mods_open);
-    let expandable = favorites_open || mods_open;
-
-    if let Some(mut state) = PanelState::load(ctx, panel_id) {
-        if expandable {
-            let min_w = devices_dock_min_width(favorites_open, mods_open);
-            if state.rect.width() + 0.5 < min_w {
-                set_right_panel_width(&mut state, target);
-                store_panel_state(ctx, panel_id, state);
-            }
-        } else if (state.rect.width() - target).abs() > 0.5 {
-            set_right_panel_width(&mut state, target);
-            store_panel_state(ctx, panel_id, state);
-        }
-    }
+/// How the dock side panel should be sized for one frame.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DockPanelWidth {
+    pub default_width: f32,
+    pub min_width: f32,
+    pub max_width: f32,
+    pub resizable: bool,
 }
 
-fn store_panel_state(ctx: &egui::Context, panel_id: egui::Id, state: PanelState) {
-    ctx.data_mut(|d| d.insert_persisted(panel_id, state));
+/// Vertical rule between dock columns, allocating exactly [`COLUMN_SEP_WIDTH`].
+fn column_separator(ui: &mut Ui, height: f32, theme: &ThemeColors) {
+    let (rect, _) =
+        ui.allocate_exact_size(Vec2::new(COLUMN_SEP_WIDTH, height), Sense::hover());
+    ui.painter()
+        .vline(rect.center().x, rect.y_range(), Stroke::new(1.0_f32, theme.separator));
 }
 
-fn set_right_panel_width(state: &mut PanelState, width: f32) {
-    let max_x = state.rect.max.x;
-    state.rect.min.x = max_x - width;
+/// Keep a dock column's contents inside its own lane so a chip that asks for more
+/// width than it was given can never paint over the neighbouring column.
+/// Horizontal only: vertical scrolling and popups must stay unclipped.
+fn clip_column_width(ui: &mut Ui) {
+    let clip = ui.clip_rect();
+    let lane = Rect::from_x_y_ranges(ui.max_rect().x_range(), clip.y_range());
+    ui.set_clip_rect(clip.intersect(lane));
+}
+
+/// Allocate one dock column of exactly `width` and run `contents` inside its
+/// padded, clipped lane. `contents` receives the usable content width, so every
+/// column derives its chip width the same way and they share one left edge.
+///
+/// The inset is on the left only: the matching gap on the right stays inside the
+/// column so a scrollbar has a lane of its own instead of sitting on a chip.
+fn dock_column<R>(
+    ui: &mut Ui,
+    width: f32,
+    height: f32,
+    item_spacing: Vec2,
+    contents: impl FnOnce(&mut Ui, f32) -> R,
+) -> R {
+    let content_width = (width - COLUMN_PADDING * 2.0).max(0.0);
+    ui.allocate_ui_with_layout(
+        Vec2::new(width, height),
+        Layout::top_down(Align::Min),
+        |ui| {
+            ui.spacing_mut().item_spacing = item_spacing;
+            clip_column_width(ui);
+            egui::Frame::new()
+                .inner_margin(egui::Margin {
+                    left: COLUMN_PADDING as i8,
+                    ..egui::Margin::ZERO
+                })
+                .show(ui, |ui| {
+                    let lane_width = content_width + COLUMN_PADDING;
+                    ui.set_min_width(lane_width);
+                    ui.set_max_width(lane_width);
+                    contents(ui, content_width)
+                })
+                .inner
+        },
+    )
+    .inner
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -176,8 +197,31 @@ pub struct DevicesUi {
     mini_drag_moved: bool,
     /// Selected modulator target per track (`0` = instrument, else FX device id).
     selected_modulator_target: HashMap<u64, u64>,
-    /// Per-track modulator column visibility in the dock strip.
-    show_mod_panel: HashMap<u64, bool>,
+    /// `(track_id, target_key)` whose LFO column is open in the dock. At most one
+    /// slot at a time; `None` (the default) keeps the dock at its narrow width.
+    mod_panel_open: Option<(u64, u64)>,
+    /// LFO column width the user dragged to. Persisted separately from the panel
+    /// width so other columns appearing does not resize the LFO editor.
+    mod_column_width: f32,
+    /// Fixed-column width this frame's plan was built from, for reading drags back.
+    dock_fixed_width: f32,
+    /// Column layout the panel was last sized for; a change re-pins its width.
+    dock_last_layout: Option<(u32, bool)>,
+    /// Columns the panel was sized for this frame.
+    dock_columns: DockColumns,
+}
+
+/// Optional dock columns, resolved once per frame while planning the panel width.
+///
+/// Rendering follows this snapshot rather than live selection state, so a click
+/// never paints a column the panel has no room for yet - that mismatch is what
+/// made the LFO curve flash at the wrong width for a frame when favorites appeared.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct DockColumns {
+    /// Target key the favorites column shows, or `None` when it is hidden.
+    favorites_target: Option<u64>,
+    /// Target key the LFO column shows, or `None` when it is hidden.
+    mod_target: Option<u64>,
 }
 
 impl Default for DevicesUi {
@@ -198,7 +242,11 @@ impl Default for DevicesUi {
             mini_scroll_offset: Vec2::ZERO,
             mini_drag_moved: false,
             selected_modulator_target: HashMap::new(),
-            show_mod_panel: HashMap::new(),
+            mod_panel_open: None,
+            mod_column_width: MOD_COLUMN_DEFAULT_WIDTH,
+            dock_fixed_width: dock_fixed_content_width(false) + PANEL_FRAME_H_MARGIN,
+            dock_last_layout: None,
+            dock_columns: DockColumns::default(),
         }
     }
 }
@@ -220,8 +268,11 @@ impl DevicesUi {
         self.open_clip_request.take()
     }
 
-    pub fn dock_shows_mod_column(&self, track_id: u64) -> bool {
-        self.show_mod_panel.get(&track_id).copied().unwrap_or(false)
+    /// Target key whose LFO column is open for `track_id`, if any.
+    fn dock_mod_target(&self, track_id: u64) -> Option<u64> {
+        self.mod_panel_open
+            .filter(|(open_track, _)| *open_track == track_id)
+            .map(|(_, target_key)| target_key)
     }
 
     pub fn selected_target_key(&self, track_id: u64) -> u64 {
@@ -231,26 +282,91 @@ impl DevicesUi {
             .unwrap_or(INSTRUMENT_MOD_TARGET_KEY)
     }
 
-    pub fn dock_shows_favorites_column(&self, track: &Track, settings: &AppSettings) -> bool {
+    /// Which optional columns the dock wants, from current selection state.
+    fn dock_target_columns(
+        &self,
+        track: Option<&Track>,
+        settings: &AppSettings,
+    ) -> DockColumns {
+        let Some(track) = track else {
+            return DockColumns::default();
+        };
         let key = normalize_modulator_target_key(track, self.selected_target_key(track.id));
-        favorites_column_visible(track, key, settings)
+        DockColumns {
+            favorites_target: favorites_column_visible(track, key, settings).then_some(key),
+            mod_target: self.dock_mod_target(track.id),
+        }
     }
 
-    fn toggle_mod_panel_for_target(
+    /// Width plan for the dock side panel this frame.
+    ///
+    /// The LFO column owns all of the panel's slack, so its width is what gets
+    /// remembered: when the favorites column appears or disappears the panel
+    /// grows or shrinks by that column instead of the LFO editor absorbing it.
+    pub fn dock_panel_width(
         &mut self,
-        track_id: u64,
-        target_key: u64,
-    ) {
-        let open = self.show_mod_panel.entry(track_id).or_insert(false);
-        let selected = self
-            .selected_modulator_target
-            .entry(track_id)
-            .or_insert(INSTRUMENT_MOD_TARGET_KEY);
-        if *open && *selected == target_key {
-            *open = false;
+        track: Option<&Track>,
+        settings: &AppSettings,
+    ) -> DockPanelWidth {
+        let columns = self.dock_target_columns(track, settings);
+        self.dock_columns = columns;
+        let favorites_open = columns.favorites_target.is_some();
+        let mods_open = columns.mod_target.is_some();
+
+        let (min_width, max_width) = dock_panel_width_bounds(favorites_open, mods_open);
+        self.dock_fixed_width = dock_fixed_content_width(favorites_open) + PANEL_FRAME_H_MARGIN;
+
+        let layout = (self.dock_fixed_width.to_bits(), mods_open);
+        let layout_changed = self.dock_last_layout.replace(layout) != Some(layout);
+
+        if !mods_open {
+            return DockPanelWidth {
+                default_width: min_width,
+                min_width,
+                max_width,
+                resizable: false,
+            };
+        }
+
+        let target = (self.dock_fixed_width + COLUMN_SEP_WIDTH + self.mod_column_width)
+            .clamp(min_width, max_width);
+        if layout_changed {
+            // Pin for the one frame a column appears/disappears, so the panel
+            // absorbs the change instead of the LFO column. The range reopens
+            // next frame for dragging.
+            DockPanelWidth {
+                default_width: target,
+                min_width: target,
+                max_width: target,
+                resizable: true,
+            }
         } else {
-            *selected = target_key;
-            *open = true;
+            DockPanelWidth {
+                default_width: target,
+                min_width,
+                max_width,
+                resizable: true,
+            }
+        }
+    }
+
+    /// Feed the panel's realised width back after `SidePanel::show`, so a user
+    /// resize drag updates the remembered LFO column width.
+    pub fn note_dock_panel_width(&mut self, panel_width: f32) {
+        if self.mod_panel_open.is_none() {
+            return;
+        }
+        self.mod_column_width = (panel_width - self.dock_fixed_width - COLUMN_SEP_WIDTH)
+            .clamp(MOD_COLUMN_MIN_WIDTH, MOD_COLUMN_MAX_WIDTH);
+    }
+
+    /// Open the LFO column on this slot, or close it when it is already the open one.
+    fn toggle_mod_panel_for_target(&mut self, track_id: u64, target_key: u64) {
+        if self.mod_panel_open == Some((track_id, target_key)) {
+            self.mod_panel_open = None;
+        } else {
+            self.mod_panel_open = Some((track_id, target_key));
+            self.selected_modulator_target.insert(track_id, target_key);
         }
     }
 
@@ -690,6 +806,8 @@ impl DevicesUi {
                             project,
                             engine,
                             history,
+                            settings,
+                            &mut settings_dirty,
                             track,
                             theme,
                             MACRO_COLUMN_WIDTH,
@@ -709,23 +827,6 @@ impl DevicesUi {
                             );
                         }
                         ui.add_space(TILE_TO_MODULATOR_GAP);
-                        ui.spacing_mut().item_spacing = Vec2::new(TILE_GAP, TILE_GAP);
-                        ui.horizontal_wrapped(|ui| {
-                            ui.add_space(STRIP_PADDING);
-                            self.paint_device_chain_tiles(
-                                ui,
-                                project,
-                                engine,
-                                catalog,
-                                history,
-                                device_errors,
-                                track,
-                                theme,
-                                true,
-                                false,
-                            );
-                        });
-                        ui.add_space(TILE_TO_MODULATOR_GAP);
                         let mut mod_settings_dirty = false;
                         self.show_modulator_panel_for_track(
                             ui,
@@ -740,33 +841,113 @@ impl DevicesUi {
                             &mut mod_settings_dirty,
                         );
                         settings_dirty |= mod_settings_dirty;
-                    });
-            }
-            ChainLayout::Dock => {
-                let show_mods = self.show_mod_panel.get(&track.id).copied().unwrap_or(false);
-                let body_height = ui.available_height();
-                ui.horizontal_top(|ui| {
-                    ui.allocate_ui_with_layout(
-                        Vec2::new(MACRO_COLUMN_WIDTH, body_height),
-                        Layout::top_down(Align::Min),
-                        |ui| {
-                            show_macro_panel(
+                        ui.add_space(TILE_TO_MODULATOR_GAP);
+                        ui.spacing_mut().item_spacing = Vec2::new(TILE_GAP, TILE_GAP);
+                        ui.horizontal_wrapped(|ui| {
+                            ui.add_space(STRIP_PADDING);
+                            settings_dirty |= self.paint_device_chain_tiles(
                                 ui,
                                 project,
                                 engine,
+                                catalog,
                                 history,
+                                device_errors,
+                                settings,
                                 track,
                                 theme,
-                                MACRO_COLUMN_WIDTH - 4.0,
+                                ChainLayout::Page,
                             );
-                        },
-                    );
-                    if show_favorites {
-                        ui.separator();
-                        ui.allocate_ui_with_layout(
-                            Vec2::new(FAVORITES_COLUMN_WIDTH, body_height),
-                            Layout::top_down(Align::Min),
-                            |ui| {
+                        });
+                    });
+            }
+            ChainLayout::Dock => {
+                // Which columns to paint is decided by `dock_panel_width`, before the
+                // panel is sized. Re-reading live state here would paint a column the
+                // panel has no width for yet, for one frame.
+                let columns = self.dock_columns;
+                let body_height = ui.available_height();
+                let total_width = ui.available_width();
+                // Zeroed so column widths sum exactly to the panel width; each column
+                // restores normal spacing for its own contents.
+                let item_spacing = ui.spacing().item_spacing;
+                ui.spacing_mut().item_spacing.x = 0.0;
+                ui.with_layout(Layout::right_to_left(Align::TOP), |ui| {
+                    dock_column(ui, DEVICE_COLUMN_WIDTH, body_height, item_spacing, |ui, _| {
+                        ui.label(
+                            RichText::new("Devices")
+                                .small()
+                                .strong()
+                                .color(theme.track_header_text),
+                        );
+                        ui.add_space(4.0);
+                        egui::ScrollArea::vertical()
+                            .id_salt(("devices_dock_chain", track.id))
+                            .auto_shrink([false, true])
+                            .show(ui, |ui| {
+                                ui.set_width(TILE_WIDTH);
+                                ui.spacing_mut().item_spacing.y = TILE_GAP;
+                                settings_dirty |= self.paint_device_chain_tiles(
+                                    ui,
+                                    project,
+                                    engine,
+                                    catalog,
+                                    history,
+                                    device_errors,
+                                    settings,
+                                    track,
+                                    theme,
+                                    ChainLayout::Dock,
+                                );
+                            });
+                    });
+
+                    if let Some(mod_target) = columns.mod_target {
+                        column_separator(ui, body_height, theme);
+                        // The LFO column is the only one that absorbs panel resize.
+                        let mod_column_width = (total_width
+                            - dock_fixed_content_width(columns.favorites_target.is_some())
+                            - COLUMN_SEP_WIDTH)
+                            .clamp(MOD_COLUMN_MIN_WIDTH, MOD_COLUMN_MAX_WIDTH);
+                        let mod_filter = target_filter_from_device_key(
+                            normalize_modulator_target_key(track, mod_target),
+                        );
+                        dock_column(
+                            ui,
+                            mod_column_width,
+                            body_height,
+                            item_spacing,
+                            |ui, content_width| {
+                                let mut mod_settings_dirty = false;
+                                show_modulator_panel(
+                                    ui,
+                                    project,
+                                    track,
+                                    track.id,
+                                    mod_filter,
+                                    ModulatorLayout::Compact,
+                                    Some(content_width),
+                                    engine,
+                                    history,
+                                    settings,
+                                    &mut mod_settings_dirty,
+                                    theme,
+                                );
+                                settings_dirty |= mod_settings_dirty;
+                            },
+                        );
+                    }
+
+                    if let Some(favorites_target) = columns.favorites_target {
+                        column_separator(ui, body_height, theme);
+                        let target_filter = target_filter_from_device_key(
+                            normalize_modulator_target_key(track, favorites_target),
+                        );
+                        dock_column(
+                            ui,
+                            FAVORITES_COLUMN_WIDTH,
+                            body_height,
+                            item_spacing,
+                            |ui, content_width| {
                                 settings_dirty |= show_favorites_panel(
                                     ui,
                                     project,
@@ -776,79 +957,32 @@ impl DevicesUi {
                                     track,
                                     target_filter,
                                     theme,
-                                    FAVORITES_COLUMN_WIDTH - 4.0,
+                                    content_width,
                                 );
                             },
                         );
                     }
-                    ui.separator();
-                    ui.allocate_ui_with_layout(
-                        Vec2::new(DEVICE_COLUMN_WIDTH, body_height),
-                        Layout::top_down(Align::Min),
-                        |ui| {
-                            ui.label(
-                                RichText::new("Devices")
-                                    .small()
-                                    .strong()
-                                    .color(theme.track_header_text),
+
+                    column_separator(ui, body_height, theme);
+                    dock_column(
+                        ui,
+                        MACRO_COLUMN_WIDTH,
+                        body_height,
+                        item_spacing,
+                        |ui, content_width| {
+                            show_macro_panel(
+                                ui,
+                                project,
+                                engine,
+                                history,
+                                settings,
+                                &mut settings_dirty,
+                                track,
+                                theme,
+                                content_width,
                             );
-                            ui.add_space(4.0);
-                            egui::ScrollArea::vertical()
-                                .id_salt(("devices_dock_chain", track.id))
-                                .auto_shrink([false, true])
-                                .show(ui, |ui| {
-                                    ui.set_width(TILE_WIDTH);
-                                    ui.spacing_mut().item_spacing.y = TILE_GAP;
-                                    self.paint_device_chain_tiles(
-                                        ui,
-                                        project,
-                                        engine,
-                                        catalog,
-                                        history,
-                                        device_errors,
-                                        track,
-                                        theme,
-                                        true,
-                                        true,
-                                    );
-                                });
                         },
                     );
-                    if show_mods {
-                        ui.separator();
-                        let mod_column_width =
-                            (ui.available_width() - STRIP_PADDING).max(0.0);
-                        let mod_content_width = mod_dock_content_width(mod_column_width);
-                        ui.allocate_ui_with_layout(
-                            Vec2::new(mod_column_width, body_height),
-                            Layout::top_down(Align::Min),
-                            |ui| {
-                                egui::Frame::new()
-                                    .inner_margin(egui::Margin::symmetric(
-                                        MOD_DOCK_FRAME_H_MARGIN as i8,
-                                        0,
-                                    ))
-                                    .show(ui, |ui| {
-                                        ui.set_max_width(mod_content_width);
-                                        let mut mod_settings_dirty = false;
-                                        self.show_modulator_panel_for_track(
-                                            ui,
-                                            project,
-                                            engine,
-                                            history,
-                                            settings,
-                                            track,
-                                            theme,
-                                            ModulatorLayout::Compact,
-                                            Some(mod_content_width),
-                                            &mut mod_settings_dirty,
-                                        );
-                                        settings_dirty |= mod_settings_dirty;
-                                    });
-                            },
-                        );
-                        ui.add_space(STRIP_PADDING);
-                    }
                 });
             }
         }
@@ -900,11 +1034,16 @@ impl DevicesUi {
         catalog: &PluginCatalog,
         history: &mut EditHistory,
         device_errors: &HashMap<(u64, u64), String>,
+        settings: &mut AppSettings,
         track: &Track,
         theme: &ThemeColors,
-        highlight_mod_target: bool,
-        mod_button_toggles_panel: bool,
-    ) {
+        layout: ChainLayout,
+    ) -> bool {
+        // Dock: one narrow vertical column, Mod buttons own the LFO column.
+        // Page: tiles wrap horizontally, Mod buttons only move the selection.
+        let tiles_stack_vertically = layout == ChainLayout::Dock;
+        let mod_button_toggles_panel = layout == ChainLayout::Dock;
+        let mut settings_dirty = false;
         {
             let key = self
                 .selected_modulator_target
@@ -917,9 +1056,12 @@ impl DevicesUi {
             .get(&track.id)
             .copied()
             .unwrap_or(INSTRUMENT_MOD_TARGET_KEY);
+        let open_mod_target = self.dock_mod_target(track.id);
 
         let instrument_selected =
-            highlight_mod_target && current_target == INSTRUMENT_MOD_TARGET_KEY;
+            current_target == INSTRUMENT_MOD_TARGET_KEY;
+        let instrument_mod_active =
+            mod_button_toggles_panel && open_mod_target == Some(INSTRUMENT_MOD_TARGET_KEY);
         let instrument_mod_count =
             modulator_count_for_target(track, TargetFilter::Instrument);
         let (_, instrument_action) = instrument_tile(
@@ -929,11 +1071,14 @@ impl DevicesUi {
             engine,
             catalog,
             history,
+            settings,
+            &mut settings_dirty,
             &mut self.change_instrument_search,
             &mut self.plugin_editor_request,
             track.id,
             theme,
             instrument_selected,
+            instrument_mod_active,
             instrument_mod_count,
         );
         match instrument_action {
@@ -964,9 +1109,12 @@ impl DevicesUi {
             let drag_id = Id::new(("device_tile_drag", track.id, device.id));
             let device_id = device.id;
             let device_name = device.name.clone();
+            let device_unique_id = device.unique_id.clone();
             let device_bypassed = device.bypassed;
             let device_selected =
-                highlight_mod_target && current_target == device_id;
+                current_target == device_id;
+            let device_mod_active =
+                mod_button_toggles_panel && open_mod_target == Some(device_id);
             let device_mod_count =
                 modulator_count_for_target(track, TargetFilter::Device { device_id });
 
@@ -980,27 +1128,44 @@ impl DevicesUi {
                 drag_id,
                 payload,
                 device_selected,
+                device_mod_active,
                 device_mod_count,
             );
+            let tile_response = tile_response.on_hover_text("Right-click for favorite params");
+            tile_response.context_menu(|ui| {
+                settings_dirty |= show_favorites_menu(
+                    ui,
+                    settings,
+                    engine,
+                    theme,
+                    track.id,
+                    Some(device_id),
+                    &device_unique_id,
+                );
+            });
 
             if let Some(pointer) = ui.input(|input| input.pointer.interact_pos()) {
                 if let Some(hovered) = tile_response.dnd_hover_payload::<(u64, usize)>() {
                     if hovered.0 == track.id {
-                        let insert_idx = if pointer.x < tile_response.rect.center().x {
+                        let rect = tile_response.rect;
+                        // The dock stacks tiles vertically and the page wraps them
+                        // horizontally, so hit-test and draw along the flow axis.
+                        let insert_idx = if tiles_stack_vertically {
+                            if pointer.y < rect.center().y { index } else { index + 1 }
+                        } else if pointer.x < rect.center().x {
                             index
                         } else {
                             index + 1
                         };
-                        let x = if insert_idx == index {
-                            tile_response.rect.left()
+                        let before = insert_idx == index;
+                        let stroke = Stroke::new(2.0_f32, theme.accent);
+                        if tiles_stack_vertically {
+                            let y = if before { rect.top() } else { rect.bottom() };
+                            ui.painter().hline(rect.x_range(), y, stroke);
                         } else {
-                            tile_response.rect.right()
-                        };
-                        ui.painter().vline(
-                            x,
-                            tile_response.rect.y_range(),
-                            Stroke::new(2.0_f32, theme.accent),
-                        );
+                            let x = if before { rect.left() } else { rect.right() };
+                            ui.painter().vline(x, rect.y_range(), stroke);
+                        }
                         if let Some(released) =
                             tile_response.dnd_release_payload::<(u64, usize)>()
                         {
@@ -1041,6 +1206,9 @@ impl DevicesUi {
                         self.selected_modulator_target
                             .insert(track.id, INSTRUMENT_MOD_TARGET_KEY);
                     }
+                    if self.mod_panel_open == Some((track.id, device_id)) {
+                        self.mod_panel_open = None;
+                    }
                 }
                 DeviceTileAction::OpenEditor => {
                     self.plugin_editor_request = Some(PluginEditorRequest::Open {
@@ -1070,6 +1238,7 @@ impl DevicesUi {
         }
 
         add_fx_tile(ui, project, catalog, &mut self.add_fx_search, track.id, theme);
+        settings_dirty
     }
 }
 
@@ -1129,11 +1298,14 @@ fn instrument_tile(
     engine: &dyn DawEngine,
     catalog: &PluginCatalog,
     history: &mut EditHistory,
+    settings: &mut AppSettings,
+    settings_dirty: &mut bool,
     change_instrument_search: &mut String,
     plugin_editor_request: &mut Option<PluginEditorRequest>,
     track_id: u64,
     theme: &ThemeColors,
     selected: bool,
+    mod_button_active: bool,
     mod_count: usize,
 ) -> (egui::Response, DeviceTileAction) {
     let mut action = DeviceTileAction::None;
@@ -1175,7 +1347,7 @@ fn instrument_tile(
     tile_ui.with_layout(Layout::bottom_up(Align::LEFT), |ui| {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 3.0;
-            if mod_tile_button(ui, selected, theme) {
+            if mod_tile_button(ui, mod_button_active, theme) {
                 action = DeviceTileAction::ToggleMods;
             }
             if is_plugin {
@@ -1221,8 +1393,24 @@ fn instrument_tile(
         });
     });
 
-    let response = tile_response.on_hover_text("Right-click to change instrument.");
+    let instrument_unique_id = unique_id_for_target(track, INSTRUMENT_MOD_TARGET_KEY)
+        .unwrap_or_default()
+        .to_string();
+    let response =
+        tile_response.on_hover_text("Right-click for favorites / change instrument.");
     response.context_menu(|ui| {
+        if !instrument_unique_id.is_empty() {
+            *settings_dirty |= show_favorites_menu(
+                ui,
+                settings,
+                engine,
+                theme,
+                track_id,
+                None,
+                &instrument_unique_id,
+            );
+            ui.separator();
+        }
         ui.label("Change instrument");
         ui.separator();
         if let Some(choice) = show_instrument_picker(
@@ -1251,7 +1439,9 @@ fn instrument_tile(
             ui.close_menu();
         }
     });
-    if action == DeviceTileAction::None && response.clicked() {
+    // Right-click selects too, so a param starred from the context menu lands on
+    // the slot the favorites column is showing.
+    if action == DeviceTileAction::None && (response.clicked() || response.secondary_clicked()) {
         action = DeviceTileAction::Select;
     }
     (response, action)
@@ -1314,6 +1504,7 @@ fn device_tile_contents(
     drag_id: Id,
     drag_payload: (u64, usize),
     selected: bool,
+    mod_button_active: bool,
     mod_count: usize,
 ) -> (egui::Response, DeviceTileAction) {
     let mut action = DeviceTileAction::None;
@@ -1378,7 +1569,7 @@ fn device_tile_contents(
     tile_ui.with_layout(Layout::bottom_up(Align::LEFT), |ui| {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 3.0;
-            if mod_tile_button(ui, selected, theme) {
+            if mod_tile_button(ui, mod_button_active, theme) {
                 action = DeviceTileAction::ToggleMods;
             }
             if ms_toggle_button(ui, "Byp", device.bypassed, theme) {
@@ -1420,7 +1611,11 @@ fn device_tile_contents(
             }
         });
     });
-    if action == DeviceTileAction::None && tile_response.clicked() {
+    // Right-click selects too, so a param starred from the context menu lands on
+    // the slot the favorites column is showing.
+    if action == DeviceTileAction::None
+        && (tile_response.clicked() || tile_response.secondary_clicked())
+    {
         action = DeviceTileAction::Select;
     }
     (tile_response, action)
@@ -1473,5 +1668,94 @@ fn truncate_label(text: &str, max_chars: usize) -> String {
     } else {
         let trimmed: String = text.chars().take(max_chars.saturating_sub(1)).collect();
         format!("{trimmed}...")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dock_width_is_pinned_when_lfo_column_closed() {
+        for favorites_open in [false, true] {
+            let (min, max) = dock_panel_width_bounds(favorites_open, false);
+            assert_eq!(min, max, "closed LFO column must leave no resize slack");
+        }
+    }
+
+    #[test]
+    fn lfo_column_is_the_only_resizable_one() {
+        let (closed_min, closed_max) = dock_panel_width_bounds(true, false);
+        assert_eq!(closed_min, closed_max);
+
+        let (open_min, open_max) = dock_panel_width_bounds(true, true);
+        assert!(open_min > closed_min);
+        assert_eq!(open_max - open_min, MOD_COLUMN_MAX_WIDTH - MOD_COLUMN_MIN_WIDTH);
+    }
+
+    #[test]
+    fn favorites_column_widens_dock_by_exactly_its_column() {
+        let hidden = dock_panel_width_bounds(false, false).0;
+        let shown = dock_panel_width_bounds(true, false).0;
+        assert_eq!(shown - hidden, FAVORITES_COLUMN_WIDTH + COLUMN_SEP_WIDTH);
+    }
+
+    /// A drag is read back off the panel, and the favorites column appearing
+    /// then moves the panel edge instead of squeezing the LFO editor.
+    #[test]
+    fn lfo_column_keeps_its_width_when_favorites_appear() {
+        let mut devices = DevicesUi::default();
+        devices.mod_panel_open = Some((1, 7));
+
+        let narrow_fixed = dock_fixed_content_width(false) + PANEL_FRAME_H_MARGIN;
+        devices.dock_fixed_width = narrow_fixed;
+        let dragged_lfo = MOD_COLUMN_DEFAULT_WIDTH + 120.0;
+        devices.note_dock_panel_width(narrow_fixed + COLUMN_SEP_WIDTH + dragged_lfo);
+        assert_eq!(devices.mod_column_width, dragged_lfo);
+
+        let wide_fixed = dock_fixed_content_width(true) + PANEL_FRAME_H_MARGIN;
+        assert_eq!(
+            wide_fixed - narrow_fixed,
+            FAVORITES_COLUMN_WIDTH + COLUMN_SEP_WIDTH
+        );
+        devices.dock_fixed_width = wide_fixed;
+        devices.note_dock_panel_width(wide_fixed + COLUMN_SEP_WIDTH + dragged_lfo);
+        assert_eq!(devices.mod_column_width, dragged_lfo);
+    }
+
+    #[test]
+    fn closed_lfo_column_ignores_panel_width_feedback() {
+        let mut devices = DevicesUi::default();
+        devices.note_dock_panel_width(4000.0);
+        assert_eq!(devices.mod_column_width, MOD_COLUMN_DEFAULT_WIDTH);
+    }
+
+    /// The panel is sized from `dock_columns` and the dock renders exactly those
+    /// columns. If the two diverge the LFO column paints at the wrong width for
+    /// a frame, which reads as the curve popping.
+    #[test]
+    fn planned_width_matches_the_columns_recorded_for_rendering() {
+        let project = Project::default();
+        let track = project.tracks.first().expect("default project has a track");
+        let settings = AppSettings::default();
+        let mut devices = DevicesUi::default();
+        devices.mod_panel_open = Some((track.id, INSTRUMENT_MOD_TARGET_KEY));
+
+        let plan = devices.dock_panel_width(Some(track), &settings);
+        let columns = devices.dock_columns;
+        assert_eq!(columns.mod_target, Some(INSTRUMENT_MOD_TARGET_KEY));
+
+        let lfo_width = plan.default_width
+            - dock_fixed_content_width(columns.favorites_target.is_some())
+            - PANEL_FRAME_H_MARGIN
+            - COLUMN_SEP_WIDTH;
+        assert_eq!(lfo_width, MOD_COLUMN_DEFAULT_WIDTH);
+    }
+
+    /// Columns inset their contents by `COLUMN_PADDING` so headers and chips
+    /// share one left edge; the devices column must still fit a full tile.
+    #[test]
+    fn device_column_fits_a_tile_inside_the_shared_padding() {
+        assert_eq!(DEVICE_COLUMN_WIDTH - COLUMN_PADDING * 2.0, TILE_WIDTH);
     }
 }

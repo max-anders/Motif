@@ -30,6 +30,9 @@ struct SettingsFile {
     /// Per-plugin starred parameters, keyed by plugin `unique_id`.
     #[serde(default)]
     plugin_favorites: HashMap<String, Vec<PluginFavoriteParam>>,
+    /// Per-plugin last-tweaked parameters (MRU), keyed by plugin `unique_id`.
+    #[serde(default)]
+    plugin_last_tweaked: HashMap<String, Vec<PluginFavoriteParam>>,
     #[serde(default = "default_autosave_enabled")]
     autosave_enabled: bool,
     #[serde(default = "default_autosave_interval")]
@@ -127,6 +130,8 @@ pub struct AppSettings {
     pub plugin_keys: PluginKeySettings,
     /// Per-plugin starred parameters, keyed by plugin `unique_id`.
     pub plugin_favorites: HashMap<String, Vec<PluginFavoriteParam>>,
+    /// Per-plugin last-tweaked parameters (MRU), keyed by plugin `unique_id`.
+    pub plugin_last_tweaked: HashMap<String, Vec<PluginFavoriteParam>>,
     pub autosave_enabled: bool,
     pub autosave_interval_secs: u32,
     pub metronome_enabled: bool,
@@ -137,6 +142,9 @@ pub struct AppSettings {
 /// Cap for recently imported sample paths (add browser Samples tab).
 pub const MAX_RECENT_SAMPLES: usize = 20;
 
+/// Cap for last-tweaked plugin parameters per `unique_id`.
+pub const MAX_LAST_TWEAKED_PARAMS: usize = 8;
+
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
@@ -146,6 +154,7 @@ impl Default for AppSettings {
             undo_limit: DEFAULT_UNDO_LIMIT,
             plugin_keys: PluginKeySettings::default(),
             plugin_favorites: HashMap::new(),
+            plugin_last_tweaked: HashMap::new(),
             autosave_enabled: true,
             autosave_interval_secs: DEFAULT_AUTOSAVE_INTERVAL_SECS,
             metronome_enabled: true,
@@ -191,12 +200,52 @@ impl AppSettings {
             undo_limit: clamp_undo_limit(file.undo_limit),
             plugin_keys: file.plugin_keys,
             plugin_favorites: file.plugin_favorites,
+            plugin_last_tweaked: file.plugin_last_tweaked,
             autosave_enabled: file.autosave_enabled,
             autosave_interval_secs: file.autosave_interval_secs.max(30),
             metronome_enabled: file.metronome_enabled,
             recent_projects: file.recent_projects,
             recent_samples: file.recent_samples,
         })
+    }
+
+    /// Last-tweaked MRU for a plugin identity (newest first; empty when none).
+    pub fn last_tweaked_for(&self, unique_id: &str) -> &[PluginFavoriteParam] {
+        self.plugin_last_tweaked
+            .get(unique_id)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    /// Move `param_id` to the front of the last-tweaked MRU (dedupe, cap).
+    /// Returns true when the list changed.
+    pub fn touch_param(
+        &mut self,
+        unique_id: &str,
+        param_id: u32,
+        name: impl Into<String>,
+    ) -> bool {
+        if unique_id.is_empty() {
+            return false;
+        }
+        let name = name.into();
+        let list = self
+            .plugin_last_tweaked
+            .entry(unique_id.to_string())
+            .or_default();
+        let previous = list.clone();
+        list.retain(|entry| entry.param_id != param_id);
+        list.insert(
+            0,
+            PluginFavoriteParam {
+                param_id,
+                name,
+            },
+        );
+        if list.len() > MAX_LAST_TWEAKED_PARAMS {
+            list.truncate(MAX_LAST_TWEAKED_PARAMS);
+        }
+        *list != previous
     }
 
     /// Favorites list for a plugin identity (empty when none).
@@ -257,6 +306,7 @@ impl AppSettings {
             undo_limit: clamp_undo_limit(self.undo_limit),
             plugin_keys: self.plugin_keys.clone(),
             plugin_favorites: self.plugin_favorites.clone(),
+            plugin_last_tweaked: self.plugin_last_tweaked.clone(),
             autosave_enabled: self.autosave_enabled,
             autosave_interval_secs: self.autosave_interval_secs.max(30),
             metronome_enabled: self.metronome_enabled,
@@ -297,6 +347,7 @@ mod tests {
                 undo_limit: settings.undo_limit,
                 plugin_keys: settings.plugin_keys.clone(),
                 plugin_favorites: settings.plugin_favorites.clone(),
+                plugin_last_tweaked: settings.plugin_last_tweaked.clone(),
                 autosave_enabled: true,
                 autosave_interval_secs: 60,
                 metronome_enabled: true,
@@ -308,5 +359,54 @@ mod tests {
         let loaded = AppSettings::from_json(&json).unwrap();
         assert_eq!(loaded.favorites_for("uid.a")[0].param_id, 1);
         assert_eq!(loaded.favorites_for("uid.a")[0].name, "Res");
+    }
+
+    #[test]
+    fn plugin_last_tweaked_mru_dedupe_cap() {
+        let mut settings = AppSettings::default();
+        assert!(settings.touch_param("com.example.synth", 1, "Cut"));
+        assert!(settings.touch_param("com.example.synth", 2, "Res"));
+        assert!(settings.touch_param("com.example.synth", 1, "Cutoff"));
+        let list = settings.last_tweaked_for("com.example.synth");
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].param_id, 1);
+        assert_eq!(list[0].name, "Cutoff");
+        assert_eq!(list[1].param_id, 2);
+
+        for id in 10..(10 + MAX_LAST_TWEAKED_PARAMS as u32) {
+            assert!(settings.touch_param("com.example.synth", id, format!("P{id}")));
+        }
+        let list = settings.last_tweaked_for("com.example.synth");
+        assert_eq!(list.len(), MAX_LAST_TWEAKED_PARAMS);
+        assert_eq!(list[0].param_id, 10 + MAX_LAST_TWEAKED_PARAMS as u32 - 1);
+        assert!(!list.iter().any(|e| e.param_id == 1 || e.param_id == 2));
+    }
+
+    #[test]
+    fn plugin_last_tweaked_round_trip_json() {
+        let mut settings = AppSettings::default();
+        settings.touch_param("uid.b", 7, "Drive");
+        let json = {
+            let (active_theme, themes) = settings.themes.stored();
+            let file = SettingsFile {
+                bindings: Vec::new(),
+                active_theme,
+                themes,
+                plugin_extra_paths: Vec::new(),
+                undo_limit: settings.undo_limit,
+                plugin_keys: settings.plugin_keys.clone(),
+                plugin_favorites: HashMap::new(),
+                plugin_last_tweaked: settings.plugin_last_tweaked.clone(),
+                autosave_enabled: true,
+                autosave_interval_secs: 60,
+                metronome_enabled: true,
+                recent_projects: Vec::new(),
+                recent_samples: Vec::new(),
+            };
+            serde_json::to_string(&file).unwrap()
+        };
+        let loaded = AppSettings::from_json(&json).unwrap();
+        assert_eq!(loaded.last_tweaked_for("uid.b")[0].param_id, 7);
+        assert_eq!(loaded.last_tweaked_for("uid.b")[0].name, "Drive");
     }
 }

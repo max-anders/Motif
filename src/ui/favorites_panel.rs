@@ -1,4 +1,7 @@
 //! Selection-gated favorite plugin params column for the devices dock.
+//!
+//! Each favorite is a live host slider for a starred plugin param (like a
+//! mini macro rack for that VST). Automate / map-to-macro are secondary.
 
 use egui::{RichText, Ui, Vec2};
 
@@ -7,8 +10,10 @@ use crate::model::{
     AutomationTarget, EditHistory, MacroMapping, MacroTarget, Project, Track, TrackInstrument,
 };
 use crate::ui::app_settings::AppSettings;
+use crate::ui::instrument_menu::MENU_LIST_MAX_HEIGHT;
 use crate::ui::macro_panel::show_map_to_macro_menu;
 use crate::ui::modulator::{TargetFilter, INSTRUMENT_MOD_TARGET_KEY};
+use crate::ui::param_pick::{show_param_pick_menu, ParamPickMode};
 use crate::ui::theme::ThemeColors;
 
 pub const FAVORITES_COLUMN_WIDTH: f32 = 160.0;
@@ -39,14 +44,14 @@ pub fn unique_id_for_target(track: &Track, target_key: u64) -> Option<&str> {
     }
 }
 
-/// True when the dock should show the Favorites column (hosted plugin selected).
-/// Empty lists still show the column so `+ Favorite` can add the first knob.
-pub fn favorites_column_visible(
-    track: &Track,
-    target_key: u64,
-    _settings: &AppSettings,
-) -> bool {
-    unique_id_for_target(track, target_key).is_some()
+/// True when the dock should show the Favorites column for this selection.
+///
+/// The column is content-driven: it appears only once the selected slot has at
+/// least one starred param. Starring is done from the device tile context menu
+/// (see [`show_favorites_menu`]), which stays reachable while the column is hidden.
+pub fn favorites_column_visible(track: &Track, target_key: u64, settings: &AppSettings) -> bool {
+    unique_id_for_target(track, target_key)
+        .is_some_and(|unique_id| !settings.favorites_for(unique_id).is_empty())
 }
 
 fn device_id_for_target(target_key: u64) -> Option<u64> {
@@ -90,12 +95,12 @@ fn target_label(track: &Track, target_key: u64) -> String {
     }
 }
 
-/// Show starred params for the selected plugin slot.
+/// Show starred params for the selected plugin slot (live sliders).
 #[allow(clippy::too_many_arguments)]
 pub fn show_favorites_panel(
     ui: &mut Ui,
     project: &mut Project,
-    engine: &dyn DawEngine,
+    engine: &mut dyn DawEngine,
     history: &mut EditHistory,
     settings: &mut AppSettings,
     track: &Track,
@@ -114,6 +119,7 @@ pub fn show_favorites_panel(
 
     let mut settings_dirty = false;
     let chip_width = content_width.max(120.0);
+    let device_id = device_id_for_target(target_key);
 
     ui.label(
         RichText::new("Favorites")
@@ -136,6 +142,14 @@ pub fn show_favorites_panel(
             ui.spacing_mut().item_spacing.y = CHIP_GAP;
 
             let favorites: Vec<_> = settings.favorites_for(&unique_id).to_vec();
+            if favorites.is_empty() {
+                ui.label(
+                    RichText::new("No favorites yet")
+                        .small()
+                        .italics()
+                        .color(theme.text_muted),
+                );
+            }
 
             for fav in &favorites {
                 egui::Frame::new()
@@ -144,7 +158,9 @@ pub fn show_favorites_panel(
                     .corner_radius(4.0)
                     .inner_margin(CHIP_INNER_MARGIN)
                     .show(ui, |ui| {
-                        ui.set_width((chip_width - CHIP_INNER_MARGIN * 2.0).max(100.0));
+                        let inner_width = (chip_width - CHIP_INNER_MARGIN * 2.0).max(100.0);
+                        ui.set_width(inner_width);
+                        ui.spacing_mut().slider_width = inner_width;
                         let label = if fav.name.is_empty() {
                             format!("Param {}", fav.param_id)
                         } else {
@@ -169,6 +185,27 @@ pub fn show_favorites_panel(
                                 }
                             });
                         });
+
+                        let mut value = engine
+                            .plugin_param_normalized(track_id, device_id, fav.param_id)
+                            .unwrap_or(0.0);
+                        let slider = ui.add(
+                            egui::Slider::new(&mut value, 0.0..=1.0)
+                                .show_value(false)
+                                .trailing_fill(true),
+                        );
+                        if slider.drag_started() {
+                            history.push_before(project.clone());
+                        }
+                        if slider.changed() {
+                            engine.set_plugin_param_normalized(
+                                track_id,
+                                device_id,
+                                fav.param_id,
+                                value,
+                            );
+                        }
+
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 4.0;
                             if ui
@@ -182,7 +219,6 @@ pub fn show_favorites_panel(
                                 .on_hover_text("Add automation lane for this parameter")
                                 .clicked()
                             {
-                                let device_id = device_id_for_target(target_key);
                                 let params = engine.plugin_parameters(track_id, device_id);
                                 let (param_min, param_max, param_name) = params
                                     .iter()
@@ -212,7 +248,9 @@ pub fn show_favorites_panel(
                                 show_map_to_macro_menu(
                                     ui, project, history, track_id, mapping, theme,
                                 );
-                            });
+                            })
+                            .response
+                            .on_hover_text("Map this param to a Motif macro");
                         });
                     });
             }
@@ -220,35 +258,19 @@ pub fn show_favorites_panel(
             ui.menu_button(
                 RichText::new("+ Favorite").small().color(theme.text_muted),
                 |ui| {
-                    let device_id = device_id_for_target(target_key);
                     let params = engine.plugin_parameters(track_id, device_id);
-                    if params.is_empty() {
-                        ui.label(
-                            RichText::new("No parameters")
-                                .small()
-                                .color(theme.text_muted),
-                        );
-                    }
-                    for param in params {
-                        if !param.automatable {
-                            continue;
-                        }
-                        let already = settings.has_favorite(&unique_id, param.id);
-                        let row_label = if already {
-                            format!("* {}", truncate_label(&param.name, 26))
-                        } else {
-                            truncate_label(&param.name, 28)
-                        };
-                        if ui
-                            .add_enabled(!already, egui::Button::new(row_label))
-                            .clicked()
-                        {
-                            if settings.add_favorite(&unique_id, param.id, param.name.clone()) {
-                                settings_dirty = true;
-                            }
-                            ui.close_menu();
-                        }
-                    }
+                    show_param_pick_menu(
+                        ui,
+                        settings,
+                        &mut settings_dirty,
+                        Some(unique_id.as_str()),
+                        &params,
+                        theme,
+                        ParamPickMode::AddFavorite,
+                        "No parameters",
+                        28,
+                        |_| {},
+                    );
                 },
             );
         });
@@ -256,31 +278,94 @@ pub fn show_favorites_panel(
     settings_dirty
 }
 
-/// Menu helper: star a param for the plugin identified by `unique_id`.
-pub fn add_favorite_menu_button(
+/// Favorite-param manager for one plugin slot, for use inside a context menu.
+///
+/// This is the entry point that keeps starring reachable when the Favorites
+/// column is hidden (no favorites yet). Returns true when settings changed.
+pub fn show_favorites_menu(
     ui: &mut Ui,
     settings: &mut AppSettings,
+    engine: &dyn DawEngine,
+    theme: &ThemeColors,
+    track_id: u64,
+    device_id: Option<u64>,
     unique_id: &str,
-    param_id: u32,
-    param_name: &str,
 ) -> bool {
     if unique_id.is_empty() {
-        return false;
-    }
-    if settings.has_favorite(unique_id, param_id) {
         ui.label(
-            RichText::new("Already a favorite")
+            RichText::new("No plugin parameters")
                 .small()
-                .color(ui.visuals().weak_text_color()),
+                .color(theme.text_muted),
         );
         return false;
     }
-    if ui.button("Add to favorites").clicked() {
-        let changed = settings.add_favorite(unique_id, param_id, param_name);
-        ui.close_menu();
-        return changed;
+
+    let mut settings_dirty = false;
+    ui.label(
+        RichText::new("Favorite params")
+            .small()
+            .strong()
+            .color(theme.track_header_text),
+    );
+    ui.separator();
+
+    let favorites = settings.favorites_for(unique_id).to_vec();
+    if favorites.is_empty() {
+        ui.label(
+            RichText::new("None starred yet")
+                .small()
+                .italics()
+                .color(theme.text_muted),
+        );
     }
-    false
+    for fav in &favorites {
+        let label = if fav.name.is_empty() {
+            format!("Param {}", fav.param_id)
+        } else {
+            fav.name.clone()
+        };
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new(truncate_label(&label, 22))
+                    .small()
+                    .color(theme.track_header_text),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .small_button("x")
+                    .on_hover_text("Remove favorite")
+                    .clicked()
+                    && settings.remove_favorite(unique_id, fav.param_id)
+                {
+                    settings_dirty = true;
+                }
+            });
+        });
+    }
+
+    ui.separator();
+    ui.menu_button(RichText::new("+ Add parameter").small(), |ui| {
+        let params = engine.plugin_parameters(track_id, device_id);
+        egui::ScrollArea::vertical()
+            .id_salt(("favorites_menu_params", track_id, device_id))
+            .max_height(MENU_LIST_MAX_HEIGHT)
+            .show(ui, |ui| {
+                show_param_pick_menu(
+                    ui,
+                    settings,
+                    &mut settings_dirty,
+                    Some(unique_id),
+                    &params,
+                    theme,
+                    ParamPickMode::AddFavorite,
+                    "No parameters",
+                    28,
+                    |_| {},
+                );
+            });
+    });
+
+    settings_dirty
 }
 
 fn truncate_label(text: &str, max_chars: usize) -> String {

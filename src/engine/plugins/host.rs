@@ -102,16 +102,60 @@ impl HostedPlugin {
         Some(native)
     }
 
+    /// Current param value as normalized `0..1` (for host UI sliders).
+    pub fn get_param_normalized(&self, param_id: u32) -> Option<f32> {
+        let (index, info) = self
+            .parameters()
+            .into_iter()
+            .enumerate()
+            .find(|(_, param)| param.id == param_id)?;
+        let raw = match &self.instance {
+            PluginInstance::Clap(plugin) => plugin.parameter_value(index).ok()?,
+            // VST3 `parameter_value` is already normalized 0..1.
+            PluginInstance::Vst3(plugin) => {
+                return Some(plugin.parameter_value(index).ok()?.clamp(0.0, 1.0) as f32);
+            }
+        };
+        let span = (info.max - info.min).max(f64::EPSILON);
+        Some(((raw - info.min) / span).clamp(0.0, 1.0) as f32)
+    }
+
+    /// Set a param from normalized `0..1` (queues RT event + host-thread write for readback).
+    pub fn set_param_normalized(&mut self, param_id: u32, normalized: f32) -> bool {
+        let clamped = normalized.clamp(0.0, 1.0) as f64;
+        let Some(native) = self.map_normalized_to_native(param_id, clamped) else {
+            return false;
+        };
+        let Some(index) = self
+            .parameters()
+            .iter()
+            .position(|param| param.id == param_id)
+        else {
+            return false;
+        };
+        // Host-thread write for immediate GUI / get_param_normalized readback.
+        let _ = match &mut self.instance {
+            PluginInstance::Clap(plugin) => plugin.set_parameter(index, native),
+            PluginInstance::Vst3(plugin) => plugin.set_parameter(index, clamped),
+        };
+        // Audio-thread path (same as automation / macros).
+        self.push_param(param_id, native, 0);
+        true
+    }
+
+    /// Process one instrument block. Returns plugin-GUI param touches (for MRU).
     pub fn process_block(
         &mut self,
         frames: usize,
         transport: Option<TransportInfo>,
         mix_l: &mut [f32],
         mix_r: &mut [f32],
-    ) {
+    ) -> Vec<u32> {
         if frames == 0 || frames > MAX_BLOCK_FRAMES {
-            return;
+            return Vec::new();
         }
+
+        let motif_written = motif_written_param_ids(&self.events);
 
         let HostedPlugin {
             instance,
@@ -153,14 +197,17 @@ impl HostedPlugin {
 
         events.clear();
         if result.is_err() {
-            return;
+            return Vec::new();
         }
+
+        let touches = collect_gui_param_touches(out_events, &motif_written);
 
         let n = frames.min(mix_l.len()).min(mix_r.len());
         for i in 0..n {
             mix_l[i] += out_l[i];
             mix_r[i] += out_r[i];
         }
+        touches
     }
 
     /// Insert-effect processing: feeds `buf_l`/`buf_r` as the plugin's input
@@ -168,20 +215,24 @@ impl HostedPlugin {
     /// [`Self::process_block`], which is additive for instrument voices).
     /// On a processing error, or when frames are out of range, `buf_l`/`buf_r`
     /// are left untouched (passthrough) rather than silenced.
+    ///
+    /// Returns plugin-GUI param touches (for MRU).
     pub fn process_effect(
         &mut self,
         frames: usize,
         transport: Option<TransportInfo>,
         buf_l: &mut [f32],
         buf_r: &mut [f32],
-    ) {
+    ) -> Vec<u32> {
         if frames == 0 || frames > MAX_BLOCK_FRAMES {
-            return;
+            return Vec::new();
         }
         let n = frames.min(buf_l.len()).min(buf_r.len());
         if n == 0 {
-            return;
+            return Vec::new();
         }
+
+        let motif_written = motif_written_param_ids(&self.events);
 
         let HostedPlugin {
             instance,
@@ -225,11 +276,14 @@ impl HostedPlugin {
 
         events.clear();
         if result.is_err() {
-            return;
+            return Vec::new();
         }
+
+        let touches = collect_gui_param_touches(out_events, &motif_written);
 
         buf_l[..n].copy_from_slice(&out_l[..n]);
         buf_r[..n].copy_from_slice(&out_r[..n]);
+        touches
     }
 
     pub fn push_note_on(&mut self, pitch: u8, velocity: u8) {
@@ -556,4 +610,71 @@ fn pick_layout(layouts: &[BusLayout]) -> BusLayout {
         .cloned()
         .or_else(|| layouts.first().cloned())
         .unwrap_or_else(BusLayout::stereo)
+}
+
+fn motif_written_param_ids(events: &EventList) -> HashSet<u32> {
+    events
+        .iter()
+        .filter_map(|event| match event.body {
+            EventBody::ParamValue { param_id, .. } => Some(param_id),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Collect unique param ids touched by the plugin GUI this block.
+/// Prefers gesture-begin; also includes outbound ParamValue not written by Motif.
+fn collect_gui_param_touches(out_events: &EventList, motif_written: &HashSet<u32>) -> Vec<u32> {
+    let mut touches = Vec::new();
+    let mut seen = HashSet::new();
+    for event in out_events.iter() {
+        let param_id = match event.body {
+            EventBody::ParamGesture {
+                param_id,
+                active: true,
+            } => param_id,
+            EventBody::ParamValue { param_id, .. } if !motif_written.contains(&param_id) => {
+                param_id
+            }
+            _ => continue,
+        };
+        if seen.insert(param_id) {
+            touches.push(param_id);
+        }
+    }
+    touches
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn collect_gui_touches_prefers_gesture_filters_motif_writes() {
+        let mut out = EventList::new();
+        out.push(Event {
+            sample_offset: 0,
+            body: EventBody::ParamGesture {
+                param_id: 1,
+                active: true,
+            },
+        });
+        out.push(Event {
+            sample_offset: 1,
+            body: EventBody::ParamValue {
+                param_id: 2,
+                value: 0.5,
+            },
+        });
+        out.push(Event {
+            sample_offset: 2,
+            body: EventBody::ParamValue {
+                param_id: 3,
+                value: 0.25,
+            },
+        });
+        let motif_written = HashSet::from([3]);
+        let touches = collect_gui_param_touches(&out, &motif_written);
+        assert_eq!(touches, vec![1, 2]);
+    }
 }

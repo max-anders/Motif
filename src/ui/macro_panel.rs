@@ -6,11 +6,17 @@ use crate::engine::DawEngine;
 use crate::model::{
     EditHistory, MacroMapping, MacroTarget, Project, Track,
 };
+use crate::ui::app_settings::AppSettings;
+use crate::ui::favorites_panel::unique_id_for_target;
+use crate::ui::modulator::INSTRUMENT_MOD_TARGET_KEY;
+use crate::ui::param_pick::{show_param_pick_menu, ParamPickMode};
 use crate::ui::theme::ThemeColors;
 
 pub const MACRO_COLUMN_WIDTH: f32 = 160.0;
 const CHIP_INNER_MARGIN: f32 = 6.0;
 const CHIP_GAP: f32 = 6.0;
+/// Room reserved beside a slider track for its numeric value box.
+const VALUE_BOX_WIDTH: f32 = 58.0;
 
 /// Display label for a macro destination.
 pub fn macro_target_label(track: &Track, target: &MacroTarget) -> String {
@@ -82,11 +88,14 @@ pub fn map_destination_to_macro(
 }
 
 /// Show the macros column for one track.
+#[allow(clippy::too_many_arguments)]
 pub fn show_macro_panel(
     ui: &mut Ui,
     project: &mut Project,
     engine: &dyn DawEngine,
     history: &mut EditHistory,
+    settings: &mut AppSettings,
+    settings_dirty: &mut bool,
     track: &Track,
     theme: &ThemeColors,
     content_width: f32,
@@ -119,6 +128,8 @@ pub fn show_macro_panel(
                     project,
                     engine,
                     history,
+                    settings,
+                    settings_dirty,
                     track_id,
                     macro_id,
                     theme,
@@ -151,6 +162,8 @@ fn show_macro_chip(
     project: &mut Project,
     engine: &dyn DawEngine,
     history: &mut EditHistory,
+    settings: &mut AppSettings,
+    settings_dirty: &mut bool,
     track_id: u64,
     macro_id: u64,
     theme: &ThemeColors,
@@ -167,7 +180,11 @@ fn show_macro_chip(
         .corner_radius(4.0)
         .inner_margin(CHIP_INNER_MARGIN)
         .show(ui, |ui| {
-            ui.set_width((chip_width - CHIP_INNER_MARGIN * 2.0).max(100.0));
+            let inner_width = (chip_width - CHIP_INNER_MARGIN * 2.0).max(100.0);
+            ui.set_width(inner_width);
+            // Sliders default to a fixed 100px track plus a value box, which
+            // overflows this column; size the track to what is actually left.
+            ui.spacing_mut().slider_width = (inner_width - VALUE_BOX_WIDTH).max(60.0);
 
             ui.horizontal(|ui| {
                 let mut name = snapshot.name.clone();
@@ -193,7 +210,11 @@ fn show_macro_chip(
             });
 
             let mut value = snapshot.value;
-            let slider = ui.add(egui::Slider::new(&mut value, 0.0..=1.0).text("value"));
+            let slider = ui.add(
+                egui::Slider::new(&mut value, 0.0..=1.0)
+                    .trailing_fill(true)
+                    .max_decimals(3),
+            );
             if slider.changed() {
                 history.push_before(project.clone());
                 if let Some(macro_knob) = project.macro_knob_mut(track_id, macro_id) {
@@ -228,16 +249,29 @@ fn show_macro_chip(
             }
 
             ui.menu_button(RichText::new("+ Map").small(), |ui| {
-                show_add_mapping_menu(ui, project, engine, history, track_id, macro_id, theme);
+                show_add_mapping_menu(
+                    ui,
+                    project,
+                    engine,
+                    history,
+                    settings,
+                    settings_dirty,
+                    track_id,
+                    macro_id,
+                    theme,
+                );
             });
         });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn show_add_mapping_menu(
     ui: &mut Ui,
     project: &mut Project,
     engine: &dyn DawEngine,
     history: &mut EditHistory,
+    settings: &mut AppSettings,
+    settings_dirty: &mut bool,
     track_id: u64,
     macro_id: u64,
     theme: &ThemeColors,
@@ -249,18 +283,20 @@ fn show_add_mapping_menu(
     ui.label(RichText::new("Plugin").small().strong());
     ui.menu_button("Instrument", |ui| {
         let params = engine.plugin_parameters(track_id, None);
-        if params.is_empty() {
-            ui.label(
-                RichText::new("No parameters")
-                    .small()
-                    .color(theme.text_muted),
-            );
-        }
-        for param in params {
-            if !param.automatable {
-                continue;
-            }
-            if ui.button(truncate_label(&param.name, 28)).clicked() {
+        let plugin_uid = unique_id_for_target(&track, INSTRUMENT_MOD_TARGET_KEY).map(str::to_string);
+        show_param_pick_menu(
+            ui,
+            settings,
+            settings_dirty,
+            plugin_uid.as_deref(),
+            &params,
+            theme,
+            ParamPickMode::Assign {
+                show_fav_button: false,
+            },
+            "No parameters",
+            28,
+            |param| {
                 let mapping = MacroMapping {
                     target: MacroTarget::Instrument {
                         param_id: param.id,
@@ -270,27 +306,28 @@ fn show_add_mapping_menu(
                     max: 1.0,
                 };
                 map_destination_to_macro(project, history, track_id, Some(macro_id), mapping);
-                ui.close_menu();
-            }
-        }
+            },
+        );
     });
     for device in &track.devices {
         let device_id = device.id;
         let device_name = truncate_label(&device.name, 22);
         ui.menu_button(device_name, |ui| {
             let params = engine.plugin_parameters(track_id, Some(device_id));
-            if params.is_empty() {
-                ui.label(
-                    RichText::new("No parameters")
-                        .small()
-                        .color(theme.text_muted),
-                );
-            }
-            for param in params {
-                if !param.automatable {
-                    continue;
-                }
-                if ui.button(truncate_label(&param.name, 28)).clicked() {
+            let plugin_uid = unique_id_for_target(&track, device_id).map(str::to_string);
+            show_param_pick_menu(
+                ui,
+                settings,
+                settings_dirty,
+                plugin_uid.as_deref(),
+                &params,
+                theme,
+                ParamPickMode::Assign {
+                    show_fav_button: false,
+                },
+                "No parameters",
+                28,
+                |param| {
                     let mapping = MacroMapping {
                         target: MacroTarget::Device {
                             device_id,
@@ -301,9 +338,8 @@ fn show_add_mapping_menu(
                         max: 1.0,
                     };
                     map_destination_to_macro(project, history, track_id, Some(macro_id), mapping);
-                    ui.close_menu();
-                }
-            }
+                },
+            );
         });
     }
 

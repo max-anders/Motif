@@ -7,6 +7,7 @@ use crate::model::{
 use crate::ui::app_settings::AppSettings;
 use crate::ui::favorites_panel::unique_id_for_target;
 use crate::ui::modulator::INSTRUMENT_MOD_TARGET_KEY;
+use crate::ui::param_pick::{show_param_pick_menu, ParamPickMode};
 use crate::ui::theme::ThemeColors;
 use crate::ui::timeline::{
     draw_timeline_grid_lines, timeline_x, x_to_beat, TimelineMetrics, TIMELINE_GUTTER_WIDTH,
@@ -118,71 +119,38 @@ impl AutomationUi {
                     ui.menu_button("P", |ui| {
                         let device_id = target_device_id(&lane.target);
                         let params = engine.plugin_parameters(track_id, device_id);
-                        if params.is_empty() {
-                            ui.label(
-                                RichText::new("No parameters (load plugin first)")
-                                    .color(theme.text_muted)
-                                    .small(),
-                            );
-                        } else {
-                            let plugin_uid = unique_id_for_target(
-                                track,
-                                match &lane.target {
-                                    AutomationTarget::Instrument { .. } => {
-                                        INSTRUMENT_MOD_TARGET_KEY
-                                    }
-                                    AutomationTarget::Device { device_id, .. } => *device_id,
-                                },
-                            )
-                            .map(str::to_string);
-                            for param in params {
-                                if !param.automatable {
-                                    continue;
-                                }
-                                ui.horizontal(|ui| {
-                                    let label = truncate_label(&param.name, 28);
-                                    if ui.button(label).clicked() {
-                                        apply_param_selection(
-                                            project,
-                                            track_id,
-                                            lane_id,
-                                            &lane.target,
-                                            &param,
-                                            history,
-                                        );
-                                        ui.close_menu();
-                                    }
-                                    if let Some(uid) = &plugin_uid {
-                                        let starred = settings.has_favorite(uid, param.id);
-                                        if ui
-                                            .add_enabled(
-                                                !starred,
-                                                egui::Button::new(if starred {
-                                                    "fav"
-                                                } else {
-                                                    "+fav"
-                                                })
-                                                .small(),
-                                            )
-                                            .on_hover_text(if starred {
-                                                "Already a favorite"
-                                            } else {
-                                                "Add to favorites"
-                                            })
-                                            .clicked()
-                                        {
-                                            if settings.add_favorite(
-                                                uid,
-                                                param.id,
-                                                param.name.clone(),
-                                            ) {
-                                                *settings_dirty = true;
-                                            }
-                                        }
-                                    }
-                                });
-                            }
-                        }
+                        let plugin_uid = unique_id_for_target(
+                            track,
+                            match &lane.target {
+                                AutomationTarget::Instrument { .. } => INSTRUMENT_MOD_TARGET_KEY,
+                                AutomationTarget::Device { device_id, .. } => *device_id,
+                            },
+                        )
+                        .map(str::to_string);
+                        let lane_target = lane.target.clone();
+                        show_param_pick_menu(
+                            ui,
+                            settings,
+                            settings_dirty,
+                            plugin_uid.as_deref(),
+                            &params,
+                            theme,
+                            ParamPickMode::Assign {
+                                show_fav_button: true,
+                            },
+                            "No parameters (load plugin first)",
+                            28,
+                            |param| {
+                                apply_param_selection(
+                                    project,
+                                    track_id,
+                                    lane_id,
+                                    &lane_target,
+                                    param,
+                                    history,
+                                );
+                            },
+                        );
                     })
                     .response
                     .on_hover_text("Parameter");

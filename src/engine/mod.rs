@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-pub use audio::AudioEngine;
+pub use audio::{AudioEngine, ParamTouchEvent};
 // Kept for silent fallback / tests; not wired in the app UI path.
 #[allow(unused_imports)]
 pub use mock::MockEngine;
@@ -170,6 +170,14 @@ pub trait DawEngine {
         Vec::new()
     }
 
+    /// Free-running Hz LFO phase in cycles `0..1` for `(track_id, modulator_id)`.
+    /// Does not include the modulator's phase offset. Tempo-synced modulators
+    /// are not stored here — derive those from [`Self::current_beats`].
+    fn free_lfo_phase(&self, track_id: u64, modulator_id: u64) -> Option<f32> {
+        let _ = (track_id, modulator_id);
+        None
+    }
+
     /// Latest master-bus peak `(peak_l, peak_r)`.
     fn master_meter(&self) -> (f32, f32) {
         (0.0, 0.0)
@@ -253,5 +261,28 @@ pub trait DawEngine {
     fn plugin_parameters(&self, track_id: u64, device_id: Option<u64>) -> Vec<PluginParamInfo> {
         let _ = (track_id, device_id);
         Vec::new()
+    }
+
+    /// Current normalized `0..1` value for a plugin param (`None` if unloaded / unknown).
+    fn plugin_param_normalized(
+        &self,
+        track_id: u64,
+        device_id: Option<u64>,
+        param_id: u32,
+    ) -> Option<f32> {
+        let _ = (track_id, device_id, param_id);
+        None
+    }
+
+    /// Set a plugin param from normalized `0..1`. Returns false if the slot is unavailable.
+    fn set_plugin_param_normalized(
+        &mut self,
+        track_id: u64,
+        device_id: Option<u64>,
+        param_id: u32,
+        normalized: f32,
+    ) -> bool {
+        let _ = (track_id, device_id, param_id, normalized);
+        false
     }
 }

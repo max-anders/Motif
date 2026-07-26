@@ -73,6 +73,15 @@ impl AudioPerfShared {
 
 const LOADING_STATUS: &str = "Loading plugin...";
 
+/// Plugin-GUI (or host-observed) parameter touch for the last-tweaked MRU.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParamTouchEvent {
+    pub track_id: u64,
+    /// `None` = track instrument; `Some` = insert-FX device.
+    pub device_id: Option<u64>,
+    pub param_id: u32,
+}
+
 struct VoiceLoadResult {
     track_id: u64,
     instrument: TrackInstrument,
@@ -294,12 +303,16 @@ struct AudioCallbackState {
     /// Shared with UI: `(track_id, peak_l, peak_r)`.
     track_meters: Arc<Mutex<Vec<(u64, f32, f32)>>>,
     master_meter: Arc<Mutex<(f32, f32)>>,
+    /// Shared with UI: free-running Hz phases `(track_id, modulator_id, phase01)`.
+    lfo_phases_ui: Arc<Mutex<Vec<(u64, u64, f32)>>>,
     /// Shared with UI: per-track DSP timing for the latest callback.
     track_perf: Arc<Mutex<Vec<TrackPerformance>>>,
     perf: Arc<AudioPerfShared>,
     /// Retired plugin voices/chains handed back to the UI thread to drop
     /// (never destroy a hosted plugin on the RT thread — see [`RetiredResource`]).
     retire_tx: Sender<RetiredResource>,
+    /// Plugin-GUI param touches for the UI last-tweaked MRU (drop if full).
+    param_touch_tx: SyncSender<ParamTouchEvent>,
 }
 
 fn normalize_mseg_points(points: &mut Vec<AutomationPoint>, legacy_length: f32) {
@@ -970,6 +983,7 @@ impl AudioCallbackState {
         let apply_automation = self.transport.playing;
         let apply_modulation = self.transport.playing;
 
+        let param_touch_tx = self.param_touch_tx.clone();
         let track_ids: Vec<u64> = self.voices.keys().copied().collect();
         for track_id in track_ids {
             let params = self
@@ -1034,12 +1048,19 @@ impl AudioCallbackState {
                                 &mut guard,
                             );
                         }
-                        guard.process_block(
+                        let touches = guard.process_block(
                             frames,
                             transport,
                             &mut self.tmp_l[..frames],
                             &mut self.tmp_r[..frames],
                         );
+                        for param_id in touches {
+                            let _ = param_touch_tx.try_send(ParamTouchEvent {
+                                track_id,
+                                device_id: None,
+                                param_id,
+                            });
+                        }
                     } else {
                         lock_skips += 1;
                         self.perf.lock_skips.fetch_add(1, Ordering::Relaxed);
@@ -1113,12 +1134,19 @@ impl AudioCallbackState {
                                 &mut guard,
                             );
                         }
-                        guard.process_effect(
+                        let touches = guard.process_effect(
                             frames,
                             transport,
                             &mut self.tmp_l[..frames],
                             &mut self.tmp_r[..frames],
                         );
+                        for param_id in touches {
+                            let _ = param_touch_tx.try_send(ParamTouchEvent {
+                                track_id,
+                                device_id: Some(slot.device_id),
+                                param_id,
+                            });
+                        }
                     } else {
                         lock_skips += 1;
                         self.perf.lock_skips.fetch_add(1, Ordering::Relaxed);
@@ -1170,6 +1198,15 @@ impl AudioCallbackState {
         }
         if let Ok(mut master_m) = self.master_meter.try_lock() {
             *master_m = (master_peak_l, master_peak_r);
+        }
+        if let Ok(mut phases) = self.lfo_phases_ui.try_lock() {
+            *phases = self
+                .lfo_phases
+                .iter()
+                .map(|(&(track_id, modulator_id), &phase)| {
+                    (track_id, modulator_id, phase as f32)
+                })
+                .collect();
         }
         if let Ok(mut tracks) = self.track_perf.try_lock() {
             *tracks = track_perf_scratch;
@@ -1343,11 +1380,14 @@ pub struct AudioEngine {
     editor_host: PluginEditorHost,
     track_meters: Arc<Mutex<Vec<(u64, f32, f32)>>>,
     master_meter: Arc<Mutex<(f32, f32)>>,
+    lfo_phases_ui: Arc<Mutex<Vec<(u64, u64, f32)>>>,
     track_perf: Arc<Mutex<Vec<TrackPerformance>>>,
     perf: Arc<AudioPerfShared>,
     /// Plugin voices/chains retired by the audio callback, drained and dropped
     /// on the UI thread (never destroy a hosted plugin on the RT thread).
     retire_rx: Receiver<RetiredResource>,
+    /// Plugin-GUI param touches from the audio callback (last-tweaked MRU).
+    param_touch_rx: Receiver<ParamTouchEvent>,
     /// Kept alive for the lifetime of the engine.
     _stream: Option<Stream>,
     audio_available: bool,
@@ -1361,16 +1401,20 @@ impl AudioEngine {
         let (load_tx, load_rx) = mpsc::sync_channel::<VoiceLoadResult>(8);
         let (device_load_tx, device_load_rx) = mpsc::sync_channel::<DeviceLoadResult>(8);
         let (retire_tx, retire_rx) = mpsc::channel::<RetiredResource>();
+        let (param_touch_tx, param_touch_rx) = mpsc::sync_channel::<ParamTouchEvent>(64);
         let track_meters = Arc::new(Mutex::new(Vec::new()));
         let master_meter = Arc::new(Mutex::new((0.0_f32, 0.0_f32)));
+        let lfo_phases_ui = Arc::new(Mutex::new(Vec::new()));
         let track_perf = Arc::new(Mutex::new(Vec::new()));
         let perf = Arc::new(AudioPerfShared::new());
         match start_stream(
             Arc::clone(&track_meters),
             Arc::clone(&master_meter),
+            Arc::clone(&lfo_phases_ui),
             Arc::clone(&track_perf),
             Arc::clone(&perf),
             retire_tx,
+            param_touch_tx,
         ) {
             Ok((stream, tx, sample_rate, device_name)) => {
                 let play_error = stream
@@ -1416,9 +1460,11 @@ impl AudioEngine {
                     editor_host: PluginEditorHost::default(),
                     track_meters,
                     master_meter,
+                    lfo_phases_ui,
                     track_perf,
                     perf,
                     retire_rx,
+                    param_touch_rx,
                     _stream: Some(stream),
                     audio_available,
                     init_error: play_error,
@@ -1464,9 +1510,11 @@ impl AudioEngine {
                 editor_host: PluginEditorHost::default(),
                 track_meters,
                 master_meter,
+                lfo_phases_ui,
                 track_perf,
                 perf,
                 retire_rx,
+                param_touch_rx,
                 _stream: None,
                 audio_available: false,
                 init_error: Some(error),
@@ -1482,6 +1530,15 @@ impl AudioEngine {
         while let Ok(resource) = self.retire_rx.try_recv() {
             drop(resource);
         }
+    }
+
+    /// Drain plugin-GUI param touches observed on the audio thread.
+    pub fn drain_param_touches(&mut self) -> Vec<ParamTouchEvent> {
+        let mut touches = Vec::new();
+        while let Ok(touch) = self.param_touch_rx.try_recv() {
+            touches.push(touch);
+        }
+        touches
     }
 
     pub fn audio_available(&self) -> bool {
@@ -1848,6 +1905,44 @@ impl AudioEngine {
         self.cached_params(track_id, device_id)
             .map(|params| params.as_ref().clone())
             .unwrap_or_default()
+    }
+
+    fn plugin_slot(
+        &self,
+        track_id: u64,
+        device_id: Option<u64>,
+    ) -> Option<&Arc<Mutex<HostedPlugin>>> {
+        match device_id {
+            None => self.plugin_slots.get(&track_id),
+            Some(device_id) => self.device_slots.get(&(track_id, device_id)),
+        }
+    }
+
+    pub fn plugin_param_normalized(
+        &self,
+        track_id: u64,
+        device_id: Option<u64>,
+        param_id: u32,
+    ) -> Option<f32> {
+        let slot = self.plugin_slot(track_id, device_id)?;
+        let guard = slot.try_lock().ok()?;
+        guard.get_param_normalized(param_id)
+    }
+
+    pub fn set_plugin_param_normalized(
+        &mut self,
+        track_id: u64,
+        device_id: Option<u64>,
+        param_id: u32,
+        normalized: f32,
+    ) -> bool {
+        let Some(slot) = self.plugin_slot(track_id, device_id).cloned() else {
+            return false;
+        };
+        let Ok(mut guard) = slot.try_lock() else {
+            return false;
+        };
+        guard.set_param_normalized(param_id, normalized)
     }
 
     fn param_info_for_target(
@@ -2585,6 +2680,25 @@ impl DawEngine for AudioEngine {
         AudioEngine::plugin_parameters(self, track_id, device_id)
     }
 
+    fn plugin_param_normalized(
+        &self,
+        track_id: u64,
+        device_id: Option<u64>,
+        param_id: u32,
+    ) -> Option<f32> {
+        AudioEngine::plugin_param_normalized(self, track_id, device_id, param_id)
+    }
+
+    fn set_plugin_param_normalized(
+        &mut self,
+        track_id: u64,
+        device_id: Option<u64>,
+        param_id: u32,
+        normalized: f32,
+    ) -> bool {
+        AudioEngine::set_plugin_param_normalized(self, track_id, device_id, param_id, normalized)
+    }
+
     fn schedule_project(&mut self, project: &Project) {
         self.flush_pending_cmds();
         if !self.playing {
@@ -2712,6 +2826,15 @@ impl DawEngine for AudioEngine {
             .unwrap_or_default()
     }
 
+    fn free_lfo_phase(&self, track_id: u64, modulator_id: u64) -> Option<f32> {
+        self.lfo_phases_ui.lock().ok().and_then(|phases| {
+            phases
+                .iter()
+                .find(|(tid, mid, _)| *tid == track_id && *mid == modulator_id)
+                .map(|(_, _, phase)| *phase)
+        })
+    }
+
     fn master_meter(&self) -> (f32, f32) {
         self.master_meter
             .lock()
@@ -2801,9 +2924,11 @@ fn find_note(project: &Project, note_id: u64) -> Option<(u64, u8, u8)> {
 fn start_stream(
     track_meters: Arc<Mutex<Vec<(u64, f32, f32)>>>,
     master_meter: Arc<Mutex<(f32, f32)>>,
+    lfo_phases_ui: Arc<Mutex<Vec<(u64, u64, f32)>>>,
     track_perf: Arc<Mutex<Vec<TrackPerformance>>>,
     perf: Arc<AudioPerfShared>,
     retire_tx: Sender<RetiredResource>,
+    param_touch_tx: SyncSender<ParamTouchEvent>,
 ) -> Result<(Stream, SyncSender<AudioCommand>, f32, String), String> {
     let host = cpal::default_host();
     let device = host
@@ -2847,9 +2972,11 @@ fn start_stream(
         tmp_r: vec![0.0; 4096],
         track_meters,
         master_meter,
+        lfo_phases_ui,
         track_perf,
         perf,
         retire_tx,
+        param_touch_tx,
     };
 
     let err_fn = |error| eprintln!("Motif audio stream error: {error}");
