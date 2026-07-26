@@ -1678,7 +1678,33 @@ impl DawApp {
                 CenterView::PianoRoll { .. } => self.transpose_selected_notes(-12),
                 _ => {}
             },
+            Action::ExclusiveSolo => self.exclusive_solo_selected_track(),
+            Action::ExclusiveMute => self.exclusive_mute_selected_track(),
         }
+    }
+
+    fn exclusive_solo_selected_track(&mut self) {
+        let Some(track_id) = self.selected_track else {
+            return;
+        };
+        if self.project.track(track_id).is_none() {
+            return;
+        }
+        self.history.push_before(self.project.clone());
+        self.project.exclusive_solo(track_id);
+        self.engine.all_notes_off();
+    }
+
+    fn exclusive_mute_selected_track(&mut self) {
+        let Some(track_id) = self.selected_track else {
+            return;
+        };
+        if self.project.track(track_id).is_none() {
+            return;
+        }
+        self.history.push_before(self.project.clone());
+        self.project.exclusive_mute(track_id);
+        self.engine.all_notes_off();
     }
 }
 

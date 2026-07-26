@@ -951,6 +951,54 @@ impl Project {
         self.tracks.iter().any(|track| track.solo)
     }
 
+    /// Exclusive solo: only `track_id` is soloed. If it is already the sole soloed
+    /// track, clears solo (back to mute-only audition). Returns false if the
+    /// track id is unknown.
+    pub fn exclusive_solo(&mut self, track_id: u64) -> bool {
+        if !self.tracks.iter().any(|track| track.id == track_id) {
+            return false;
+        }
+        let already_exclusive = self
+            .tracks
+            .iter()
+            .all(|track| track.solo == (track.id == track_id));
+        if already_exclusive {
+            if let Some(track) = self.track_mut(track_id) {
+                track.solo = false;
+            }
+            return true;
+        }
+        for track in &mut self.tracks {
+            track.solo = track.id == track_id;
+        }
+        true
+    }
+
+    /// Exclusive mute: only `track_id` is muted (clears solos and other mutes). If it
+    /// is already the sole muted track with no solos, unmutes it. Returns false if the
+    /// track id is unknown.
+    pub fn exclusive_mute(&mut self, track_id: u64) -> bool {
+        if !self.tracks.iter().any(|track| track.id == track_id) {
+            return false;
+        }
+        let already_exclusive = !self.any_track_soloed()
+            && self
+                .tracks
+                .iter()
+                .all(|track| track.muted == (track.id == track_id));
+        if already_exclusive {
+            if let Some(track) = self.track_mut(track_id) {
+                track.muted = false;
+            }
+            return true;
+        }
+        for track in &mut self.tracks {
+            track.solo = false;
+            track.muted = track.id == track_id;
+        }
+        true
+    }
+
     /// Arrangement playback: solo wins when any track is soloed; otherwise respect mute.
     pub fn track_audible(&self, track: &Track) -> bool {
         if self.any_track_soloed() {
@@ -1649,6 +1697,51 @@ mod tests {
         project.track_mut(a).expect("a").muted = true;
         assert!(!project.any_track_soloed());
         assert!(!project.track_audible(project.track(a).expect("a")));
+    }
+
+    #[test]
+    fn exclusive_solo_clears_other_solos_and_toggles_off() {
+        let mut project = Project::default();
+        let a = project.tracks[0].id;
+        let b = project.add_track("Track 2", TrackInstrument::BuiltInPiano);
+        let c = project.add_track("Track 3", TrackInstrument::BuiltInPiano);
+        project.track_mut(a).expect("a").solo = true;
+        project.track_mut(b).expect("b").solo = true;
+
+        assert!(project.exclusive_solo(c));
+        assert!(!project.track(a).expect("a").solo);
+        assert!(!project.track(b).expect("b").solo);
+        assert!(project.track(c).expect("c").solo);
+        assert!(project.track_audible(project.track(c).expect("c")));
+        assert!(!project.track_audible(project.track(a).expect("a")));
+
+        // Second exclusive solo on the same track exits solo mode.
+        assert!(project.exclusive_solo(c));
+        assert!(!project.any_track_soloed());
+        assert!(!project.exclusive_solo(999));
+    }
+
+    #[test]
+    fn exclusive_mute_clears_solos_and_other_mutes_and_toggles_off() {
+        let mut project = Project::default();
+        let a = project.tracks[0].id;
+        let b = project.add_track("Track 2", TrackInstrument::BuiltInPiano);
+        let c = project.add_track("Track 3", TrackInstrument::BuiltInPiano);
+        project.track_mut(a).expect("a").muted = true;
+        project.track_mut(b).expect("b").solo = true;
+
+        assert!(project.exclusive_mute(c));
+        assert!(!project.track(a).expect("a").muted);
+        assert!(!project.track(b).expect("b").solo);
+        assert!(!project.track(b).expect("b").muted);
+        assert!(project.track(c).expect("c").muted);
+        assert!(!project.any_track_soloed());
+        assert!(!project.track_audible(project.track(c).expect("c")));
+        assert!(project.track_audible(project.track(a).expect("a")));
+
+        assert!(project.exclusive_mute(c));
+        assert!(!project.track(c).expect("c").muted);
+        assert!(!project.exclusive_mute(999));
     }
 
     #[test]

@@ -206,14 +206,20 @@ impl MixerUi {
                         ui.spacing_mut().item_spacing.x = 4.0;
                         if ms_toggle_button(ui, "M", track.muted, theme) {
                             history.push_before(project.clone());
-                            if let Some(t) = project.track_mut(track_id) {
+                            let exclusive = ui.input(|i| i.modifiers.shift);
+                            if exclusive {
+                                project.exclusive_mute(track_id);
+                            } else if let Some(t) = project.track_mut(track_id) {
                                 t.muted = !t.muted;
                             }
                             engine.all_notes_off();
                         }
                         if ms_toggle_button(ui, "S", track.solo, theme) {
                             history.push_before(project.clone());
-                            if let Some(t) = project.track_mut(track_id) {
+                            let exclusive = ui.input(|i| i.modifiers.shift);
+                            if exclusive {
+                                project.exclusive_solo(track_id);
+                            } else if let Some(t) = project.track_mut(track_id) {
                                 t.solo = !t.solo;
                             }
                             engine.all_notes_off();

@@ -852,14 +852,20 @@ pub(crate) fn track_header_row(
             let solo = track_snapshot.solo;
             if ms_toggle_button(ui, "M", muted, theme) {
                 history.push_before(project.clone());
-                if let Some(track) = project.track_mut(track_id) {
+                let exclusive = ui.input(|i| i.modifiers.shift);
+                if exclusive {
+                    project.exclusive_mute(track_id);
+                } else if let Some(track) = project.track_mut(track_id) {
                     track.muted = !track.muted;
                 }
                 engine.all_notes_off();
             }
             if ms_toggle_button(ui, "S", solo, theme) {
                 history.push_before(project.clone());
-                if let Some(track) = project.track_mut(track_id) {
+                let exclusive = ui.input(|i| i.modifiers.shift);
+                if exclusive {
+                    project.exclusive_solo(track_id);
+                } else if let Some(track) = project.track_mut(track_id) {
                     track.solo = !track.solo;
                 }
                 engine.all_notes_off();
@@ -938,11 +944,23 @@ pub(crate) fn track_header_row(
             engine.all_notes_off();
             ui.close_menu();
         }
+        if ui.button("Mute exclusive").clicked() {
+            history.push_before(project.clone());
+            project.exclusive_mute(track_id);
+            engine.all_notes_off();
+            ui.close_menu();
+        }
         if ui.button("Solo").clicked() {
             history.push_before(project.clone());
             if let Some(track) = project.track_mut(track_id) {
                 track.solo = !track.solo;
             }
+            engine.all_notes_off();
+            ui.close_menu();
+        }
+        if ui.button("Solo exclusive").clicked() {
+            history.push_before(project.clone());
+            project.exclusive_solo(track_id);
             engine.all_notes_off();
             ui.close_menu();
         }

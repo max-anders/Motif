@@ -63,6 +63,10 @@ pub enum Action {
     TransposeUpOctave,
     /// Lower selected piano-roll note(s) by one octave.
     TransposeDownOctave,
+    /// Exclusive solo the selected track (clear other solos; toggle off if already exclusive).
+    ExclusiveSolo,
+    /// Exclusive mute the selected track (clear solos/other mutes; toggle off if already exclusive).
+    ExclusiveMute,
 }
 
 impl<'de> Deserialize<'de> for Action {
@@ -102,6 +106,8 @@ impl<'de> Deserialize<'de> for Action {
             "transpose_down_semitone" => Ok(Self::TransposeDownSemitone),
             "transpose_up_octave" => Ok(Self::TransposeUpOctave),
             "transpose_down_octave" => Ok(Self::TransposeDownOctave),
+            "exclusive_solo" => Ok(Self::ExclusiveSolo),
+            "exclusive_mute" => Ok(Self::ExclusiveMute),
             other => Err(serde::de::Error::unknown_variant(
                 other,
                 &[
@@ -135,6 +141,8 @@ impl<'de> Deserialize<'de> for Action {
                     "transpose_down_semitone",
                     "transpose_up_octave",
                     "transpose_down_octave",
+                    "exclusive_solo",
+                    "exclusive_mute",
                 ],
             )),
         }
@@ -143,7 +151,7 @@ impl<'de> Deserialize<'de> for Action {
 
 impl Action {
     /// All actions in Settings / docs order (includes actions with no factory binding).
-    pub const ALL: [Self; 30] = [
+    pub const ALL: [Self; 32] = [
         Self::TogglePlayback,
         Self::PauseInPlace,
         Self::ToggleLoop,
@@ -174,6 +182,8 @@ impl Action {
         Self::TransposeDownSemitone,
         Self::TransposeUpOctave,
         Self::TransposeDownOctave,
+        Self::ExclusiveSolo,
+        Self::ExclusiveMute,
     ];
 
     pub fn label(self) -> &'static str {
@@ -208,6 +218,8 @@ impl Action {
             Self::TransposeDownSemitone => "Transpose down (semitone)",
             Self::TransposeUpOctave => "Transpose up (octave)",
             Self::TransposeDownOctave => "Transpose down (octave)",
+            Self::ExclusiveSolo => "Exclusive solo (selected track)",
+            Self::ExclusiveMute => "Exclusive mute (selected track)",
         }
     }
 }
@@ -476,6 +488,14 @@ impl ShortcutRegistry {
                 (
                     Action::TransposeDownOctave,
                     Binding::Key(Chord::ctrl_or_cmd(Key::ArrowDown)),
+                ),
+                (
+                    Action::ExclusiveSolo,
+                    Binding::Key(Chord::shift(Key::S)),
+                ),
+                (
+                    Action::ExclusiveMute,
+                    Binding::Key(Chord::shift(Key::M)),
                 ),
             ],
         }
