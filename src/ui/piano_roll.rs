@@ -1125,7 +1125,7 @@ fn apply_resize_drag(
     current_beats: f32,
     snap_horizontal: bool,
 ) {
-    let Some(original) = drag.originals.first() else {
+    let Some(primary) = drag.originals.iter().find(|note| note.id == drag.note_id) else {
         return;
     };
 
@@ -1137,36 +1137,59 @@ fn apply_resize_drag(
         }
     };
 
+    let resizing_ids: Vec<u64> = drag.originals.iter().map(|note| note.id).collect();
+
     match drag.mode {
         DragMode::ResizeStart => {
-            let bound =
-                project.note_resize_start_bound(clip_id, drag.note_id, original.pitch, original.start_beats);
-            let end = original.end_beats();
-            let new_start = snapped_beats(current_beats.max(0.0))
-                .max(bound)
-                .min(end - SNAP_BEATS);
-            if let Some(note) = project
-                .midi_clip_mut(clip_id)
-                .and_then(|clip| clip.note_mut(drag.note_id))
-            {
-                note.start_beats = new_start;
-                note.duration_beats = (end - new_start).max(SNAP_BEATS);
-                note.pitch = original.pitch;
+            let desired_start = snapped_beats(current_beats.max(0.0));
+            let raw_delta = desired_start - primary.start_beats;
+            let delta = project.clamp_note_resize_start_delta(clip_id, &drag.originals, raw_delta);
+            for original in &drag.originals {
+                let end = original.end_beats();
+                let bound = project.note_resize_start_bound(
+                    clip_id,
+                    original.id,
+                    original.pitch,
+                    original.start_beats,
+                    &resizing_ids,
+                );
+                let new_start = (original.start_beats + delta)
+                    .max(bound)
+                    .max(0.0)
+                    .min(end - SNAP_BEATS);
+                if let Some(note) = project
+                    .midi_clip_mut(clip_id)
+                    .and_then(|clip| clip.note_mut(original.id))
+                {
+                    note.start_beats = new_start;
+                    note.duration_beats = (end - new_start).max(SNAP_BEATS);
+                    note.pitch = original.pitch;
+                }
             }
         }
         DragMode::ResizeEnd => {
-            let bound =
-                project.note_resize_end_bound(clip_id, drag.note_id, original.pitch, original.end_beats());
-            let new_end = snapped_beats(current_beats.max(0.0))
-                .min(bound)
-                .max(original.start_beats + SNAP_BEATS);
-            if let Some(note) = project
-                .midi_clip_mut(clip_id)
-                .and_then(|clip| clip.note_mut(drag.note_id))
-            {
-                note.start_beats = original.start_beats;
-                note.duration_beats = (new_end - original.start_beats).max(SNAP_BEATS);
-                note.pitch = original.pitch;
+            let desired_end = snapped_beats(current_beats.max(0.0));
+            let raw_delta = desired_end - primary.end_beats();
+            let delta = project.clamp_note_resize_end_delta(clip_id, &drag.originals, raw_delta);
+            for original in &drag.originals {
+                let bound = project.note_resize_end_bound(
+                    clip_id,
+                    original.id,
+                    original.pitch,
+                    original.end_beats(),
+                    &resizing_ids,
+                );
+                let new_end = (original.end_beats() + delta)
+                    .min(bound)
+                    .max(original.start_beats + SNAP_BEATS);
+                if let Some(note) = project
+                    .midi_clip_mut(clip_id)
+                    .and_then(|clip| clip.note_mut(original.id))
+                {
+                    note.start_beats = original.start_beats;
+                    note.duration_beats = (new_end - original.start_beats).max(SNAP_BEATS);
+                    note.pitch = original.pitch;
+                }
             }
         }
         DragMode::Move => {}
@@ -1552,23 +1575,16 @@ fn handle_pointer(
                 selected_note_ids.extend(new_ids);
             }
 
-            let originals = match mode {
-                DragMode::Move => project
-                    .midi_clip(clip_id)
-                    .map(|clip| {
-                        clip.notes
-                            .iter()
-                            .filter(|n| selected_note_ids.contains(&n.id))
-                            .cloned()
-                            .collect()
-                    })
-                    .unwrap_or_default(),
-                DragMode::ResizeStart | DragMode::ResizeEnd => project
-                    .midi_clip(clip_id)
-                    .and_then(|clip| clip.note(primary_id).copied())
-                    .into_iter()
-                    .collect(),
-            };
+            let originals = project
+                .midi_clip(clip_id)
+                .map(|clip| {
+                    clip.notes
+                        .iter()
+                        .filter(|n| selected_note_ids.contains(&n.id))
+                        .cloned()
+                        .collect()
+                })
+                .unwrap_or_default();
 
             *active_drag = Some(ActiveDrag {
                 note_id: primary_id,

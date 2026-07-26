@@ -144,10 +144,6 @@ impl MetronomeRunner {
         self.beats_per_second = beats_per_second.max(0.000_1);
     }
 
-    pub fn beats_per_second(&self) -> f64 {
-        self.beats_per_second
-    }
-
     pub fn set_beats_per_bar(&mut self, beats_per_bar: f32) {
         self.beats_per_bar = beats_per_bar.max(1.0);
     }
@@ -160,22 +156,15 @@ impl MetronomeRunner {
         self.loop_end_beats = loop_end_beats;
     }
 
+    /// Re-seat the click grid on a transport discontinuity. The audio thread
+    /// drives this from the sequencer's position, so the two clocks cannot
+    /// drift apart (see `AudioCallbackState::apply_transport`).
     pub fn sync_position_beats(&mut self, beats: f64) {
         self.position_beats = beats.max(0.0);
     }
 
-    pub fn position_beats(&self) -> f64 {
-        self.position_beats
-    }
-
     pub fn playing(&self) -> bool {
         self.playing
-    }
-
-    pub fn sync_position_samples(&mut self, samples: i64, beats_per_second: f64) {
-        self.beats_per_second = beats_per_second.max(0.000_1);
-        self.position_beats =
-            (samples as f64 * beats_per_second / self.sample_rate).max(0.0);
     }
 
     fn beat_is_downbeat(beat_index: i64, beats_per_bar: f32) -> bool {

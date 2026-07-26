@@ -118,12 +118,12 @@ cargo run --release
 - **Left-click note** - select note
 - **Ctrl/Cmd+A** - select all notes in the clip (remappable)
 - **Shift+Up / Shift+Down** - move selected note(s) up/down one semitone (remappable; blocked/clamped if same-pitch overlap)
-- **Ctrl/Cmd+Shift+Up / Down** - move selected note(s) up/down one octave (remappable)
+- **Ctrl/Cmd+Up / Down** - move selected note(s) up/down one octave (remappable)
 - **Drag empty grid** - marquee multi-select
-- **Drag note body** - move selected note(s) (pitch/start; same-pitch notes cannot overlap; adjacent OK)
+- **Drag note body** - move selected note(s) (pitch/start; same-pitch notes cannot overlap; adjacent OK; cannot leave the clip)
 - **Alt + drag note body or resize** - free horizontal placement (no 1/16 snap)
 - **Shift + drag note body** - duplicate selection, then move the copies
-- **Drag left/right edge** - resize note (stops at same-pitch neighbors)
+- **Drag left/right edge** - resize selected note(s) (same delta; stops at same-pitch neighbors and clip end)
 - **Press / drag piano keys** - audition pitches (active track instrument)
 - **Left-click / drag ruler** - move playhead (mapped to arrangement time)
 - **Shift + left-click**, **right-click empty grid**, or **right-click drag** on the grid - move playhead (right-click on a note still deletes)
@@ -183,7 +183,8 @@ UI (egui)
   -> Project model (tracks + instruments, clips, notes, tempo, loop)
   -> PlaylistUi / PianoRollUi (shared timeline navigation)
   -> DawEngine trait
-       -> AudioEngine (UI clock + cpal mix; shared plugin slots + editor host)
+       -> AudioEngine (audio-clock transport; cpal mix + sample-accurate sequencing;
+                       shared plugin slots + editor host)
        -> MockEngine (silent fallback / tests)
   -> PluginCatalog (scan cache; load off the audio thread)
 ```

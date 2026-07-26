@@ -471,11 +471,11 @@ impl ShortcutRegistry {
                 ),
                 (
                     Action::TransposeUpOctave,
-                    Binding::Key(Chord::ctrl_or_cmd_shift(Key::ArrowUp)),
+                    Binding::Key(Chord::ctrl_or_cmd(Key::ArrowUp)),
                 ),
                 (
                     Action::TransposeDownOctave,
-                    Binding::Key(Chord::ctrl_or_cmd_shift(Key::ArrowDown)),
+                    Binding::Key(Chord::ctrl_or_cmd(Key::ArrowDown)),
                 ),
             ],
         }
@@ -527,6 +527,22 @@ impl ShortcutRegistry {
         self.bindings.retain(|(action, binding)| {
             !(matches!(action, Action::DeleteSelection) && matches!(binding, Binding::CutEvent))
         });
+
+        // Octave transpose used Ctrl+Shift+Arrow (often stolen by Linux WMs);
+        // factory default is now Ctrl/Cmd+Arrow.
+        for (action, binding) in &mut self.bindings {
+            let Binding::Key(chord) = binding else {
+                continue;
+            };
+            let migrate = match action {
+                Action::TransposeUpOctave if chord.key == Key::ArrowUp => true,
+                Action::TransposeDownOctave if chord.key == Key::ArrowDown => true,
+                _ => false,
+            };
+            if migrate && chord.ctrl_or_cmd && chord.shift && !chord.alt {
+                chord.shift = false;
+            }
+        }
 
         for (action, binding) in Self::defaults().bindings {
             let has_action = self

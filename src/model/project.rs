@@ -230,6 +230,13 @@ impl Project {
         if min_start + delta_beats < 0.0 {
             delta_beats = -min_start;
         }
+        let max_end = originals
+            .iter()
+            .map(Note::end_beats)
+            .fold(f32::NEG_INFINITY, f32::max);
+        if max_end + delta_beats > clip.length_beats {
+            delta_beats = clip.length_beats - max_end;
+        }
 
         let moving: std::collections::HashSet<u64> =
             originals.iter().map(|note| note.id).collect();
@@ -241,6 +248,13 @@ impl Project {
                 .fold(f32::INFINITY, f32::min);
             if min_start + db < 0.0 {
                 db = -min_start;
+            }
+            let max_end = originals
+                .iter()
+                .map(Note::end_beats)
+                .fold(f32::NEG_INFINITY, f32::max);
+            if max_end + db > clip.length_beats {
+                db = clip.length_beats - max_end;
             }
             for original in originals {
                 let pitch = Self::clamp_pitch(original.pitch as i32 + dp);
@@ -296,12 +310,14 @@ impl Project {
     }
 
     /// Left edge a note resize-start drag may not cross (neighbor end, or 0).
+    /// Notes in `ignore_ids` are treated as co-resizing and skipped as neighbors.
     pub fn note_resize_start_bound(
         &self,
         clip_id: u64,
         note_id: u64,
         pitch: u8,
         original_start: f32,
+        ignore_ids: &[u64],
     ) -> f32 {
         let Some(clip) = self.midi_clip(clip_id) else {
             return 0.0;
@@ -309,30 +325,95 @@ impl Project {
         clip.notes
             .iter()
             .filter(|note| {
-                note.id != note_id && note.pitch == pitch && note.end_beats() <= original_start
+                note.id != note_id
+                    && !ignore_ids.contains(&note.id)
+                    && note.pitch == pitch
+                    && note.end_beats() <= original_start
             })
             .map(Note::end_beats)
             .fold(0.0_f32, f32::max)
     }
 
-    /// Right edge a note resize-end drag may not cross (`f32::INFINITY` if none).
+    /// Right edge a note resize-end drag may not cross (neighbor start, or clip length).
+    /// Notes in `ignore_ids` are treated as co-resizing and skipped as neighbors.
     pub fn note_resize_end_bound(
         &self,
         clip_id: u64,
         note_id: u64,
         pitch: u8,
         original_end: f32,
+        ignore_ids: &[u64],
     ) -> f32 {
         let Some(clip) = self.midi_clip(clip_id) else {
-            return f32::INFINITY;
+            return 0.0;
         };
-        clip.notes
+        let neighbor = clip
+            .notes
             .iter()
             .filter(|note| {
-                note.id != note_id && note.pitch == pitch && note.start_beats >= original_end
+                note.id != note_id
+                    && !ignore_ids.contains(&note.id)
+                    && note.pitch == pitch
+                    && note.start_beats >= original_end
             })
             .map(|note| note.start_beats)
-            .fold(f32::INFINITY, f32::min)
+            .fold(f32::INFINITY, f32::min);
+        neighbor.min(clip.length_beats)
+    }
+
+    /// Clamp a shared start-edge delta so every resizing note stays valid.
+    pub fn clamp_note_resize_start_delta(
+        &self,
+        clip_id: u64,
+        originals: &[Note],
+        mut delta: f32,
+    ) -> f32 {
+        if originals.is_empty() {
+            return delta;
+        }
+        let ignore: Vec<u64> = originals.iter().map(|note| note.id).collect();
+        for original in originals {
+            let bound = self.note_resize_start_bound(
+                clip_id,
+                original.id,
+                original.pitch,
+                original.start_beats,
+                &ignore,
+            );
+            let end = original.end_beats();
+            delta = delta
+                .max(bound - original.start_beats)
+                .max(-original.start_beats)
+                .min(end - SNAP_BEATS - original.start_beats);
+        }
+        delta
+    }
+
+    /// Clamp a shared end-edge delta so every resizing note stays valid (clip length included).
+    pub fn clamp_note_resize_end_delta(
+        &self,
+        clip_id: u64,
+        originals: &[Note],
+        mut delta: f32,
+    ) -> f32 {
+        if originals.is_empty() {
+            return delta;
+        }
+        let ignore: Vec<u64> = originals.iter().map(|note| note.id).collect();
+        for original in originals {
+            let bound = self.note_resize_end_bound(
+                clip_id,
+                original.id,
+                original.pitch,
+                original.end_beats(),
+                &ignore,
+            );
+            let end = original.end_beats();
+            delta = delta
+                .min(bound - end)
+                .max(original.start_beats + SNAP_BEATS - end);
+        }
+        delta
     }
 
     /// Clamp a multi-clip move delta so no mover overlaps a non-moving clip on its track.
@@ -829,8 +910,16 @@ impl Project {
         start_beats: f32,
         duration_beats: f32,
     ) -> Option<Note> {
+        let clip_length = self.midi_clip(clip_id)?.length_beats;
         let start = Self::snap_beats(start_beats.max(0.0));
-        let duration = Self::snap_beats(duration_beats.max(SNAP_BEATS));
+        if start >= clip_length {
+            return None;
+        }
+        let max_duration = (clip_length - start).max(SNAP_BEATS);
+        let duration = Self::snap_beats(duration_beats.max(SNAP_BEATS).min(max_duration));
+        if start + duration > clip_length + f32::EPSILON {
+            return None;
+        }
         if !self.note_range_free(clip_id, pitch, start, duration, &[]) {
             return None;
         }
@@ -1787,11 +1876,74 @@ mod tests {
             .add_note_to_clip(clip_id, 60, 2.0, 1.0)
             .expect("right");
         assert!(
-            (project.note_resize_end_bound(clip_id, left.id, 60, 1.0) - 2.0).abs() < 1e-5
+            (project.note_resize_end_bound(clip_id, left.id, 60, 1.0, &[]) - 2.0).abs() < 1e-5
         );
         assert!(
-            (project.note_resize_start_bound(clip_id, right.id, 60, 2.0) - 1.0).abs() < 1e-5
+            (project.note_resize_start_bound(clip_id, right.id, 60, 2.0, &[]) - 1.0).abs() < 1e-5
         );
+    }
+
+    #[test]
+    fn note_resize_end_bound_clamps_to_clip_length() {
+        let mut project = Project::default();
+        let clip_id = project.tracks[0].clips[0].id();
+        let note = project
+            .add_note_to_clip(clip_id, 60, 2.0, 1.0)
+            .expect("note");
+        let clip_len = project
+            .midi_clip(clip_id)
+            .map(|clip| clip.length_beats)
+            .expect("clip");
+        let bound = project.note_resize_end_bound(clip_id, note.id, 60, 3.0, &[]);
+        assert!((bound - clip_len).abs() < 1e-5);
+    }
+
+    #[test]
+    fn clamp_note_resize_end_delta_stops_at_clip_length() {
+        let mut project = Project::default();
+        let clip_id = project.tracks[0].clips[0].id();
+        let a = project
+            .add_note_to_clip(clip_id, 60, 0.0, 1.0)
+            .expect("a");
+        let b = project
+            .add_note_to_clip(clip_id, 64, 1.0, 1.0)
+            .expect("b");
+        let originals = vec![a, b];
+        let delta = project.clamp_note_resize_end_delta(clip_id, &originals, 100.0);
+        // b ends at 2.0; clip is 4.0 -> max shared delta is +2.0
+        assert!((delta - 2.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn clamp_note_move_stops_at_clip_end() {
+        let mut project = Project::default();
+        let clip_id = project.tracks[0].clips[0].id();
+        let note = project
+            .add_note_to_clip(clip_id, 60, 2.0, 1.0)
+            .expect("note");
+        let (delta, pitch) =
+            project.clamp_note_move_deltas(clip_id, &[note], 100.0, 0, &[]);
+        assert_eq!(pitch, 0);
+        // note ends at 3.0; clip length 4.0 -> max delta +1.0
+        assert!((delta - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn add_note_shortens_to_fit_clip_end() {
+        let mut project = Project::default();
+        let clip_id = project.tracks[0].clips[0].id();
+        let note = project
+            .add_note_to_clip(clip_id, 60, 3.5, 2.0)
+            .expect("note");
+        assert!((note.start_beats - 3.5).abs() < 1e-5);
+        assert!((note.duration_beats - 0.5).abs() < 1e-5);
+    }
+
+    #[test]
+    fn add_note_rejects_start_past_clip_end() {
+        let mut project = Project::default();
+        let clip_id = project.tracks[0].clips[0].id();
+        assert!(project.add_note_to_clip(clip_id, 60, 4.0, 1.0).is_none());
     }
 
     #[test]

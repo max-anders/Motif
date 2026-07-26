@@ -5,6 +5,14 @@ edition = "2021"
 description = "Motif: experimental music sketchpad (piano roll + soft piano / CLAP-VST3)"
 repository = "https://github.com/max-anders/Motif"
 
+# Dev builds keep motif code debuggable (opt-level 1) while optimizing deps
+# so the audio callback stays within the ~5 ms buffer budget.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2
+
 [dependencies]
 base64 = "0.22"
 cpal = "0.15"

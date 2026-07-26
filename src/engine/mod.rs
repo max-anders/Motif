@@ -5,6 +5,7 @@ mod metronome;
 mod piano;
 pub mod plugins;
 mod sample;
+mod sequencer;
 
 use std::collections::HashMap;
 use std::path::PathBuf;

@@ -1659,8 +1659,11 @@ impl DawApp {
 
 impl eframe::App for DawApp {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
-        // UI stalls (plugin load, xrun storms) can report multi-second dt; cap so
-        // transport/sequencer never jump across a whole arrangement in one frame.
+        // Only guards the silent-degraded path (no audio thread), where the
+        // engine still advances the playhead from this delta: a UI stall would
+        // otherwise report the whole stall as one frame and jump the transport
+        // across the arrangement. With audio available the engine derives the
+        // playhead from the callback's sample counter and ignores this value.
         const MAX_TRANSPORT_DELTA_SECS: f32 = 0.1;
         let delta_seconds = ctx
             .input(|input| input.unstable_dt)

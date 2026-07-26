@@ -30,6 +30,7 @@ use super::plugins::{
     load_and_activate, CatalogEntry, HostedPlugin, PluginCatalog, PluginEditorHost, PluginParamInfo,
     PluginRef,
 };
+use super::sequencer::{RtClock, RtNote, RtSequencer, SeqEvent};
 use super::DecodedAudio;
 use super::{DawEngine, EnginePerformance, LoopPlayback, TrackPerformance, TrackVoiceKind};
 
@@ -40,6 +41,10 @@ struct AudioPerfShared {
     buffer_frames: AtomicU32,
     xruns: AtomicU64,
     lock_skips: AtomicU64,
+    /// Frames the callback has written to the device since stream start. This
+    /// is the transport clock source (see `AudioEngine::advance`); it must keep
+    /// counting whether or not the transport is playing.
+    samples_played: AtomicU64,
 }
 
 impl AudioPerfShared {
@@ -49,6 +54,7 @@ impl AudioPerfShared {
             buffer_frames: AtomicU32::new(0),
             xruns: AtomicU64::new(0),
             lock_skips: AtomicU64::new(0),
+            samples_played: AtomicU64::new(0),
         }
     }
 
@@ -275,11 +281,24 @@ enum AudioCommand {
     ClearTrackSamples {
         track_id: u64,
     },
+    /// Replace a track's sequencer note list (absolute beats, sorted by start).
+    /// The audio thread sequences from this; the UI never emits scheduled
+    /// NoteOn/NoteOff itself.
+    SetTrackNotes {
+        track_id: u64,
+        notes: Vec<RtNote>,
+    },
+    ClearTrackNotes {
+        track_id: u64,
+    },
     SetMasterGain {
         gain: f32,
     },
     SetTransport {
         transport: TransportInfo,
+        /// Frames -> beats mapping the audio-thread sequencer runs on. Carried
+        /// with the transport so the two can never disagree.
+        clock: RtClock,
     },
     SetMetronome {
         enabled: bool,
@@ -313,6 +332,15 @@ struct AudioCallbackState {
     channels: usize,
     sample_rate: f32,
     transport: TransportInfo,
+    /// Sample-accurate MIDI sequencing. Owns the note lists, the loop wrap, and
+    /// the song position the rest of the callback renders against.
+    sequencer: RtSequencer,
+    /// This block's note edges, copied out of the sequencer so `render_stereo`
+    /// can take them while it holds a mutable borrow of the voices.
+    seq_events: Vec<SeqEvent>,
+    /// Clock epoch last applied, to drive the metronome resync off the same
+    /// discontinuity signal as the sequencer.
+    clock_epoch: u64,
     metronome: MetronomeRunner,
     mix_l: Vec<f32>,
     mix_r: Vec<f32>,
@@ -341,6 +369,14 @@ struct AudioCallbackState {
     param_id_scratch: HashSet<u32>,
     mod_index_scratch: Vec<usize>,
     live_mod_id_scratch: HashSet<u64>,
+}
+
+/// One track's slice of the block's note edges. `events` is sorted by
+/// `track_id` first, so a track's edges are contiguous.
+fn track_event_slice(events: &[SeqEvent], track_id: u64) -> &[SeqEvent] {
+    let start = events.partition_point(|event| event.track_id < track_id);
+    let end = events.partition_point(|event| event.track_id <= track_id);
+    &events[start..end]
 }
 
 fn normalize_mseg_points(points: &mut Vec<AutomationPoint>, legacy_length: f32) {
@@ -387,6 +423,8 @@ impl AudioCallbackState {
         self.modulators.clear();
         self.macros.clear();
         self.lfo_phases.clear();
+        self.sequencer.reset();
+        self.seq_events.clear();
     }
 
     fn process_commands(&mut self) {
@@ -400,7 +438,7 @@ impl AudioCallbackState {
                     Some(TrackVoice::Piano(synth)) => synth.note_on(pitch, velocity),
                     Some(TrackVoice::Plugin(plugin)) => {
                         if let Ok(mut guard) = plugin.try_lock() {
-                            guard.push_note_on(pitch, velocity);
+                            guard.push_note_on(pitch, velocity, 0);
                         } else {
                             self.perf.lock_skips.fetch_add(1, Ordering::Relaxed);
                         }
@@ -412,7 +450,7 @@ impl AudioCallbackState {
                         Some(TrackVoice::Piano(synth)) => synth.note_off(pitch),
                         Some(TrackVoice::Plugin(plugin)) => {
                             if let Ok(mut guard) = plugin.try_lock() {
-                                guard.push_note_off(pitch);
+                                guard.push_note_off(pitch, 0);
                             } else {
                                 self.perf.lock_skips.fetch_add(1, Ordering::Relaxed);
                             }
@@ -434,11 +472,15 @@ impl AudioCallbackState {
                             TrackVoice::Silent => {}
                         }
                     }
+                    // The voices are silent now, so the sequencer must forget
+                    // what it thought was sounding or it will never re-trigger.
+                    self.sequencer.forget_active();
                 }
                 Ok(AudioCommand::SetVoice { track_id, voice }) => {
                     if let Some(old) = self.voices.insert(track_id, voice) {
                         self.retire_voice(old);
                     }
+                    self.sequencer.reseed_track(track_id);
                 }
                 Ok(AudioCommand::RemoveVoice { track_id }) => {
                     if let Some(old) = self.voices.remove(&track_id) {
@@ -453,6 +495,7 @@ impl AudioCallbackState {
                     self.modulators.remove(&track_id);
                     self.macros.remove(&track_id);
                     self.lfo_phases.retain(|&(tid, _), _| tid != track_id);
+                    self.sequencer.remove_track(track_id);
                 }
                 Ok(AudioCommand::SetChannel {
                     track_id,
@@ -521,11 +564,17 @@ impl AudioCallbackState {
                 Ok(AudioCommand::ClearTrackSamples { track_id }) => {
                     self.sample_clips.remove(&track_id);
                 }
+                Ok(AudioCommand::SetTrackNotes { track_id, notes }) => {
+                    self.sequencer.set_notes(track_id, notes);
+                }
+                Ok(AudioCommand::ClearTrackNotes { track_id }) => {
+                    self.sequencer.clear_notes(track_id);
+                }
                 Ok(AudioCommand::SetMasterGain { gain }) => {
                     self.master_gain = gain;
                 }
-                Ok(AudioCommand::SetTransport { transport }) => {
-                    self.apply_transport(transport);
+                Ok(AudioCommand::SetTransport { transport, clock }) => {
+                    self.apply_transport(transport, clock);
                 }
                 Ok(AudioCommand::SetMetronome {
                     enabled,
@@ -547,9 +596,10 @@ impl AudioCallbackState {
         }
     }
 
-    fn apply_transport(&mut self, transport: TransportInfo) {
+    fn apply_transport(&mut self, transport: TransportInfo, clock: RtClock) {
         let was_playing = self.metronome.playing();
         self.transport = transport;
+        self.sequencer.set_clock(clock);
         self.metronome.set_playing(transport.playing);
         if let Some(bpm) = transport.tempo_bpm {
             self.metronome.set_beats_per_second(bpm / 60.0);
@@ -558,23 +608,52 @@ impl AudioCallbackState {
             self.metronome.set_beats_per_bar(numerator as f32);
         }
 
-        let should_sync = !was_playing && transport.playing
-            || was_playing && !transport.playing
-            || transport
-                .song_position_beats
-                .is_some_and(|beats| (beats - self.metronome.position_beats()).abs() > 0.05);
+        // Resync off the clock epoch rather than a drift threshold. The UI
+        // reports a position one output buffer behind what the callback
+        // renders, so any threshold is really a bet that the buffer is smaller
+        // than the threshold - it breaks at high tempo or a large period.
+        let should_sync =
+            clock.epoch != self.clock_epoch || was_playing != transport.playing;
+        self.clock_epoch = clock.epoch;
 
         if should_sync {
-            if let Some(samples) = transport.song_position_samples {
-                let bps = transport
-                    .tempo_bpm
-                    .map(|bpm| bpm / 60.0)
-                    .unwrap_or(self.metronome.beats_per_second());
-                self.metronome.sync_position_samples(samples, bps);
-            } else if let Some(beats) = transport.song_position_beats {
-                self.metronome.sync_position_beats(beats);
-            }
+            let samples = self.samples_played();
+            let position = self.sequencer.position_beats(samples);
+            self.metronome.sync_position_beats(position);
         }
+    }
+
+    /// Frames written to the device so far. Read at the top of a callback this
+    /// names the first frame of the block about to be rendered, because the
+    /// counter is bumped after the buffer is filled.
+    fn samples_played(&self) -> u64 {
+        self.perf.samples_played.load(Ordering::Relaxed)
+    }
+
+    /// Place this block's note edges and republish the transport snapshot from
+    /// the sequencer's sample-accurate position.
+    fn sequence_block(&mut self, frames: usize) {
+        let block_start_samples = self.samples_played();
+        let position = self.sequencer.process_block(block_start_samples, frames);
+        self.seq_events.clear();
+        self.seq_events.extend_from_slice(self.sequencer.events());
+
+        if !self.sequencer.playing() {
+            return;
+        }
+        // Automation, sample clips and the plugin transport must read the same
+        // position the notes were placed against; leaving them on the UI's
+        // once-per-paint snapshot would drift MIDI against audio clips.
+        let beats_per_second = self.sequencer.beats_per_second().max(0.0001);
+        let beats_per_bar = self
+            .transport
+            .time_signature
+            .map(|(numerator, _)| numerator.max(1) as f64)
+            .unwrap_or(4.0);
+        self.transport.song_position_beats = Some(position);
+        self.transport.song_position_samples =
+            Some((position / beats_per_second * self.sample_rate as f64) as i64);
+        self.transport.bar_start_beats = Some((position / beats_per_bar).floor() * beats_per_bar);
     }
 
     fn evaluate_lane_value(points: &[AutomationPoint], beat: f32) -> Option<f64> {
@@ -1053,6 +1132,9 @@ impl AudioCallbackState {
         let automation = std::mem::take(&mut self.automation);
         let modulators_map = std::mem::take(&mut self.modulators);
         let macros_map = std::mem::take(&mut self.macros);
+        // Sorted by (track_id, frame, on) in `sequence_block`, so each track's
+        // edges are one contiguous, time-ordered slice.
+        let seq_events = std::mem::take(&mut self.seq_events);
         self.track_id_scratch.clear();
         self.track_id_scratch.extend(self.voices.keys().copied());
         let track_count = self.track_id_scratch.len();
@@ -1089,6 +1171,8 @@ impl AudioCallbackState {
                 }
             }
 
+            let track_events = track_event_slice(&seq_events, track_id);
+
             let mut voice_kind = TrackVoiceKind::None;
             let mut active_voices = 0_u32;
             let mut lock_skips = 0_u32;
@@ -1097,10 +1181,33 @@ impl AudioCallbackState {
             if matches!(self.voices.get(&track_id), Some(TrackVoice::Piano(_))) {
                 voice_kind = TrackVoiceKind::Piano;
                 if let Some(TrackVoice::Piano(synth)) = self.voices.get_mut(&track_id) {
+                    // The piano renders sample by sample, so the block is split
+                    // at each note edge instead of taking a sample offset.
+                    let mut next = 0_usize;
                     for i in 0..frames {
+                        while let Some(event) = track_events.get(next) {
+                            if event.frame as usize > i {
+                                break;
+                            }
+                            if event.on {
+                                synth.note_on(event.pitch, event.velocity);
+                            } else {
+                                synth.note_off(event.pitch);
+                            }
+                            next += 1;
+                        }
                         let sample = synth.render_sample();
                         self.tmp_l[i] = sample;
                         self.tmp_r[i] = sample;
+                    }
+                    for event in &track_events[next..] {
+                        // Edges clamped past the last frame still must not be
+                        // dropped, or a note hangs until the next transport op.
+                        if event.on {
+                            synth.note_on(event.pitch, event.velocity);
+                        } else {
+                            synth.note_off(event.pitch);
+                        }
                     }
                     active_voices = synth.active_voice_count();
                 }
@@ -1122,6 +1229,16 @@ impl AudioCallbackState {
                             apply_macros,
                             &mut guard,
                         );
+                    }
+                    // After the params: the event list handed to a CLAP/VST3
+                    // plugin has to be in ascending sample_offset order, and
+                    // params are all block-start (offset 0).
+                    for event in track_events {
+                        if event.on {
+                            guard.push_note_on(event.pitch, event.velocity, event.frame);
+                        } else {
+                            guard.push_note_off(event.pitch, event.frame);
+                        }
                     }
                     guard.process_block(
                         frames,
@@ -1294,6 +1411,7 @@ impl AudioCallbackState {
         self.automation = automation;
         self.modulators = modulators_map;
         self.macros = macros_map;
+        self.seq_events = seq_events;
     }
 
     /// Record callback load vs buffer budget. RT-safe (atomics only).
@@ -1326,6 +1444,7 @@ impl AudioCallbackState {
             return;
         }
         let frames = data.len() / self.channels;
+        self.sequence_block(frames);
         self.render_stereo(frames);
         for (frame_index, frame) in data.chunks_mut(self.channels).enumerate() {
             let l = self.mix_l.get(frame_index).copied().unwrap_or(0.0);
@@ -1340,6 +1459,9 @@ impl AudioCallbackState {
                 *ch0 = 0.5 * (l + r);
             }
         }
+        self.perf
+            .samples_played
+            .fetch_add(frames as u64, Ordering::Relaxed);
         self.record_callback_perf(frames, started);
     }
 
@@ -1350,6 +1472,7 @@ impl AudioCallbackState {
             return;
         }
         let frames = data.len() / self.channels;
+        self.sequence_block(frames);
         self.render_stereo(frames);
         for (frame_index, frame) in data.chunks_mut(self.channels).enumerate() {
             let l = self.mix_l.get(frame_index).copied().unwrap_or(0.0);
@@ -1364,6 +1487,9 @@ impl AudioCallbackState {
                 *ch0 = (0.5 * (l + r) * i16::MAX as f32) as i16;
             }
         }
+        self.perf
+            .samples_played
+            .fetch_add(frames as u64, Ordering::Relaxed);
         self.record_callback_perf(frames, started);
     }
 
@@ -1374,6 +1500,7 @@ impl AudioCallbackState {
             return;
         }
         let frames = data.len() / self.channels;
+        self.sequence_block(frames);
         self.render_stereo(frames);
         for (frame_index, frame) in data.chunks_mut(self.channels).enumerate() {
             let l = self.mix_l.get(frame_index).copied().unwrap_or(0.0);
@@ -1391,6 +1518,9 @@ impl AudioCallbackState {
                 *ch0 = ((m * 0.5 + 0.5) * u16::MAX as f32) as u16;
             }
         }
+        self.perf
+            .samples_played
+            .fetch_add(frames as u64, Ordering::Relaxed);
         self.record_callback_perf(frames, started);
     }
 }
@@ -1399,9 +1529,31 @@ impl AudioCallbackState {
 pub struct AudioEngine {
     playing: bool,
     current_beats: f32,
-    previous_beats: f32,
     /// Playhead position when playback last started; pause restores here.
     playback_anchor_beats: f32,
+    /// Beat position the audio-clock mapping is anchored to. Distinct from
+    /// `playback_anchor_beats` (the user-visible start mark): the clock also
+    /// re-anchors on loop wrap and tempo change, which must not move the mark.
+    clock_anchor_beats: f64,
+    /// `AudioPerfShared::samples_played` at the moment `clock_anchor_beats`
+    /// was set. Together they map rendered frames onto the playhead.
+    anchor_samples: u64,
+    /// Bumped by `reanchor` and by nothing else. This is the audio thread's
+    /// only discontinuity signal: a routine per-frame transport push carries an
+    /// unchanged epoch and the RT sequencer keeps free-running instead of being
+    /// dragged back to the (one-buffer-behind) position the UI reports.
+    /// Loop wrap deliberately does NOT bump it - the sequencer wraps itself, at
+    /// sample accuracy, and a re-seed there would re-quantize note timing to
+    /// the paint rate.
+    clock_epoch: u64,
+    /// Frames -> beats base as of the last `reanchor`. Distinct from
+    /// `clock_anchor_beats`/`anchor_samples`, which the loop wrap also mutates
+    /// for the ruler; the sequencer needs the un-wrapped base.
+    rt_anchor_beats: f64,
+    rt_anchor_samples: u64,
+    /// Loop region last pushed, to notice a mid-playback region edit (the one
+    /// case where the UI's incremental wrap and the RT's `rem_euclid` disagree).
+    synced_loop_region: (bool, f32, f32),
     beats_per_second: f32,
     beats_per_bar: f32,
     loop_enabled: bool,
@@ -1409,8 +1561,12 @@ pub struct AudioEngine {
     loop_end_beats: f32,
     /// End of arranged content; playback stops here when not looping.
     content_end_beats: f32,
-    /// Note ids currently sounding from the sequencer (not keyboard audition).
-    active_seq_notes: HashSet<u64>,
+    /// Last note payload sent to the audio thread per track. Sequencing itself
+    /// happens on the audio thread; the UI only keeps this in sync.
+    synced_notes: HashMap<u64, Vec<RtNote>>,
+    /// Reusable buffer for building a track's note list before diffing it, so
+    /// the steady-state per-frame sync allocates nothing.
+    note_scratch: Vec<RtNote>,
     /// Last instrument identity synced per track (UI-side).
     synced_instruments: HashMap<u64, TrackInstrument>,
     /// Last `(gain_db, pan)` pushed per track (UI-side).
@@ -1443,8 +1599,9 @@ pub struct AudioEngine {
     device_load_rx: Receiver<DeviceLoadResult>,
     /// Commands waiting for audio-thread channel space (never block UI / never drop MIDI).
     pending_cmds: VecDeque<AudioCommand>,
-    /// Latest transport when the channel is full (coalesced; only one pending).
-    pending_transport: Option<TransportInfo>,
+    /// Latest transport + clock when the channel is full (coalesced; only one
+    /// pending, since every frame supersedes the last while playing).
+    pending_transport: Option<(TransportInfo, RtClock)>,
     /// Latest metronome config when the channel is full (coalesced):
     /// `(enabled, beats_per_bar, loop_start_beats, loop_end_beats)`.
     pending_metronome: Option<(bool, f32, f32, f32)>,
@@ -1507,15 +1664,21 @@ impl AudioEngine {
                 Self {
                     playing: false,
                     current_beats: 0.0,
-                    previous_beats: 0.0,
                     playback_anchor_beats: 0.0,
+                    clock_anchor_beats: 0.0,
+                    anchor_samples: 0,
+                    clock_epoch: 0,
+                    rt_anchor_beats: 0.0,
+                    rt_anchor_samples: 0,
+                    synced_loop_region: (false, 0.0, 16.0),
                     beats_per_second,
                     beats_per_bar: 4.0,
                     loop_enabled: false,
                     loop_start_beats: 0.0,
                     loop_end_beats: 16.0,
                     content_end_beats: 0.0,
-                    active_seq_notes: HashSet::new(),
+                    synced_notes: HashMap::new(),
+                    note_scratch: Vec::new(),
                     synced_instruments: HashMap::new(),
                     synced_channels: HashMap::new(),
                     synced_master_gain_db: None,
@@ -1558,15 +1721,21 @@ impl AudioEngine {
             Err(error) => Self {
                 playing: false,
                 current_beats: 0.0,
-                previous_beats: 0.0,
                 playback_anchor_beats: 0.0,
+                clock_anchor_beats: 0.0,
+                anchor_samples: 0,
+                clock_epoch: 0,
+                rt_anchor_beats: 0.0,
+                rt_anchor_samples: 0,
+                synced_loop_region: (false, 0.0, 16.0),
                 beats_per_second,
                 beats_per_bar: 4.0,
                 loop_enabled: false,
                 loop_start_beats: 0.0,
                 loop_end_beats: 16.0,
                 content_end_beats: 0.0,
-                active_seq_notes: HashSet::new(),
+                synced_notes: HashMap::new(),
+                note_scratch: Vec::new(),
                 synced_instruments: HashMap::new(),
                 synced_channels: HashMap::new(),
                 synced_master_gain_db: None,
@@ -1642,8 +1811,8 @@ impl AudioEngine {
             return;
         }
         // Transport updates every UI frame while playing — keep only the latest.
-        if let AudioCommand::SetTransport { transport } = command {
-            self.pending_transport = Some(transport);
+        if let AudioCommand::SetTransport { transport, clock } = command {
+            self.pending_transport = Some((transport, clock));
             self.flush_pending_cmds();
             return;
         }
@@ -1702,11 +1871,11 @@ impl AudioEngine {
                 }
             }
         }
-        if let Some(transport) = self.pending_transport.take() {
-            match tx.try_send(AudioCommand::SetTransport { transport }) {
+        if let Some((transport, clock)) = self.pending_transport.take() {
+            match tx.try_send(AudioCommand::SetTransport { transport, clock }) {
                 Ok(()) => {}
-                Err(TrySendError::Full(AudioCommand::SetTransport { transport })) => {
-                    self.pending_transport = Some(transport);
+                Err(TrySendError::Full(AudioCommand::SetTransport { transport, clock })) => {
+                    self.pending_transport = Some((transport, clock));
                 }
                 Err(TrySendError::Full(_)) => {}
                 Err(TrySendError::Disconnected(_)) => {
@@ -1746,9 +1915,52 @@ impl AudioEngine {
     }
 
     fn silence_sequencer(&mut self) {
-        self.active_seq_notes.clear();
         self.send(AudioCommand::AllNotesOff);
         self.flush_pending_cmds();
+    }
+
+    /// Frames rendered by the audio callback since stream start.
+    fn audio_samples(&self) -> u64 {
+        self.perf.samples_played.load(Ordering::Relaxed)
+    }
+
+    /// Re-base the frames -> beats mapping on the current playhead. Required
+    /// wherever that mapping stops being linear: transport start/stop/seek,
+    /// tempo change, loop-region edit.
+    ///
+    /// Bumping `clock_epoch` here is what tells the audio-thread sequencer to
+    /// re-seed. Loop wrap must NOT come through here: it keeps the same linear
+    /// mapping (see `advance`) and the sequencer wraps itself per sample.
+    fn reanchor(&mut self) {
+        self.clock_anchor_beats = self.current_beats as f64;
+        self.anchor_samples = self.audio_samples();
+        self.rt_anchor_beats = self.clock_anchor_beats;
+        self.rt_anchor_samples = self.anchor_samples;
+        self.clock_epoch = self.clock_epoch.wrapping_add(1);
+    }
+
+    /// The frames -> beats mapping the audio thread sequences against.
+    ///
+    /// Note the absence of the `buffer_frames` term `advance` applies: the
+    /// callback renders audio that is heard one buffer later, so the sequencer
+    /// leading the ruler by exactly one buffer is what makes a note sound at
+    /// the instant the ruler reaches it.
+    fn rt_clock(&self) -> RtClock {
+        let (loop_start_beats, loop_end_beats) =
+            if self.loop_enabled && self.loop_end_beats > self.loop_start_beats {
+                (self.loop_start_beats, self.loop_end_beats)
+            } else {
+                (0.0, 0.0)
+            };
+        RtClock {
+            epoch: self.clock_epoch,
+            anchor_beats: self.rt_anchor_beats,
+            anchor_samples: self.rt_anchor_samples,
+            beats_per_second: self.beats_per_second.max(0.0001) as f64,
+            playing: self.playing,
+            loop_start_beats,
+            loop_end_beats,
+        }
     }
 
     fn push_transport(&mut self) {
@@ -1770,7 +1982,8 @@ impl AudioEngine {
             recording: false,
             loop_active: self.loop_enabled && self.loop_end_beats > self.loop_start_beats,
         };
-        self.send(AudioCommand::SetTransport { transport });
+        let clock = self.rt_clock();
+        self.send(AudioCommand::SetTransport { transport, clock });
         self.push_metronome_config();
     }
 
@@ -2322,6 +2535,7 @@ impl AudioEngine {
         self.synced_modulators.clear();
         self.synced_macros.clear();
         self.synced_samples.clear();
+        self.synced_notes.clear();
         self.flush_pending_cmds();
     }
 }
@@ -2329,7 +2543,7 @@ impl AudioEngine {
 impl DawEngine for AudioEngine {
     fn play(&mut self) {
         self.playback_anchor_beats = self.current_beats;
-        self.previous_beats = self.current_beats;
+        self.reanchor();
         self.playing = true;
         self.push_transport();
     }
@@ -2337,9 +2551,9 @@ impl DawEngine for AudioEngine {
     fn pause(&mut self) {
         if self.playing {
             self.current_beats = self.playback_anchor_beats;
-            self.previous_beats = self.current_beats;
         }
         self.playing = false;
+        self.reanchor();
         self.silence_sequencer();
         self.push_transport();
     }
@@ -2349,14 +2563,15 @@ impl DawEngine for AudioEngine {
             return;
         }
         self.playback_anchor_beats = self.current_beats;
-        self.previous_beats = self.current_beats;
         self.playing = false;
+        self.reanchor();
         self.silence_sequencer();
         self.push_transport();
     }
 
     fn stop(&mut self) {
         self.playing = false;
+        self.reanchor();
         self.silence_sequencer();
         self.push_transport();
     }
@@ -2375,8 +2590,8 @@ impl DawEngine for AudioEngine {
 
     fn seek_beats(&mut self, beats: f32) {
         self.current_beats = beats.max(0.0);
-        self.previous_beats = self.current_beats;
         self.playback_anchor_beats = self.current_beats;
+        self.reanchor();
         self.silence_sequencer();
         self.push_transport();
     }
@@ -2390,6 +2605,10 @@ impl DawEngine for AudioEngine {
     }
 
     fn set_beats_per_second(&mut self, beats_per_second: f32) {
+        // The new tempo only scales frames elapsed from here on; re-anchoring
+        // first keeps the playhead where it is instead of rescaling the whole
+        // span since the last anchor.
+        self.reanchor();
         self.beats_per_second = beats_per_second;
         self.push_transport();
     }
@@ -2401,22 +2620,63 @@ impl DawEngine for AudioEngine {
         self.content_end_beats = playback.content_end_beats;
         self.flush_pending_cmds();
         if !self.playing {
+            self.synced_loop_region = (playback.enabled, playback.start_beats, playback.end_beats);
             return;
         }
 
-        self.previous_beats = self.current_beats;
-        self.current_beats += delta_seconds * self.beats_per_second;
+        // Editing the loop region mid-playback is the one case where the UI's
+        // incremental wrap and the sequencer's `rem_euclid` genuinely disagree:
+        // the UI has already subtracted spans of the old length. Re-anchor so
+        // both restart from the same point. It is a mouse gesture, so paying a
+        // frame of imprecision here costs nothing.
+        let region = (playback.enabled, playback.start_beats, playback.end_beats);
+        if region != self.synced_loop_region {
+            self.synced_loop_region = region;
+            self.reanchor();
+        }
+
+        if self.audio_available {
+            // Audio clock: the playhead is a function of the frames the callback
+            // has actually rendered, so a slow or stalled paint rate can no
+            // longer slow playback. The output buffer is subtracted so the
+            // playhead shows what is being HEARD, not what has been queued.
+            let latency_frames = self.perf.buffer_frames.load(Ordering::Relaxed) as u64;
+            let elapsed_frames = self
+                .audio_samples()
+                .saturating_sub(self.anchor_samples)
+                .saturating_sub(latency_frames);
+            // f64 throughout: the loop wrap slides `clock_anchor_beats` down
+            // one span at a time, so over a long session the anchor and the
+            // elapsed term are two large numbers whose small difference is the
+            // playhead. In f32 that cancellation would show up as ruler jitter
+            // against the (f64) sequencer.
+            let elapsed_seconds = elapsed_frames as f64 / self.sample_rate.max(1.0) as f64;
+            let beats = self.clock_anchor_beats + elapsed_seconds * self.beats_per_second as f64;
+            self.current_beats = beats.max(self.clock_anchor_beats) as f32;
+        } else {
+            // Silent-degraded fallback (no audio thread): wall clock is all
+            // there is, so the UI keeps running on frame deltas.
+            self.current_beats += delta_seconds * self.beats_per_second;
+        }
 
         let loop_active = playback.enabled && playback.end_beats > playback.start_beats;
         if loop_active {
             if self.current_beats >= playback.end_beats {
                 let span = playback.end_beats - playback.start_beats;
                 let overshoot = (self.current_beats - playback.end_beats).rem_euclid(span);
-                self.current_beats = playback.start_beats + overshoot;
-                self.active_seq_notes.clear();
-                self.send(AudioCommand::AllNotesOff);
-                // Re-trigger notes sitting on the loop start next schedule pass.
-                self.previous_beats = playback.start_beats - 0.0001;
+                let wrapped = playback.start_beats + overshoot;
+                // Slide the SAME line down by exactly one span and leave
+                // `anchor_samples` alone. Moving both terms double-counts (the
+                // result is only right when the anchor already sat on the wrap
+                // point), and a fresh `reanchor` would re-apply the output
+                // latency and stall the playhead a buffer period per wrap.
+                // Subtracting the span is what `rem_euclid` does, so this stays
+                // exactly in step with the audio-thread sequencer's own wrap.
+                self.clock_anchor_beats -= span as f64;
+                self.current_beats = wrapped;
+                // No `AllNotesOff` and no re-anchor: the sequencer already
+                // wrapped at its own sample, one buffer before the ruler got
+                // here, and re-seeding it now would undo that.
             }
         } else if playback.content_end_beats > 0.0
             && self.current_beats >= playback.content_end_beats
@@ -2424,7 +2684,7 @@ impl DawEngine for AudioEngine {
             // Not looping: play through, then stop at the end of the arrangement.
             self.current_beats = playback.content_end_beats;
             self.playing = false;
-            self.active_seq_notes.clear();
+            self.reanchor();
             self.send(AudioCommand::AllNotesOff);
         }
         self.push_transport();
@@ -2718,6 +2978,7 @@ impl DawEngine for AudioEngine {
         self.synced_modulators.clear();
         self.synced_macros.clear();
         self.synced_samples.clear();
+        self.synced_notes.clear();
         self.send(AudioCommand::ResetAll);
         self.flush_pending_cmds();
     }
@@ -2797,73 +3058,81 @@ impl DawEngine for AudioEngine {
         AudioEngine::set_plugin_param_normalized(self, track_id, device_id, param_id, normalized)
     }
 
+    /// Keep the audio thread's note lists in sync with the project.
+    ///
+    /// This no longer emits `NoteOn`/`NoteOff`: sequencing runs in the audio
+    /// callback so note timing is sample-accurate and survives a paint stall.
+    /// All the UI does is push the notes, change-gated the same way
+    /// `sync_samples` gates clip payloads, and let the callback place the edges.
     fn schedule_project(&mut self, project: &Project) {
         self.flush_pending_cmds();
-        if !self.playing {
-            return;
+
+        let live_ids: HashSet<u64> = project.tracks.iter().map(|track| track.id).collect();
+        let stale: Vec<u64> = self
+            .synced_notes
+            .keys()
+            .copied()
+            .filter(|track_id| !live_ids.contains(track_id))
+            .collect();
+        for track_id in stale {
+            self.synced_notes.remove(&track_id);
+            self.send(AudioCommand::ClearTrackNotes { track_id });
         }
 
-        let prev = self.previous_beats;
-        let curr = self.current_beats;
-        let mut should_be_active: HashSet<u64> = HashSet::new();
-
+        let mut notes = std::mem::take(&mut self.note_scratch);
         for track in &project.tracks {
-            if !project.track_audible(track) {
-                continue;
-            }
-            for clip in &track.clips {
-                let Some(clip) = clip.as_midi() else {
-                    continue;
-                };
-                let clip_start = clip.start_beats;
-                let clip_end = clip.end_beats();
-
-                for note in &clip.notes {
-                    let abs_start = clip_start + note.start_beats;
-                    let abs_end = (clip_start + note.end_beats()).min(clip_end);
-                    if abs_end <= abs_start {
+            notes.clear();
+            // A muted track keeps its notes in the project but must not sound,
+            // so it syncs as empty; unmuting re-sends them and the sequencer
+            // re-seeds mid-note.
+            if project.track_audible(track) {
+                for clip in &track.clips {
+                    let Some(clip) = clip.as_midi() else {
                         continue;
-                    }
-
-                    let active_now = curr >= abs_start && curr < abs_end;
-                    if active_now {
-                        should_be_active.insert(note.id);
-                    }
-
-                    let crossed_start = prev < abs_start && curr >= abs_start && curr < abs_end;
-                    let was_active = self.active_seq_notes.contains(&note.id);
-
-                    if crossed_start || (active_now && !was_active) {
-                        self.send(AudioCommand::NoteOn {
-                            track_id: track.id,
+                    };
+                    let clip_end = clip.end_beats();
+                    for note in &clip.notes {
+                        let start_beats = clip.start_beats + note.start_beats;
+                        let end_beats = (clip.start_beats + note.end_beats()).min(clip_end);
+                        if end_beats <= start_beats {
+                            continue;
+                        }
+                        notes.push(RtNote {
+                            start_beats,
+                            end_beats,
                             pitch: note.pitch,
                             velocity: note.velocity,
                         });
                     }
                 }
+                // The sequencer binary-searches this on seek and walks it with
+                // a cursor per block, both of which assume start order.
+                notes.sort_unstable_by(|a, b| a.start_beats.total_cmp(&b.start_beats));
             }
-        }
 
-        let ended: Vec<u64> = self
-            .active_seq_notes
-            .difference(&should_be_active)
-            .copied()
-            .collect();
-
-        for note_id in ended {
-            let Some((track_id, pitch, _)) = find_note(project, note_id) else {
+            let changed = self
+                .synced_notes
+                .get(&track.id)
+                .map(|previous| previous.as_slice() != notes.as_slice())
+                .unwrap_or(!notes.is_empty());
+            if !changed {
                 continue;
-            };
-            let pitch_still_held = should_be_active.iter().any(|id| {
-                find_note(project, *id).is_some_and(|(tid, p, _)| tid == track_id && p == pitch)
-            });
-            if !pitch_still_held {
-                self.send(AudioCommand::NoteOff { track_id, pitch });
+            }
+
+            if notes.is_empty() {
+                self.synced_notes.remove(&track.id);
+                self.send(AudioCommand::ClearTrackNotes { track_id: track.id });
+            } else {
+                self.synced_notes.insert(track.id, notes.clone());
+                self.send(AudioCommand::SetTrackNotes {
+                    track_id: track.id,
+                    notes: notes.clone(),
+                });
             }
         }
-
-        self.active_seq_notes = should_be_active;
-        self.previous_beats = curr;
+        notes.clear();
+        self.note_scratch = notes;
+        self.flush_pending_cmds();
     }
 
     fn set_metronome_enabled(&mut self, enabled: bool) {
@@ -3022,20 +3291,6 @@ impl DawEngine for AudioEngine {
     }
 }
 
-fn find_note(project: &Project, note_id: u64) -> Option<(u64, u8, u8)> {
-    for track in &project.tracks {
-        for clip in &track.clips {
-            let Some(clip) = clip.as_midi() else {
-                continue;
-            };
-            if let Some(note) = clip.note(note_id) {
-                return Some((track.id, note.pitch, note.velocity));
-            }
-        }
-    }
-    None
-}
-
 fn start_stream(
     track_meters: Arc<Mutex<Vec<(u64, f32, f32)>>>,
     master_meter: Arc<Mutex<(f32, f32)>>,
@@ -3095,6 +3350,9 @@ fn start_stream(
             channels,
             sample_rate,
             transport: TransportInfo::default(),
+            sequencer: RtSequencer::new(sample_rate),
+            seq_events: Vec::new(),
+            clock_epoch: 0,
             metronome: MetronomeRunner::new(sample_rate),
             mix_l: vec![0.0; 4096],
             mix_r: vec![0.0; 4096],

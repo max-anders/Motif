@@ -280,11 +280,14 @@ impl HostedPlugin {
         buf_r[..n].copy_from_slice(&self.out_r[..n]);
     }
 
-    pub fn push_note_on(&mut self, pitch: u8, velocity: u8) {
+    /// `sample_offset` places the note inside the block the next `process_*`
+    /// call renders. The sequencer uses it for sample-accurate timing; live
+    /// audition from the UI has no sub-block reference and passes 0.
+    pub fn push_note_on(&mut self, pitch: u8, velocity: u8, sample_offset: u32) {
         let note = pitch.min(127);
         self.held_notes.insert(note);
         self.events.push(Event {
-            sample_offset: 0,
+            sample_offset,
             body: EventBody::Midi(MidiData::NoteOn {
                 channel: 0,
                 note,
@@ -293,11 +296,11 @@ impl HostedPlugin {
         });
     }
 
-    pub fn push_note_off(&mut self, pitch: u8) {
+    pub fn push_note_off(&mut self, pitch: u8, sample_offset: u32) {
         let note = pitch.min(127);
         self.held_notes.remove(&note);
         self.events.push(Event {
-            sample_offset: 0,
+            sample_offset,
             body: EventBody::Midi(MidiData::NoteOff {
                 channel: 0,
                 note,
