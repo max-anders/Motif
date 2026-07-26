@@ -256,11 +256,13 @@ impl PlaylistUi {
         history: &mut EditHistory,
         selected_track: &mut Option<u64>,
         decoded_audio: &HashMap<PathBuf, Arc<DecodedAudio>>,
+        settings: &mut crate::ui::app_settings::AppSettings,
         theme: &ThemeColors,
-    ) {
+    ) -> bool {
         // CentralPanel uses Frame::NONE; paint the full panel so nothing shows through.
         ui.painter().rect_filled(ui.max_rect(), 0.0, theme.panel_bg);
         self.hovered_track_header = None;
+        let mut settings_dirty = false;
 
         ui.horizontal(|ui| {
             egui::menu::menu_button(ui, "Add track", |ui| {
@@ -602,6 +604,8 @@ impl PlaylistUi {
                                 &track_snapshot,
                                 engine,
                                 history,
+                                settings,
+                                &mut settings_dirty,
                                 theme,
                             );
                             self.automation.show_lane_timeline(
@@ -692,6 +696,7 @@ impl PlaylistUi {
         if self.active_drag.is_none() {
             self.drag_moved = false;
         }
+        settings_dirty
     }
 }
 

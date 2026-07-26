@@ -4,6 +4,9 @@ use crate::engine::{DawEngine, PluginParamInfo};
 use crate::model::{
     AutomationLane, AutomationPoint, AutomationTarget, CurveKind, EditHistory, Project, Track,
 };
+use crate::ui::app_settings::AppSettings;
+use crate::ui::favorites_panel::unique_id_for_target;
+use crate::ui::modulator::INSTRUMENT_MOD_TARGET_KEY;
 use crate::ui::theme::ThemeColors;
 use crate::ui::timeline::{
     draw_timeline_grid_lines, timeline_x, x_to_beat, TimelineMetrics, TIMELINE_GUTTER_WIDTH,
@@ -47,6 +50,8 @@ impl AutomationUi {
         track: &Track,
         engine: &dyn DawEngine,
         history: &mut EditHistory,
+        settings: &mut AppSettings,
+        settings_dirty: &mut bool,
         theme: &ThemeColors,
     ) {
         let Some(lane) = project.automation_lane(track_id, lane_id).cloned() else {
@@ -120,22 +125,62 @@ impl AutomationUi {
                                     .small(),
                             );
                         } else {
+                            let plugin_uid = unique_id_for_target(
+                                track,
+                                match &lane.target {
+                                    AutomationTarget::Instrument { .. } => {
+                                        INSTRUMENT_MOD_TARGET_KEY
+                                    }
+                                    AutomationTarget::Device { device_id, .. } => *device_id,
+                                },
+                            )
+                            .map(str::to_string);
                             for param in params {
                                 if !param.automatable {
                                     continue;
                                 }
-                                let label = truncate_label(&param.name, 32);
-                                if ui.button(label).clicked() {
-                                    apply_param_selection(
-                                        project,
-                                        track_id,
-                                        lane_id,
-                                        &lane.target,
-                                        &param,
-                                        history,
-                                    );
-                                    ui.close_menu();
-                                }
+                                ui.horizontal(|ui| {
+                                    let label = truncate_label(&param.name, 28);
+                                    if ui.button(label).clicked() {
+                                        apply_param_selection(
+                                            project,
+                                            track_id,
+                                            lane_id,
+                                            &lane.target,
+                                            &param,
+                                            history,
+                                        );
+                                        ui.close_menu();
+                                    }
+                                    if let Some(uid) = &plugin_uid {
+                                        let starred = settings.has_favorite(uid, param.id);
+                                        if ui
+                                            .add_enabled(
+                                                !starred,
+                                                egui::Button::new(if starred {
+                                                    "fav"
+                                                } else {
+                                                    "+fav"
+                                                })
+                                                .small(),
+                                            )
+                                            .on_hover_text(if starred {
+                                                "Already a favorite"
+                                            } else {
+                                                "Add to favorites"
+                                            })
+                                            .clicked()
+                                        {
+                                            if settings.add_favorite(
+                                                uid,
+                                                param.id,
+                                                param.name.clone(),
+                                            ) {
+                                                *settings_dirty = true;
+                                            }
+                                        }
+                                    }
+                                });
                             }
                         }
                     })

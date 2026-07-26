@@ -5,8 +5,11 @@ use egui::{Color32, Pos2, RichText, Sense, Stroke, Ui, Vec2};
 use crate::engine::DawEngine;
 use crate::model::{
     AutomationPoint, AutomationTarget, CurveKind, EditHistory, LfoModulator, LfoRate, LfoShape,
-    Project, Track,
+    MacroMapping, MacroTarget, Project, Track,
 };
+use crate::ui::app_settings::AppSettings;
+use crate::ui::favorites_panel::unique_id_for_target;
+use crate::ui::macro_panel::show_map_to_macro_menu;
 use crate::ui::theme::ThemeColors;
 
 pub const CHIP_WIDTH: f32 = 146.0;
@@ -104,6 +107,8 @@ pub fn show_modulator_panel(
     fixed_content_width: Option<f32>,
     engine: &dyn DawEngine,
     history: &mut EditHistory,
+    settings: &mut AppSettings,
+    settings_dirty: &mut bool,
     theme: &ThemeColors,
 ) {
     ui.label(
@@ -119,32 +124,21 @@ pub fn show_modulator_panel(
     let content_width = fixed_content_width.unwrap_or_else(|| ui.available_width());
     if layout == ModulatorLayout::Compact {
         ui.set_max_width(content_width);
-        show_modulators_for_target(
-            ui,
-            project,
-            track,
-            track_id,
-            target_filter,
-            layout,
-            content_width,
-            engine,
-            history,
-            theme,
-        );
-    } else {
-        show_modulators_for_target(
-            ui,
-            project,
-            track,
-            track_id,
-            target_filter,
-            layout,
-            content_width,
-            engine,
-            history,
-            theme,
-        );
     }
+    show_modulators_for_target(
+        ui,
+        project,
+        track,
+        track_id,
+        target_filter,
+        layout,
+        content_width,
+        engine,
+        history,
+        settings,
+        settings_dirty,
+        theme,
+    );
 }
 
 /// All modulators for one target (horizontal row or vertical stack).
@@ -159,6 +153,8 @@ pub fn show_modulators_for_target(
     content_width: f32,
     engine: &dyn DawEngine,
     history: &mut EditHistory,
+    settings: &mut AppSettings,
+    settings_dirty: &mut bool,
     theme: &ThemeColors,
 ) {
     let modulator_entries: Vec<(usize, u64)> = track
@@ -215,6 +211,8 @@ pub fn show_modulators_for_target(
                                 MODULATOR_CHIP_INNER_WIDTH,
                                 engine,
                                 history,
+                                settings,
+                                settings_dirty,
                                 theme,
                             );
                         }
@@ -252,6 +250,8 @@ pub fn show_modulators_for_target(
                             column_width,
                             engine,
                             history,
+                            settings,
+                            settings_dirty,
                             theme,
                         );
                     }
@@ -330,6 +330,8 @@ fn show_modulator_chip(
     content_width: f32,
     engine: &dyn DawEngine,
     history: &mut EditHistory,
+    settings: &mut AppSettings,
+    settings_dirty: &mut bool,
     theme: &ThemeColors,
 ) {
     let Some(snapshot) = project.modulator(track_id, modulator_id).cloned() else {
@@ -441,6 +443,8 @@ fn show_modulator_chip(
                                 &snapshot,
                                 engine,
                                 history,
+                                settings,
+                                settings_dirty,
                                 theme,
                             );
                         });
@@ -479,6 +483,8 @@ fn show_modulator_chip(
                         &snapshot,
                         engine,
                         history,
+                        settings,
+                        settings_dirty,
                         theme,
                     );
                 }
@@ -549,6 +555,8 @@ fn paint_modulator_controls(
     snapshot: &LfoModulator,
     engine: &dyn DawEngine,
     history: &mut EditHistory,
+    settings: &mut AppSettings,
+    settings_dirty: &mut bool,
     theme: &ThemeColors,
 ) {
     ui.spacing_mut().item_spacing.y = MOD_INNER_GAP;
@@ -590,29 +598,125 @@ fn paint_modulator_controls(
                                     .color(theme.text_muted),
                             );
                         } else {
+                            let plugin_uid = unique_id_for_target(
+                                track,
+                                match &snapshot.target {
+                                    AutomationTarget::Instrument { .. } => {
+                                        INSTRUMENT_MOD_TARGET_KEY
+                                    }
+                                    AutomationTarget::Device { device_id, .. } => *device_id,
+                                },
+                            )
+                            .map(str::to_string);
                             for param in params {
                                 if !param.automatable {
                                     continue;
                                 }
-                                if ui.button(truncate_label(&param.name, 28)).clicked() {
-                                    history.push_before(project.clone());
-                                    if let Some(modulator) =
-                                        project.modulator_mut(track_id, modulator_id)
-                                    {
-                                        modulator.param_name = param.name.clone();
-                                        modulator.target = match &modulator.target {
-                                            AutomationTarget::Instrument { .. } => {
-                                                AutomationTarget::Instrument {
-                                                    param_id: param.id,
+                                ui.horizontal(|ui| {
+                                    if ui.button(truncate_label(&param.name, 24)).clicked() {
+                                        history.push_before(project.clone());
+                                        if let Some(modulator) =
+                                            project.modulator_mut(track_id, modulator_id)
+                                        {
+                                            modulator.param_name = param.name.clone();
+                                            modulator.target = match &modulator.target {
+                                                AutomationTarget::Instrument { .. } => {
+                                                    AutomationTarget::Instrument {
+                                                        param_id: param.id,
+                                                    }
                                                 }
-                                            }
-                                            AutomationTarget::Device { device_id, .. } => {
-                                                AutomationTarget::Device {
-                                                    device_id: *device_id,
-                                                    param_id: param.id,
+                                                AutomationTarget::Device { device_id, .. } => {
+                                                    AutomationTarget::Device {
+                                                        device_id: *device_id,
+                                                        param_id: param.id,
+                                                    }
                                                 }
+                                            };
+                                        }
+                                        ui.close_menu();
+                                    }
+                                    if let Some(uid) = &plugin_uid {
+                                        let starred = settings.has_favorite(uid, param.id);
+                                        if ui
+                                            .add_enabled(
+                                                !starred,
+                                                egui::Button::new(if starred {
+                                                    "fav"
+                                                } else {
+                                                    "+fav"
+                                                })
+                                                .small(),
+                                            )
+                                            .on_hover_text(if starred {
+                                                "Already a favorite"
+                                            } else {
+                                                "Add to favorites"
+                                            })
+                                            .clicked()
+                                        {
+                                            if settings.add_favorite(
+                                                uid,
+                                                param.id,
+                                                param.name.clone(),
+                                            ) {
+                                                *settings_dirty = true;
                                             }
-                                        };
+                                        }
+                                    }
+                                });
+                            }
+                        }
+                        if param_assigned {
+                            ui.separator();
+                            let mapping = match &snapshot.target {
+                                AutomationTarget::Instrument { param_id } => MacroMapping {
+                                    target: MacroTarget::Instrument {
+                                        param_id: *param_id,
+                                    },
+                                    param_name: snapshot.param_name.clone(),
+                                    min: 0.0,
+                                    max: 1.0,
+                                },
+                                AutomationTarget::Device {
+                                    device_id,
+                                    param_id,
+                                } => MacroMapping {
+                                    target: MacroTarget::Device {
+                                        device_id: *device_id,
+                                        param_id: *param_id,
+                                    },
+                                    param_name: snapshot.param_name.clone(),
+                                    min: 0.0,
+                                    max: 1.0,
+                                },
+                            };
+                            ui.menu_button("Map to macro", |ui| {
+                                show_map_to_macro_menu(
+                                    ui, project, history, track_id, mapping, theme,
+                                );
+                            });
+                            if let Some(uid) = unique_id_for_target(
+                                track,
+                                match &snapshot.target {
+                                    AutomationTarget::Instrument { .. } => {
+                                        INSTRUMENT_MOD_TARGET_KEY
+                                    }
+                                    AutomationTarget::Device { device_id, .. } => *device_id,
+                                },
+                            ) {
+                                let param_id = match &snapshot.target {
+                                    AutomationTarget::Instrument { param_id }
+                                    | AutomationTarget::Device { param_id, .. } => *param_id,
+                                };
+                                if !settings.has_favorite(uid, param_id)
+                                    && ui.button("Add to favorites").clicked()
+                                {
+                                    if settings.add_favorite(
+                                        uid,
+                                        param_id,
+                                        snapshot.param_name.clone(),
+                                    ) {
+                                        *settings_dirty = true;
                                     }
                                     ui.close_menu();
                                 }
@@ -716,6 +820,17 @@ fn paint_modulator_controls(
             modulator.depth = depth;
         }
     }
+
+    ui.horizontal(|ui| {
+        ui.menu_button(RichText::new("Map rate").small(), |ui| {
+            let mapping = MacroMapping::new(MacroTarget::ModulatorRate { modulator_id });
+            show_map_to_macro_menu(ui, project, history, track_id, mapping, theme);
+        });
+        ui.menu_button(RichText::new("Map depth").small(), |ui| {
+            let mapping = MacroMapping::new(MacroTarget::ModulatorDepth { modulator_id });
+            show_map_to_macro_menu(ui, project, history, track_id, mapping, theme);
+        });
+    });
 
     ui.add_space(MOD_SECTION_GAP);
     ui.horizontal(|ui| {

@@ -2,8 +2,10 @@ mod add_browser;
 mod app_settings;
 mod automation;
 mod devices;
+mod favorites_panel;
 mod inspector;
 mod instrument_menu;
+mod macro_panel;
 mod mixer;
 mod modulator;
 mod performance;
@@ -20,8 +22,8 @@ pub use add_browser::{AddBrowserAction, AddBrowserUi, BrowserTab};
 pub use app_settings::AppSettings;
 pub use instrument_menu::{choice_to_instrument, track_name_for_choice};
 pub use devices::{
-    sync_devices_dock_panel_width, DevicesUi, DEVICES_DOCK_MAX_WIDTH, DEVICES_DOCK_MIN_WIDTH,
-    DEVICES_DOCK_WIDTH, DEVICES_DOCK_WIDTH_DEVICES,
+    devices_dock_min_width, devices_dock_width, sync_devices_dock_panel_width, DevicesUi,
+    DEVICES_DOCK_MAX_WIDTH, DEVICES_DOCK_WIDTH_DEVICES,
 };
 pub use inspector::show_inspector;
 pub use mixer::MixerUi;

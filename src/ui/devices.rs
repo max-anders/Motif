@@ -12,6 +12,11 @@ use crate::ui::instrument_menu::{
     choice_to_instrument, show_effect_picker, show_instrument_picker, InstrumentChoice,
     MENU_LIST_MAX_HEIGHT,
 };
+use crate::ui::app_settings::AppSettings;
+use crate::ui::favorites_panel::{
+    favorites_column_visible, show_favorites_panel, FAVORITES_COLUMN_WIDTH,
+};
+use crate::ui::macro_panel::{show_macro_panel, MACRO_COLUMN_WIDTH};
 use crate::ui::modulator::{
     mod_dock_content_width, modulator_count_for_target, normalize_modulator_target_key,
     show_modulator_panel, target_filter_from_device_key, ModulatorLayout, TargetFilter,
@@ -42,41 +47,72 @@ const STRIP_PADDING: f32 = 8.0;
 const TILE_TO_MODULATOR_GAP: f32 = 8.0;
 const DEVICE_COLUMN_WIDTH: f32 = TILE_WIDTH + STRIP_PADDING * 2.0;
 const MOD_COLUMN_MIN_WIDTH: f32 = 280.0;
-/// Devices-only dock width (no modulator column).
-pub const DEVICES_DOCK_WIDTH_DEVICES: f32 = DEVICE_COLUMN_WIDTH + STRIP_PADDING;
-/// Default width when the modulator column is open.
-pub const DEVICES_DOCK_WIDTH: f32 = DEVICE_COLUMN_WIDTH + MOD_COLUMN_MIN_WIDTH + 12.0;
-/// Minimum dock width with modulators visible.
-pub const DEVICES_DOCK_MIN_WIDTH: f32 = DEVICE_COLUMN_WIDTH + 200.0 + 16.0;
-/// Minimum dock width when only device tiles are shown.
+const FAVORITES_COLUMN_GAP: f32 = 8.0;
+/// Macros + Devices only (no favorites, no mods).
+pub const DEVICES_DOCK_WIDTH_DEVICES: f32 =
+    DEVICE_COLUMN_WIDTH + MACRO_COLUMN_WIDTH + STRIP_PADDING + 8.0;
+/// Default width with favorites + mods open (Macros | Devices | Favorites | Mods).
+pub const DEVICES_DOCK_WIDTH: f32 =
+    DEVICE_COLUMN_WIDTH
+        + MACRO_COLUMN_WIDTH
+        + FAVORITES_COLUMN_WIDTH
+        + MOD_COLUMN_MIN_WIDTH
+        + 28.0;
+/// Minimum dock width with favorites + mods visible.
+pub const DEVICES_DOCK_MIN_WIDTH: f32 =
+    DEVICE_COLUMN_WIDTH + MACRO_COLUMN_WIDTH + FAVORITES_COLUMN_WIDTH + 200.0 + 28.0;
+/// Minimum dock width when only macros + devices are shown.
 pub const DEVICES_DOCK_MIN_WIDTH_DEVICES: f32 = DEVICES_DOCK_WIDTH_DEVICES;
-/// Maximum dock width (~25% wider than default).
+/// Maximum dock width (~25% wider than full default).
 pub const DEVICES_DOCK_MAX_WIDTH: f32 = DEVICES_DOCK_WIDTH * 1.25;
 
 const DEVICES_DOCK_PANEL_ID: &str = "devices_dock";
 
-/// Snap the right devices dock to devices-only or expanded width before `SidePanel::show`.
+/// Target dock width for the current favorites/mods visibility.
+pub fn devices_dock_width(favorites_open: bool, mods_open: bool) -> f32 {
+    let mut width = DEVICES_DOCK_WIDTH_DEVICES;
+    if favorites_open {
+        width += FAVORITES_COLUMN_WIDTH + FAVORITES_COLUMN_GAP;
+    }
+    if mods_open {
+        width += MOD_COLUMN_MIN_WIDTH + 12.0;
+    }
+    width
+}
+
+pub fn devices_dock_min_width(favorites_open: bool, mods_open: bool) -> f32 {
+    let mut width = DEVICES_DOCK_WIDTH_DEVICES;
+    if favorites_open {
+        width += FAVORITES_COLUMN_WIDTH + FAVORITES_COLUMN_GAP;
+    }
+    if mods_open {
+        width += 200.0 + 12.0;
+    }
+    width
+}
+
+/// Snap the right devices dock width before `SidePanel::show`.
 pub fn sync_devices_dock_panel_width(
     ctx: &egui::Context,
-    track_id: Option<u64>,
+    track: Option<&Track>,
     devices: &DevicesUi,
+    settings: &AppSettings,
 ) {
     let panel_id = egui::Id::new(DEVICES_DOCK_PANEL_ID);
-    let mods_open = track_id.is_some_and(|id| devices.dock_shows_mod_column(id));
-
-    if mods_open {
-        if let Some(mut state) = PanelState::load(ctx, panel_id) {
-            if state.rect.width() + 0.5 < DEVICES_DOCK_MIN_WIDTH {
-                set_right_panel_width(&mut state, DEVICES_DOCK_WIDTH);
-                store_panel_state(ctx, panel_id, state);
-            }
-        }
-        return;
-    }
+    let favorites_open =
+        track.is_some_and(|t| devices.dock_shows_favorites_column(t, settings));
+    let mods_open = track.is_some_and(|t| devices.dock_shows_mod_column(t.id));
+    let target = devices_dock_width(favorites_open, mods_open);
+    let expandable = favorites_open || mods_open;
 
     if let Some(mut state) = PanelState::load(ctx, panel_id) {
-        let target = DEVICES_DOCK_WIDTH_DEVICES;
-        if (state.rect.width() - target).abs() > 0.5 {
+        if expandable {
+            let min_w = devices_dock_min_width(favorites_open, mods_open);
+            if state.rect.width() + 0.5 < min_w {
+                set_right_panel_width(&mut state, target);
+                store_panel_state(ctx, panel_id, state);
+            }
+        } else if (state.rect.width() - target).abs() > 0.5 {
             set_right_panel_width(&mut state, target);
             store_panel_state(ctx, panel_id, state);
         }
@@ -102,6 +138,8 @@ enum ChainLayout {
 pub struct DevicesStripOutput {
     pub expand: bool,
     pub hide: bool,
+    /// Favorites (or other settings) changed; app should persist `settings.json`.
+    pub settings_dirty: bool,
 }
 // Ruler + one lane + the horizontal scrollbar strip; no vertical scroll, no gap.
 const MINI_PLAYLIST_HEIGHT: f32 = RULER_HEIGHT + LANE_HEIGHT + MINI_SCROLLBAR_WIDTH;
@@ -109,6 +147,7 @@ const MINI_PLAYLIST_HEIGHT: f32 = RULER_HEIGHT + LANE_HEIGHT + MINI_SCROLLBAR_WI
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DeviceTileAction {
     None,
+    Select,
     ToggleMods,
     ToggleBypass,
     Remove,
@@ -185,6 +224,18 @@ impl DevicesUi {
         self.show_mod_panel.get(&track_id).copied().unwrap_or(false)
     }
 
+    pub fn selected_target_key(&self, track_id: u64) -> u64 {
+        self.selected_modulator_target
+            .get(&track_id)
+            .copied()
+            .unwrap_or(INSTRUMENT_MOD_TARGET_KEY)
+    }
+
+    pub fn dock_shows_favorites_column(&self, track: &Track, settings: &AppSettings) -> bool {
+        let key = normalize_modulator_target_key(track, self.selected_target_key(track.id));
+        favorites_column_visible(track, key, settings)
+    }
+
     fn toggle_mod_panel_for_target(
         &mut self,
         track_id: u64,
@@ -214,9 +265,11 @@ impl DevicesUi {
         device_errors: &HashMap<(u64, u64), String>,
         selected_track: &mut Option<u64>,
         decoded_audio: &HashMap<PathBuf, Arc<DecodedAudio>>,
+        settings: &mut AppSettings,
         theme: &ThemeColors,
-    ) {
+    ) -> bool {
         ui.painter().rect_filled(ui.max_rect(), 0.0, theme.panel_bg);
+        let mut settings_dirty = false;
         self.hovered_track_header = None;
         if selected_track.and_then(|id| project.track(id)).is_none() {
             *selected_track = project.tracks.first().map(|track| track.id);
@@ -313,13 +366,14 @@ impl DevicesUi {
                             theme,
                         );
                         ui.add_space(8.0);
-                        self.show_device_chain(
+                        settings_dirty |= self.show_device_chain(
                             ui,
                             project,
                             engine,
                             catalog,
                             history,
                             device_errors,
+                            settings,
                             &track_snapshot,
                             theme,
                             ChainLayout::Page,
@@ -332,6 +386,7 @@ impl DevicesUi {
                 }
             });
         });
+        settings_dirty
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -344,6 +399,7 @@ impl DevicesUi {
         history: &mut EditHistory,
         device_errors: &HashMap<(u64, u64), String>,
         selected_track: &mut Option<u64>,
+        settings: &mut AppSettings,
         theme: &ThemeColors,
     ) -> DevicesStripOutput {
         ui.painter().rect_filled(ui.max_rect(), 0.0, theme.panel_bg);
@@ -381,13 +437,14 @@ impl DevicesUi {
         });
         ui.add_space(4.0);
 
-        self.show_device_chain(
+        output.settings_dirty = self.show_device_chain(
             ui,
             project,
             engine,
             catalog,
             history,
             device_errors,
+            settings,
             &track_snapshot,
             theme,
             ChainLayout::Dock,
@@ -601,10 +658,12 @@ impl DevicesUi {
         catalog: &PluginCatalog,
         history: &mut EditHistory,
         device_errors: &HashMap<(u64, u64), String>,
+        settings: &mut AppSettings,
         track: &Track,
         theme: &ThemeColors,
         layout: ChainLayout,
-    ) {
+    ) -> bool {
+        let mut settings_dirty = false;
         if layout == ChainLayout::Page {
             ui.label(
                 RichText::new(format!("Track devices: {}", track.name))
@@ -614,6 +673,11 @@ impl DevicesUi {
             ui.add_space(4.0);
         }
 
+        let selected_key =
+            normalize_modulator_target_key(track, self.selected_target_key(track.id));
+        let show_favorites = favorites_column_visible(track, selected_key, settings);
+        let target_filter = target_filter_from_device_key(selected_key);
+
         match layout {
             ChainLayout::Page => {
                 ui.add_space(STRIP_PADDING);
@@ -621,6 +685,30 @@ impl DevicesUi {
                     .id_salt(("devices_fx_grid", track.id))
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
+                        show_macro_panel(
+                            ui,
+                            project,
+                            engine,
+                            history,
+                            track,
+                            theme,
+                            MACRO_COLUMN_WIDTH,
+                        );
+                        if show_favorites {
+                            ui.add_space(TILE_TO_MODULATOR_GAP);
+                            settings_dirty |= show_favorites_panel(
+                                ui,
+                                project,
+                                engine,
+                                history,
+                                settings,
+                                track,
+                                target_filter,
+                                theme,
+                                FAVORITES_COLUMN_WIDTH,
+                            );
+                        }
+                        ui.add_space(TILE_TO_MODULATOR_GAP);
                         ui.spacing_mut().item_spacing = Vec2::new(TILE_GAP, TILE_GAP);
                         ui.horizontal_wrapped(|ui| {
                             ui.add_space(STRIP_PADDING);
@@ -638,22 +726,62 @@ impl DevicesUi {
                             );
                         });
                         ui.add_space(TILE_TO_MODULATOR_GAP);
+                        let mut mod_settings_dirty = false;
                         self.show_modulator_panel_for_track(
                             ui,
                             project,
                             engine,
                             history,
+                            settings,
                             track,
                             theme,
                             ModulatorLayout::Wide,
                             None,
+                            &mut mod_settings_dirty,
                         );
+                        settings_dirty |= mod_settings_dirty;
                     });
             }
             ChainLayout::Dock => {
                 let show_mods = self.show_mod_panel.get(&track.id).copied().unwrap_or(false);
                 let body_height = ui.available_height();
                 ui.horizontal_top(|ui| {
+                    ui.allocate_ui_with_layout(
+                        Vec2::new(MACRO_COLUMN_WIDTH, body_height),
+                        Layout::top_down(Align::Min),
+                        |ui| {
+                            show_macro_panel(
+                                ui,
+                                project,
+                                engine,
+                                history,
+                                track,
+                                theme,
+                                MACRO_COLUMN_WIDTH - 4.0,
+                            );
+                        },
+                    );
+                    if show_favorites {
+                        ui.separator();
+                        ui.allocate_ui_with_layout(
+                            Vec2::new(FAVORITES_COLUMN_WIDTH, body_height),
+                            Layout::top_down(Align::Min),
+                            |ui| {
+                                settings_dirty |= show_favorites_panel(
+                                    ui,
+                                    project,
+                                    engine,
+                                    history,
+                                    settings,
+                                    track,
+                                    target_filter,
+                                    theme,
+                                    FAVORITES_COLUMN_WIDTH - 4.0,
+                                );
+                            },
+                        );
+                    }
+                    ui.separator();
                     ui.allocate_ui_with_layout(
                         Vec2::new(DEVICE_COLUMN_WIDTH, body_height),
                         Layout::top_down(Align::Min),
@@ -680,7 +808,7 @@ impl DevicesUi {
                                         device_errors,
                                         track,
                                         theme,
-                                        show_mods,
+                                        true,
                                         true,
                                     );
                                 });
@@ -702,16 +830,20 @@ impl DevicesUi {
                                     ))
                                     .show(ui, |ui| {
                                         ui.set_max_width(mod_content_width);
+                                        let mut mod_settings_dirty = false;
                                         self.show_modulator_panel_for_track(
                                             ui,
                                             project,
                                             engine,
                                             history,
+                                            settings,
                                             track,
                                             theme,
                                             ModulatorLayout::Compact,
                                             Some(mod_content_width),
+                                            &mut mod_settings_dirty,
                                         );
+                                        settings_dirty |= mod_settings_dirty;
                                     });
                             },
                         );
@@ -720,18 +852,22 @@ impl DevicesUi {
                 });
             }
         }
+        settings_dirty
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn show_modulator_panel_for_track(
         &mut self,
         ui: &mut Ui,
         project: &mut Project,
         engine: &mut dyn DawEngine,
         history: &mut EditHistory,
+        settings: &mut AppSettings,
         track: &Track,
         theme: &ThemeColors,
         mod_layout: ModulatorLayout,
         fixed_content_width: Option<f32>,
+        settings_dirty: &mut bool,
     ) {
         let selected_key = self
             .selected_modulator_target
@@ -749,6 +885,8 @@ impl DevicesUi {
             fixed_content_width,
             engine,
             history,
+            settings,
+            settings_dirty,
             theme,
         );
     }
@@ -798,13 +936,20 @@ impl DevicesUi {
             instrument_selected,
             instrument_mod_count,
         );
-        if instrument_action == DeviceTileAction::ToggleMods {
-            if mod_button_toggles_panel {
-                self.toggle_mod_panel_for_target(track.id, INSTRUMENT_MOD_TARGET_KEY);
-            } else {
+        match instrument_action {
+            DeviceTileAction::Select => {
                 self.selected_modulator_target
                     .insert(track.id, INSTRUMENT_MOD_TARGET_KEY);
             }
+            DeviceTileAction::ToggleMods => {
+                if mod_button_toggles_panel {
+                    self.toggle_mod_panel_for_target(track.id, INSTRUMENT_MOD_TARGET_KEY);
+                } else {
+                    self.selected_modulator_target
+                        .insert(track.id, INSTRUMENT_MOD_TARGET_KEY);
+                }
+            }
+            _ => {}
         }
 
         let mut drag_from: Option<usize> = None;
@@ -868,16 +1013,18 @@ impl DevicesUi {
                 }
             }
 
-            if action == DeviceTileAction::ToggleMods {
-                if mod_button_toggles_panel {
-                    self.toggle_mod_panel_for_target(track.id, device_id);
-                } else {
+            match action {
+                DeviceTileAction::None => {}
+                DeviceTileAction::Select => {
                     self.selected_modulator_target.insert(track.id, device_id);
                 }
-            }
-
-            match action {
-                DeviceTileAction::None | DeviceTileAction::ToggleMods => {}
+                DeviceTileAction::ToggleMods => {
+                    if mod_button_toggles_panel {
+                        self.toggle_mod_panel_for_target(track.id, device_id);
+                    } else {
+                        self.selected_modulator_target.insert(track.id, device_id);
+                    }
+                }
                 DeviceTileAction::ToggleBypass => {
                     history.push_before(project.clone());
                     project.set_device_bypass(track.id, device_id, !device_bypassed);
@@ -1104,6 +1251,9 @@ fn instrument_tile(
             ui.close_menu();
         }
     });
+    if action == DeviceTileAction::None && response.clicked() {
+        action = DeviceTileAction::Select;
+    }
     (response, action)
 }
 
@@ -1119,7 +1269,7 @@ fn device_tile_shell(
     let stroke_color = if selected { theme.accent } else { stroke };
     let stroke_width = if selected { 2.0_f32 } else { 1.0_f32 };
     let (rect, response) =
-        ui.allocate_exact_size(Vec2::new(TILE_WIDTH, TILE_HEIGHT), Sense::hover());
+        ui.allocate_exact_size(Vec2::new(TILE_WIDTH, TILE_HEIGHT), Sense::click());
     ui.painter().rect_filled(rect, TILE_ROUNDING, fill);
     ui.painter().rect_stroke(
         rect,
@@ -1270,6 +1420,9 @@ fn device_tile_contents(
             }
         });
     });
+    if action == DeviceTileAction::None && tile_response.clicked() {
+        action = DeviceTileAction::Select;
+    }
     (tile_response, action)
 }
 

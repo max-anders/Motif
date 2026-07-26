@@ -27,6 +27,9 @@ struct SettingsFile {
     undo_limit: usize,
     #[serde(default)]
     plugin_keys: PluginKeySettings,
+    /// Per-plugin starred parameters, keyed by plugin `unique_id`.
+    #[serde(default)]
+    plugin_favorites: HashMap<String, Vec<PluginFavoriteParam>>,
     #[serde(default = "default_autosave_enabled")]
     autosave_enabled: bool,
     #[serde(default = "default_autosave_interval")]
@@ -107,6 +110,14 @@ impl PluginKeySettings {
     }
 }
 
+/// One starred plugin parameter (display cache + stable param id).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginFavoriteParam {
+    pub param_id: u32,
+    #[serde(default)]
+    pub name: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct AppSettings {
     pub shortcuts: ShortcutRegistry,
@@ -114,6 +125,8 @@ pub struct AppSettings {
     pub plugin_extra_paths: Vec<PathBuf>,
     pub undo_limit: usize,
     pub plugin_keys: PluginKeySettings,
+    /// Per-plugin starred parameters, keyed by plugin `unique_id`.
+    pub plugin_favorites: HashMap<String, Vec<PluginFavoriteParam>>,
     pub autosave_enabled: bool,
     pub autosave_interval_secs: u32,
     pub metronome_enabled: bool,
@@ -132,6 +145,7 @@ impl Default for AppSettings {
             plugin_extra_paths: Vec::new(),
             undo_limit: DEFAULT_UNDO_LIMIT,
             plugin_keys: PluginKeySettings::default(),
+            plugin_favorites: HashMap::new(),
             autosave_enabled: true,
             autosave_interval_secs: DEFAULT_AUTOSAVE_INTERVAL_SECS,
             metronome_enabled: true,
@@ -176,12 +190,61 @@ impl AppSettings {
             plugin_extra_paths: file.plugin_extra_paths,
             undo_limit: clamp_undo_limit(file.undo_limit),
             plugin_keys: file.plugin_keys,
+            plugin_favorites: file.plugin_favorites,
             autosave_enabled: file.autosave_enabled,
             autosave_interval_secs: file.autosave_interval_secs.max(30),
             metronome_enabled: file.metronome_enabled,
             recent_projects: file.recent_projects,
             recent_samples: file.recent_samples,
         })
+    }
+
+    /// Favorites list for a plugin identity (empty when none).
+    pub fn favorites_for(&self, unique_id: &str) -> &[PluginFavoriteParam] {
+        self.plugin_favorites
+            .get(unique_id)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    /// Add a favorite for `unique_id` (no-op if already present). Returns true if changed.
+    pub fn add_favorite(&mut self, unique_id: &str, param_id: u32, name: impl Into<String>) -> bool {
+        if unique_id.is_empty() {
+            return false;
+        }
+        let list = self
+            .plugin_favorites
+            .entry(unique_id.to_string())
+            .or_default();
+        if list.iter().any(|fav| fav.param_id == param_id) {
+            return false;
+        }
+        list.push(PluginFavoriteParam {
+            param_id,
+            name: name.into(),
+        });
+        true
+    }
+
+    /// Remove a favorite. Returns true if something was removed.
+    pub fn remove_favorite(&mut self, unique_id: &str, param_id: u32) -> bool {
+        let Some(list) = self.plugin_favorites.get_mut(unique_id) else {
+            return false;
+        };
+        let before = list.len();
+        list.retain(|fav| fav.param_id != param_id);
+        let changed = list.len() != before;
+        if list.is_empty() {
+            self.plugin_favorites.remove(unique_id);
+        }
+        changed
+    }
+
+    /// True when `param_id` is already starred for this plugin.
+    pub fn has_favorite(&self, unique_id: &str, param_id: u32) -> bool {
+        self.plugin_favorites
+            .get(unique_id)
+            .is_some_and(|list| list.iter().any(|fav| fav.param_id == param_id))
     }
 
     pub fn save_to_path(&self, path: &Path) -> Result<(), String> {
@@ -193,6 +256,7 @@ impl AppSettings {
             plugin_extra_paths: self.plugin_extra_paths.clone(),
             undo_limit: clamp_undo_limit(self.undo_limit),
             plugin_keys: self.plugin_keys.clone(),
+            plugin_favorites: self.plugin_favorites.clone(),
             autosave_enabled: self.autosave_enabled,
             autosave_interval_secs: self.autosave_interval_secs.max(30),
             metronome_enabled: self.metronome_enabled,
@@ -201,5 +265,48 @@ impl AppSettings {
         };
         let json = serde_json::to_string_pretty(&file).map_err(|error| error.to_string())?;
         fs::write(path, json).map_err(|error| error.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plugin_favorites_add_dedupe_remove() {
+        let mut settings = AppSettings::default();
+        assert!(settings.add_favorite("com.example.filter", 3, "Cutoff"));
+        assert!(!settings.add_favorite("com.example.filter", 3, "Cutoff"));
+        assert_eq!(settings.favorites_for("com.example.filter").len(), 1);
+        assert!(settings.has_favorite("com.example.filter", 3));
+        assert!(settings.remove_favorite("com.example.filter", 3));
+        assert!(settings.favorites_for("com.example.filter").is_empty());
+    }
+
+    #[test]
+    fn plugin_favorites_round_trip_json() {
+        let mut settings = AppSettings::default();
+        settings.add_favorite("uid.a", 1, "Res");
+        let json = {
+            let (active_theme, themes) = settings.themes.stored();
+            let file = SettingsFile {
+                bindings: Vec::new(),
+                active_theme,
+                themes,
+                plugin_extra_paths: Vec::new(),
+                undo_limit: settings.undo_limit,
+                plugin_keys: settings.plugin_keys.clone(),
+                plugin_favorites: settings.plugin_favorites.clone(),
+                autosave_enabled: true,
+                autosave_interval_secs: 60,
+                metronome_enabled: true,
+                recent_projects: Vec::new(),
+                recent_samples: Vec::new(),
+            };
+            serde_json::to_string(&file).unwrap()
+        };
+        let loaded = AppSettings::from_json(&json).unwrap();
+        assert_eq!(loaded.favorites_for("uid.a")[0].param_id, 1);
+        assert_eq!(loaded.favorites_for("uid.a")[0].name, "Res");
     }
 }

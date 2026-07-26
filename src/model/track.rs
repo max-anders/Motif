@@ -31,7 +31,7 @@ pub struct Track {
     /// instrument voice and before gain/pan. Vec order is the chain order.
     #[serde(default)]
     pub devices: Vec<Device>,
-    /// Macro knobs (serialized; modulation not wired yet).
+    /// Host macro knobs that drive plugin params and/or modulator controls.
     #[serde(default)]
     pub macros: Vec<Macro>,
     /// Beat/value automation curves for instrument or insert-FX parameters.

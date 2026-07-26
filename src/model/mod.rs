@@ -28,7 +28,8 @@ pub use history::{
 pub use instrument::{PluginFormat, TrackInstrument};
 #[allow(unused_imports)] // public mixer surface for UI / engine / tests
 pub use mixer::{
-    db_to_linear, pan_gains, Device, Macro, Send, MAX_GAIN_DB, MIN_GAIN_DB,
+    db_to_linear, pan_gains, Device, Macro, MacroMapping, MacroTarget, Send, MAX_GAIN_DB,
+    MIN_GAIN_DB,
 };
 #[allow(unused_imports)] // public modulator surface for UI / engine / tests
 pub use modulator::{LfoModulator, LfoRate, LfoShape};

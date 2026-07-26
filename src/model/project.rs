@@ -5,8 +5,8 @@ use super::automation::{AutomationLane, AutomationTarget};
 use super::clip::{Clip, MidiClip};
 use super::clipboard::{ClipboardClip, ClipboardNote};
 use super::instrument::{PluginFormat, TrackInstrument};
-use super::mixer::Device;
-use super::modulator::LfoModulator;
+use super::mixer::{Device, Macro, MacroMapping, MacroTarget};
+use super::modulator::{LfoModulator, LfoRate};
 use super::track::{migrate_notes_to_clip, Track};
 use super::Note;
 
@@ -53,6 +53,9 @@ pub struct Project {
     /// Missing on projects saved before modulators; starts at 1.
     #[serde(default = "default_next_modulator_id")]
     next_modulator_id: u64,
+    /// Missing on projects saved before macro ids; starts at 1.
+    #[serde(default = "default_next_macro_id")]
+    next_macro_id: u64,
 }
 
 fn default_next_device_id() -> u64 {
@@ -64,6 +67,10 @@ fn default_next_automation_lane_id() -> u64 {
 }
 
 fn default_next_modulator_id() -> u64 {
+    1
+}
+
+fn default_next_macro_id() -> u64 {
     1
 }
 
@@ -93,6 +100,7 @@ impl Default for Project {
             next_device_id: 1,
             next_automation_lane_id: 1,
             next_modulator_id: 1,
+            next_macro_id: 1,
         };
         let track_id = project.add_track("Track 1", TrackInstrument::BuiltInPiano);
         project.add_clip_to_track(track_id, 0.0, 4.0);
@@ -553,6 +561,134 @@ impl Project {
             .modulators
             .iter_mut()
             .find(|modulator| modulator.id == modulator_id)
+    }
+
+    pub fn next_macro_id(&self) -> u64 {
+        self.next_macro_id
+    }
+
+    pub fn bump_macro_id(&mut self) {
+        self.next_macro_id += 1;
+    }
+
+    /// Append a host macro knob to a track. Returns the new macro id.
+    pub fn add_macro(&mut self, track_id: u64, name: impl Into<String>) -> Option<u64> {
+        let id = self.next_macro_id();
+        self.bump_macro_id();
+        let macro_knob = Macro::new(id, name);
+        self.track_mut(track_id)?.macros.push(macro_knob);
+        Some(id)
+    }
+
+    /// Remove a macro from a track. Returns `false` if the track or macro id
+    /// is unknown (project unchanged).
+    pub fn remove_macro(&mut self, track_id: u64, macro_id: u64) -> bool {
+        let Some(track) = self.track_mut(track_id) else {
+            return false;
+        };
+        let before = track.macros.len();
+        track.macros.retain(|m| m.id != macro_id);
+        track.macros.len() != before
+    }
+
+    pub fn macro_knob(&self, track_id: u64, macro_id: u64) -> Option<&Macro> {
+        self.track(track_id)?
+            .macros
+            .iter()
+            .find(|m| m.id == macro_id)
+    }
+
+    pub fn macro_knob_mut(&mut self, track_id: u64, macro_id: u64) -> Option<&mut Macro> {
+        self.track_mut(track_id)?
+            .macros
+            .iter_mut()
+            .find(|m| m.id == macro_id)
+    }
+
+    /// Append a mapping to a macro. Returns `false` if the track/macro is unknown.
+    pub fn add_macro_mapping(
+        &mut self,
+        track_id: u64,
+        macro_id: u64,
+        mapping: MacroMapping,
+    ) -> bool {
+        let Some(macro_knob) = self.macro_knob_mut(track_id, macro_id) else {
+            return false;
+        };
+        // Avoid duplicate destinations on the same macro.
+        if macro_knob
+            .mappings
+            .iter()
+            .any(|existing| existing.target == mapping.target)
+        {
+            return true;
+        }
+        macro_knob.mappings.push(mapping);
+        true
+    }
+
+    /// Assign stable ids to legacy macros (id == 0) and advance `next_macro_id`.
+    pub fn ensure_macro_ids(&mut self) {
+        let mut next = self.next_macro_id.max(1);
+        for track in &mut self.tracks {
+            for macro_knob in &mut track.macros {
+                if macro_knob.id == 0 {
+                    macro_knob.id = next;
+                    next += 1;
+                } else if macro_knob.id >= next {
+                    next = macro_knob.id + 1;
+                }
+            }
+        }
+        self.next_macro_id = next;
+    }
+
+    /// Apply host-control mappings (modulator rate/depth) for every macro on a track.
+    pub fn apply_macro_host_destinations(&mut self, track_id: u64) {
+        let Some(track) = self.track(track_id) else {
+            return;
+        };
+        let updates: Vec<(u64, MacroTarget, f32)> = track
+            .macros
+            .iter()
+            .flat_map(|macro_knob| {
+                macro_knob.mappings.iter().filter_map(|mapping| {
+                    match mapping.target {
+                        MacroTarget::ModulatorRate { .. }
+                        | MacroTarget::ModulatorDepth { .. } => Some((
+                            macro_knob.id,
+                            mapping.target.clone(),
+                            mapping.mapped_value(macro_knob.value),
+                        )),
+                        _ => None,
+                    }
+                })
+            })
+            .collect();
+
+        for (_macro_id, target, value) in updates {
+            match target {
+                MacroTarget::ModulatorRate { modulator_id } => {
+                    if let Some(modulator) = self.modulator_mut(track_id, modulator_id) {
+                        modulator.rate = match modulator.rate {
+                            LfoRate::SyncBeats { .. } => LfoRate::SyncBeats {
+                                beats: (0.0625 + (16.0 - 0.0625) * value.clamp(0.0, 1.0))
+                                    .clamp(0.0625, 16.0),
+                            },
+                            LfoRate::Hz { .. } => LfoRate::Hz {
+                                hz: (0.01 + (30.0 - 0.01) * value.clamp(0.0, 1.0)).clamp(0.01, 30.0),
+                            },
+                        };
+                    }
+                }
+                MacroTarget::ModulatorDepth { modulator_id } => {
+                    if let Some(modulator) = self.modulator_mut(track_id, modulator_id) {
+                        modulator.depth = value.clamp(0.0, 1.0);
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 
     /// Append a plugin effect to a track's insert chain. Returns the new device id.
@@ -1207,7 +1343,8 @@ impl Project {
         if let Ok(mut envelope_json) = serde_json::from_str::<serde_json::Value>(json) {
             if let Some(project_json) = envelope_json.get_mut("project") {
                 Self::migrate_clip_kinds(project_json);
-                if let Ok(project) = serde_json::from_value::<Self>(project_json.clone()) {
+                if let Ok(mut project) = serde_json::from_value::<Self>(project_json.clone()) {
+                    project.ensure_macro_ids();
                     return Ok(project);
                 }
             }
@@ -1216,7 +1353,8 @@ impl Project {
         // Bare Project (pre-envelope project.json / early saves).
         if let Ok(mut project_json) = serde_json::from_str::<serde_json::Value>(json) {
             Self::migrate_clip_kinds(&mut project_json);
-            if let Ok(project) = serde_json::from_value::<Self>(project_json) {
+            if let Ok(mut project) = serde_json::from_value::<Self>(project_json) {
+                project.ensure_macro_ids();
                 return Ok(project);
             }
         }
@@ -1255,6 +1393,7 @@ impl Project {
             next_device_id: 1,
             next_automation_lane_id: 1,
             next_modulator_id: 1,
+            next_macro_id: 1,
         })
     }
 }
@@ -1738,8 +1877,10 @@ mod tests {
                 "Placeholder",
             ));
             track.macros.push(crate::model::Macro {
+                id: 0,
                 name: String::from("A"),
                 value: 0.25,
+                mappings: Vec::new(),
             });
         }
         let json = serde_json::to_string(&crate::model::persistence::ProjectEnvelope::new(
@@ -1753,6 +1894,60 @@ mod tests {
         assert_eq!(loaded.tracks[0].sends.len(), 1);
         assert_eq!(loaded.tracks[0].devices[0].name, "Placeholder");
         assert_eq!(loaded.tracks[0].macros[0].value, 0.25);
+        assert_ne!(loaded.tracks[0].macros[0].id, 0);
+        assert_eq!(loaded.next_macro_id(), 2);
+    }
+
+    #[test]
+    fn macro_with_mappings_round_trips() {
+        let mut project = Project::default();
+        let track_id = project.tracks[0].id;
+        let macro_id = project.add_macro(track_id, "Cut").expect("macro");
+        let mod_id = project
+            .add_modulator(
+                track_id,
+                AutomationTarget::Instrument { param_id: 3 },
+                "Cutoff",
+            )
+            .expect("modulator");
+        assert!(project.add_macro_mapping(
+            track_id,
+            macro_id,
+            MacroMapping {
+                target: MacroTarget::Instrument { param_id: 3 },
+                param_name: String::from("Cutoff"),
+                min: 0.0,
+                max: 1.0,
+            },
+        ));
+        assert!(project.add_macro_mapping(
+            track_id,
+            macro_id,
+            MacroMapping::new(MacroTarget::ModulatorRate {
+                modulator_id: mod_id
+            }),
+        ));
+
+        let json = serde_json::to_string(&crate::model::persistence::ProjectEnvelope::new(
+            project.clone(),
+        ))
+        .unwrap();
+        let loaded = Project::from_json(&json).unwrap();
+        let m = &loaded.tracks[0].macros[0];
+        assert_eq!(m.id, macro_id);
+        assert_eq!(m.name, "Cut");
+        assert_eq!(m.mappings.len(), 2);
+        assert_eq!(
+            m.mappings[0].target,
+            MacroTarget::Instrument { param_id: 3 }
+        );
+        assert_eq!(
+            m.mappings[1].target,
+            MacroTarget::ModulatorRate {
+                modulator_id: mod_id
+            }
+        );
+        assert_eq!(loaded.next_macro_id(), macro_id + 1);
     }
 
     #[test]

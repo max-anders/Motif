@@ -1,8 +1,8 @@
-//! Per-track mixer facets: gain/pan math plus scaffolding for sends/devices/macros.
+//! Per-track mixer facets: gain/pan math plus sends/devices/macros.
 //!
-//! Sends, devices, and macros are serialized project data today but not yet processed
-//! by the audio engine. Devices and Performance views bind to live engine /
-//! track data; Routing remains future scaffolding on these same fields.
+//! Sends are serialized project data today but not yet processed by the audio
+//! engine. Devices and macros bind to live engine / track data; Routing remains
+//! future scaffolding on these same fields.
 
 use serde::{Deserialize, Serialize};
 
@@ -81,20 +81,86 @@ impl Device {
     }
 }
 
-/// Named macro knob (0..1); modulation not wired yet.
+/// Where a macro knob writes its scaled value.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum MacroTarget {
+    Instrument { param_id: u32 },
+    Device { device_id: u64, param_id: u32 },
+    ModulatorRate { modulator_id: u64 },
+    ModulatorDepth { modulator_id: u64 },
+}
+
+fn default_mapping_min() -> f32 {
+    0.0
+}
+
+fn default_mapping_max() -> f32 {
+    1.0
+}
+
+/// One destination of a macro, with a normalized output range.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MacroMapping {
+    pub target: MacroTarget,
+    /// Cached for display when the plugin is not loaded.
+    #[serde(default)]
+    pub param_name: String,
+    #[serde(default = "default_mapping_min")]
+    pub min: f32,
+    #[serde(default = "default_mapping_max")]
+    pub max: f32,
+}
+
+impl MacroMapping {
+    pub fn new(target: MacroTarget) -> Self {
+        Self {
+            target,
+            param_name: String::new(),
+            min: default_mapping_min(),
+            max: default_mapping_max(),
+        }
+    }
+
+    /// Destination value for a macro knob in 0..1.
+    pub fn mapped_value(&self, macro_value: f32) -> f32 {
+        let t = macro_value.clamp(0.0, 1.0);
+        self.min + (self.max - self.min) * t
+    }
+}
+
+/// Named host macro knob (0..1) with zero or more destinations.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Macro {
+    /// Stable id. Missing on legacy saves; assigned on load via [`Project::ensure_macro_ids`].
+    #[serde(default)]
+    pub id: u64,
     pub name: String,
     /// Normalized 0..1.
     #[serde(default)]
     pub value: f32,
+    #[serde(default)]
+    pub mappings: Vec<MacroMapping>,
 }
 
 impl Default for Macro {
     fn default() -> Self {
         Self {
+            id: 0,
             name: String::from("Macro"),
             value: 0.0,
+            mappings: Vec::new(),
+        }
+    }
+}
+
+impl Macro {
+    pub fn new(id: u64, name: impl Into<String>) -> Self {
+        Self {
+            id,
+            name: name.into(),
+            value: 0.0,
+            mappings: Vec::new(),
         }
     }
 }
@@ -149,5 +215,28 @@ mod tests {
         let (l, r) = pan_gains(1.0);
         assert!(l.abs() < 1e-5);
         assert!((r - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn macro_mapping_lerps_range() {
+        let mapping = MacroMapping {
+            target: MacroTarget::Instrument { param_id: 1 },
+            param_name: String::from("Cut"),
+            min: 0.25,
+            max: 0.75,
+        };
+        assert!((mapping.mapped_value(0.0) - 0.25).abs() < 1e-5);
+        assert!((mapping.mapped_value(1.0) - 0.75).abs() < 1e-5);
+        assert!((mapping.mapped_value(0.5) - 0.5).abs() < 1e-5);
+    }
+
+    #[test]
+    fn legacy_macro_json_loads_defaults() {
+        let json = r#"{"name":"A","value":0.25}"#;
+        let m: Macro = serde_json::from_str(json).unwrap();
+        assert_eq!(m.id, 0);
+        assert_eq!(m.name, "A");
+        assert_eq!(m.value, 0.25);
+        assert!(m.mappings.is_empty());
     }
 }

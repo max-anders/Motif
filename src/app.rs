@@ -20,7 +20,7 @@ use crate::ui::{
     AddBrowserUi, AppSettings, AudioImportRequest, BrowserTab, Chord, DevicesUi, MixerUi,
     PerformanceUi, PianoRollUi, PlaylistUi, PluginEditorRequest, PollFilter,
     ProjectBrowserAction, ProjectBrowserUi, SettingsAction, SettingsUi, TransportUi,
-    DEVICES_DOCK_MAX_WIDTH, DEVICES_DOCK_MIN_WIDTH, DEVICES_DOCK_WIDTH,
+    devices_dock_min_width, devices_dock_width, DEVICES_DOCK_MAX_WIDTH,
     DEVICES_DOCK_WIDTH_DEVICES, SETTINGS_FILE, sync_devices_dock_panel_width,
 };
 
@@ -883,6 +883,7 @@ impl DawApp {
         self.engine.sync_channels(&self.project);
         self.engine.sync_automation(&self.project);
         self.engine.sync_modulators(&self.project);
+        self.engine.sync_macros(&self.project);
     }
 
     fn undo_edit(&mut self) {
@@ -1626,6 +1627,7 @@ impl eframe::App for DawApp {
         self.engine.sync_channels(&self.project);
         self.engine.sync_automation(&self.project);
         self.engine.sync_modulators(&self.project);
+        self.engine.sync_macros(&self.project);
         self.engine.advance(delta_seconds, playback);
         self.engine.schedule_project(&self.project);
         let editor_poll = self.engine.poll_plugin_editors();
@@ -1786,14 +1788,28 @@ impl eframe::App for DawApp {
         }
 
         if self.devices_strip_visible() {
-            let dock_track = self.selected_track;
-            sync_devices_dock_panel_width(ctx, dock_track, &self.devices);
-            let mods_open = dock_track.is_some_and(|id| self.devices.dock_shows_mod_column(id));
+            let (favorites_open, mods_open, target_width, min_width) = {
+                let dock_track = self.selected_track.and_then(|id| self.project.track(id));
+                sync_devices_dock_panel_width(ctx, dock_track, &self.devices, &self.settings);
+                let favorites_open = dock_track.is_some_and(|track| {
+                    self.devices
+                        .dock_shows_favorites_column(track, &self.settings)
+                });
+                let mods_open = dock_track
+                    .is_some_and(|track| self.devices.dock_shows_mod_column(track.id));
+                (
+                    favorites_open,
+                    mods_open,
+                    devices_dock_width(favorites_open, mods_open),
+                    devices_dock_min_width(favorites_open, mods_open),
+                )
+            };
+            let expandable = favorites_open || mods_open;
             let panel = egui::SidePanel::right("devices_dock");
-            let panel = if mods_open {
+            let panel = if expandable {
                 panel
-                    .default_width(DEVICES_DOCK_WIDTH)
-                    .min_width(DEVICES_DOCK_MIN_WIDTH)
+                    .default_width(target_width)
+                    .min_width(min_width)
                     .max_width(DEVICES_DOCK_MAX_WIDTH)
                     .resizable(true)
             } else {
@@ -1813,6 +1829,7 @@ impl eframe::App for DawApp {
                             history,
                             device_errors,
                             selected_track,
+                            settings,
                             ..
                         } = self;
                         devices.show_strip(
@@ -1823,6 +1840,7 @@ impl eframe::App for DawApp {
                             history,
                             device_errors,
                             selected_track,
+                            settings,
                             &theme,
                         )
                     };
@@ -1831,6 +1849,9 @@ impl eframe::App for DawApp {
                     }
                     if strip_output.expand {
                         self.open_devices();
+                    }
+                    if strip_output.settings_dirty {
+                        self.save_settings();
                     }
                     if let Some(request) = self.devices.take_plugin_editor_request() {
                         self.handle_plugin_editor_request(ctx, frame, request);
@@ -1842,7 +1863,7 @@ impl eframe::App for DawApp {
             .frame(egui::Frame::NONE)
             .show(ctx, |ui| match self.center_view {
                 CenterView::Playlist => {
-                    let (open_clip, editor_request, delete_track, import_audio, hovered_header) = {
+                    let (open_clip, editor_request, delete_track, import_audio, hovered_header, settings_dirty) = {
                         let DawApp {
                             playlist,
                             project,
@@ -1854,7 +1875,8 @@ impl eframe::App for DawApp {
                             decoded_audio,
                             ..
                         } = self;
-                        playlist.show(
+                        let theme = settings.themes.colors().clone();
+                        let settings_dirty = playlist.show(
                             ui,
                             project,
                             engine,
@@ -1862,7 +1884,8 @@ impl eframe::App for DawApp {
                             history,
                             selected_track,
                             decoded_audio,
-                            settings.themes.colors(),
+                            settings,
+                            &theme,
                         );
                         (
                             playlist.take_open_clip_request(),
@@ -1870,8 +1893,12 @@ impl eframe::App for DawApp {
                             playlist.take_delete_track_request(),
                             playlist.take_audio_import_request(),
                             playlist.hovered_track_header(),
+                            settings_dirty,
                         )
                     };
+                    if settings_dirty {
+                        self.save_settings();
+                    }
                     if let Some(clip_id) = open_clip {
                         self.open_clip(clip_id);
                     }
@@ -1909,7 +1936,7 @@ impl eframe::App for DawApp {
                     );
                 }
                 CenterView::Devices => {
-                    let (editor_request, open_clip, delete_track, hovered_header) = {
+                    let (editor_request, open_clip, delete_track, hovered_header, settings_dirty) = {
                         let DawApp {
                             devices,
                             project,
@@ -1922,7 +1949,8 @@ impl eframe::App for DawApp {
                             decoded_audio,
                             ..
                         } = self;
-                        devices.show(
+                        let theme = settings.themes.colors().clone();
+                        let settings_dirty = devices.show(
                             ui,
                             project,
                             engine,
@@ -1931,15 +1959,20 @@ impl eframe::App for DawApp {
                             device_errors,
                             selected_track,
                             decoded_audio,
-                            settings.themes.colors(),
+                            settings,
+                            &theme,
                         );
                         (
                             devices.take_plugin_editor_request(),
                             devices.take_open_clip_request(),
                             devices.take_delete_track_request(),
                             devices.hovered_track_header(),
+                            settings_dirty,
                         )
                     };
+                    if settings_dirty {
+                        self.save_settings();
+                    }
                     if let Some(request) = editor_request {
                         self.handle_plugin_editor_request(ctx, frame, request);
                     }

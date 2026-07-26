@@ -3,6 +3,7 @@
 use egui::Ui;
 
 use crate::model::{EditHistory, Project, MAX_GAIN_DB, MIN_GAIN_DB};
+use crate::ui::macro_panel::macro_target_label;
 use crate::ui::theme::ThemeColors;
 
 /// Draw the inspector contents for `selected_track` into an already-opened side panel.
@@ -130,13 +131,28 @@ pub fn show_inspector(
     ui.label(egui::RichText::new("Macros").strong());
     if track.macros.is_empty() {
         ui.label(
-            egui::RichText::new("(none — modulation not wired yet)")
+            egui::RichText::new("(none)")
                 .color(theme.text_muted)
                 .italics(),
         );
     } else {
         for m in &track.macros {
-            ui.label(format!("{}: {:.2}", m.name, m.value));
+            ui.label(format!("#{} {}: {:.2}", m.id, m.name, m.value));
+            for mapping in &m.mappings {
+                let dest = if !mapping.param_name.is_empty() {
+                    mapping.param_name.clone()
+                } else {
+                    macro_target_label(&track, &mapping.target)
+                };
+                ui.label(
+                    egui::RichText::new(format!(
+                        "  -> {dest} [{:.2}..{:.2}]",
+                        mapping.min, mapping.max
+                    ))
+                    .small()
+                    .color(theme.text_muted),
+                );
+            }
         }
     }
 

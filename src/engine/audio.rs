@@ -20,8 +20,8 @@ use cpal::{SampleFormat, Stream, StreamConfig};
 use truce_rack::core::transport::TransportInfo;
 
 use crate::model::{
-    db_to_linear, AutomationPoint, AutomationTarget, CurveKind, LfoRate, LfoShape, PluginFormat,
-    Project, TrackInstrument,
+    db_to_linear, AutomationPoint, AutomationTarget, CurveKind, LfoRate, LfoShape, MacroTarget,
+    PluginFormat, Project, TrackInstrument,
 };
 
 use super::metronome::MetronomeRunner;
@@ -175,6 +175,17 @@ struct RtModulator {
     step_count: u32,
 }
 
+/// Resolved plugin-param base from a host macro (host destinations are applied in the model).
+#[derive(Debug, Clone, PartialEq)]
+struct RtMacroParam {
+    target: RtAutomationTarget,
+    /// Already lerped mapping min..max at the current macro value.
+    normalized: f64,
+    min: f64,
+    max: f64,
+    step_count: u32,
+}
+
 impl Default for ChannelParams {
     fn default() -> Self {
         // Equal-power center at unity.
@@ -229,6 +240,10 @@ enum AudioCommand {
         track_id: u64,
         modulators: Vec<RtModulator>,
     },
+    SetMacros {
+        track_id: u64,
+        macros: Vec<RtMacroParam>,
+    },
     SetTrackSamples {
         track_id: u64,
         clips: Vec<SamplePlayback>,
@@ -262,6 +277,8 @@ struct AudioCallbackState {
     automation: HashMap<u64, Vec<RtAutomationLane>>,
     /// Per-track LFO / MSEG modulators for plugin params.
     modulators: HashMap<u64, Vec<RtModulator>>,
+    /// Per-track macro-driven plugin param bases.
+    macros: HashMap<u64, Vec<RtMacroParam>>,
     /// Free-running Hz LFO phase (cycles 0..1) keyed by `(track_id, modulator_id)`.
     lfo_phases: HashMap<(u64, u64), f64>,
     master_gain: f32,
@@ -374,6 +391,7 @@ impl AudioCallbackState {
                     self.sample_clips.remove(&track_id);
                     self.automation.remove(&track_id);
                     self.modulators.remove(&track_id);
+                    self.macros.remove(&track_id);
                     self.lfo_phases.retain(|&(tid, _), _| tid != track_id);
                 }
                 Ok(AudioCommand::SetChannel {
@@ -402,6 +420,7 @@ impl AudioCallbackState {
                     }
                     self.automation.remove(&track_id);
                     self.modulators.remove(&track_id);
+                    self.macros.remove(&track_id);
                     self.lfo_phases.retain(|&(tid, _), _| tid != track_id);
                 }
                 Ok(AudioCommand::SetAutomation { track_id, lanes }) => {
@@ -424,6 +443,13 @@ impl AudioCallbackState {
                         self.lfo_phases
                             .retain(|&(tid, mid), _| tid != track_id || live_ids.contains(&mid));
                         self.modulators.insert(track_id, modulators);
+                    }
+                }
+                Ok(AudioCommand::SetMacros { track_id, macros }) => {
+                    if macros.is_empty() {
+                        self.macros.remove(&track_id);
+                    } else {
+                        self.macros.insert(track_id, macros);
                     }
                 }
                 Ok(AudioCommand::SetTrackSamples { track_id, clips }) => {
@@ -618,10 +644,12 @@ impl AudioCallbackState {
         track_id: u64,
         lanes: &[RtAutomationLane],
         modulators: &[RtModulator],
+        macros: &[RtMacroParam],
         lfo_phases: &HashMap<(u64, u64), f64>,
         beat: f32,
         apply_automation: bool,
         apply_modulation: bool,
+        apply_macros: bool,
         plugin: &mut HostedPlugin,
     ) {
         let mut param_ids: HashSet<u32> = HashSet::new();
@@ -635,6 +663,13 @@ impl AudioCallbackState {
         if apply_modulation {
             for modulator in modulators {
                 if let RtAutomationTarget::Instrument { param_id } = modulator.target {
+                    param_ids.insert(param_id);
+                }
+            }
+        }
+        if apply_macros {
+            for macro_param in macros {
+                if let RtAutomationTarget::Instrument { param_id } = macro_param.target {
                     param_ids.insert(param_id);
                 }
             }
@@ -656,6 +691,12 @@ impl AudioCallbackState {
                     )
                 })
                 .collect();
+            let macro_param = macros.iter().rev().find(|macro_param| {
+                matches!(
+                    macro_param.target,
+                    RtAutomationTarget::Instrument { param_id: id } if id == param_id
+                )
+            });
 
             let (mut normalized, min, max, step_count) = if apply_automation {
                 if let Some(lane) = lane {
@@ -663,6 +704,42 @@ impl AudioCallbackState {
                         continue;
                     };
                     (value, lane.min, lane.max, lane.step_count)
+                } else if apply_macros {
+                    if let Some(macro_param) = macro_param {
+                        (
+                            macro_param.normalized,
+                            macro_param.min,
+                            macro_param.max,
+                            macro_param.step_count,
+                        )
+                    } else if let Some(first) = mods.first() {
+                        (
+                            first.center as f64,
+                            first.min,
+                            first.max,
+                            first.step_count,
+                        )
+                    } else {
+                        continue;
+                    }
+                } else if let Some(first) = mods.first() {
+                    (
+                        first.center as f64,
+                        first.min,
+                        first.max,
+                        first.step_count,
+                    )
+                } else {
+                    continue;
+                }
+            } else if apply_macros {
+                if let Some(macro_param) = macro_param {
+                    (
+                        macro_param.normalized,
+                        macro_param.min,
+                        macro_param.max,
+                        macro_param.step_count,
+                    )
                 } else if let Some(first) = mods.first() {
                     (
                         first.center as f64,
@@ -704,11 +781,13 @@ impl AudioCallbackState {
         track_id: u64,
         lanes: &[RtAutomationLane],
         modulators: &[RtModulator],
+        macros: &[RtMacroParam],
         lfo_phases: &HashMap<(u64, u64), f64>,
         beat: f32,
         device_id: u64,
         apply_automation: bool,
         apply_modulation: bool,
+        apply_macros: bool,
         plugin: &mut HostedPlugin,
     ) {
         let mut param_ids: HashSet<u32> = HashSet::new();
@@ -738,6 +817,19 @@ impl AudioCallbackState {
                 }
             }
         }
+        if apply_macros {
+            for macro_param in macros {
+                if let RtAutomationTarget::Device {
+                    device_id: macro_device_id,
+                    param_id,
+                } = macro_param.target
+                {
+                    if macro_device_id == device_id {
+                        param_ids.insert(param_id);
+                    }
+                }
+            }
+        }
 
         for param_id in param_ids {
             let lane = lanes.iter().find(|lane| {
@@ -761,6 +853,15 @@ impl AudioCallbackState {
                     )
                 })
                 .collect();
+            let macro_param = macros.iter().rev().find(|macro_param| {
+                matches!(
+                    macro_param.target,
+                    RtAutomationTarget::Device {
+                        device_id: did,
+                        param_id: pid,
+                    } if did == device_id && pid == param_id
+                )
+            });
 
             let (mut normalized, min, max, step_count) = if apply_automation {
                 if let Some(lane) = lane {
@@ -768,6 +869,42 @@ impl AudioCallbackState {
                         continue;
                     };
                     (value, lane.min, lane.max, lane.step_count)
+                } else if apply_macros {
+                    if let Some(macro_param) = macro_param {
+                        (
+                            macro_param.normalized,
+                            macro_param.min,
+                            macro_param.max,
+                            macro_param.step_count,
+                        )
+                    } else if let Some(first) = mods.first() {
+                        (
+                            first.center as f64,
+                            first.min,
+                            first.max,
+                            first.step_count,
+                        )
+                    } else {
+                        continue;
+                    }
+                } else if let Some(first) = mods.first() {
+                    (
+                        first.center as f64,
+                        first.min,
+                        first.max,
+                        first.step_count,
+                    )
+                } else {
+                    continue;
+                }
+            } else if apply_macros {
+                if let Some(macro_param) = macro_param {
+                    (
+                        macro_param.normalized,
+                        macro_param.min,
+                        macro_param.max,
+                        macro_param.step_count,
+                    )
                 } else if let Some(first) = mods.first() {
                     (
                         first.center as f64,
@@ -852,6 +989,8 @@ impl AudioCallbackState {
                 .get(&track_id)
                 .cloned()
                 .unwrap_or_default();
+            let macros = self.macros.get(&track_id).cloned().unwrap_or_default();
+            let apply_macros = !macros.is_empty();
             if apply_modulation {
                 self.advance_lfo_phases(track_id, &modulators, frames);
             }
@@ -881,15 +1020,17 @@ impl AudioCallbackState {
                 Some(TrackVoice::Plugin(plugin)) => {
                     voice_kind = TrackVoiceKind::Plugin;
                     if let Ok(mut guard) = plugin.try_lock() {
-                        if apply_automation || apply_modulation {
+                        if apply_automation || apply_modulation || apply_macros {
                             Self::push_params_for_instrument(
                                 track_id,
                                 &lanes,
                                 &modulators,
+                                &macros,
                                 &track_phases,
                                 block_start_beat,
                                 apply_automation,
                                 apply_modulation,
+                                apply_macros,
                                 &mut guard,
                             );
                         }
@@ -957,16 +1098,18 @@ impl AudioCallbackState {
                         continue;
                     }
                     if let Ok(mut guard) = slot.plugin.try_lock() {
-                        if apply_automation || apply_modulation {
+                        if apply_automation || apply_modulation || apply_macros {
                             Self::push_params_for_device(
                                 track_id,
                                 &lanes,
                                 &modulators,
+                                &macros,
                                 &track_phases,
                                 block_start_beat,
                                 slot.device_id,
                                 apply_automation,
                                 apply_modulation,
+                                apply_macros,
                                 &mut guard,
                             );
                         }
@@ -1161,6 +1304,8 @@ pub struct AudioEngine {
     synced_automation: HashMap<u64, Vec<RtAutomationLane>>,
     /// Last modulator payload sent to the audio thread per track.
     synced_modulators: HashMap<u64, Vec<RtModulator>>,
+    /// Last macro payload sent to the audio thread per track.
+    synced_macros: HashMap<u64, Vec<RtMacroParam>>,
     /// In-flight background plugin loads (track -> desired instrument).
     pending_loads: HashMap<u64, TrackInstrument>,
     load_tx: Option<SyncSender<VoiceLoadResult>>,
@@ -1250,6 +1395,7 @@ impl AudioEngine {
                     synced_master_gain_db: None,
                     synced_automation: HashMap::new(),
                     synced_modulators: HashMap::new(),
+                    synced_macros: HashMap::new(),
                     pending_loads: HashMap::new(),
                     load_tx: Some(load_tx),
                     load_rx,
@@ -1297,6 +1443,7 @@ impl AudioEngine {
                 synced_master_gain_db: None,
                 synced_automation: HashMap::new(),
                 synced_modulators: HashMap::new(),
+                synced_macros: HashMap::new(),
                 pending_loads: HashMap::new(),
                 load_tx: Some(load_tx),
                 load_rx,
@@ -1896,6 +2043,94 @@ impl AudioEngine {
             self.send(AudioCommand::SetModulators {
                 track_id: track.id,
                 modulators,
+            });
+        }
+
+        self.flush_pending_cmds();
+    }
+
+    pub fn sync_macros(&mut self, project: &Project) {
+        self.flush_pending_cmds();
+
+        let live_ids: HashSet<u64> = project.tracks.iter().map(|track| track.id).collect();
+        let stale: Vec<u64> = self
+            .synced_macros
+            .keys()
+            .copied()
+            .filter(|track_id| !live_ids.contains(track_id))
+            .collect();
+        for track_id in stale {
+            self.synced_macros.remove(&track_id);
+            self.send(AudioCommand::SetMacros {
+                track_id,
+                macros: Vec::new(),
+            });
+        }
+
+        for track in &project.tracks {
+            let mut macros = Vec::new();
+            for macro_knob in &track.macros {
+                for mapping in &macro_knob.mappings {
+                    let (target, automation_target) = match &mapping.target {
+                        MacroTarget::Instrument { param_id } => (
+                            RtAutomationTarget::Instrument {
+                                param_id: *param_id,
+                            },
+                            AutomationTarget::Instrument {
+                                param_id: *param_id,
+                            },
+                        ),
+                        MacroTarget::Device {
+                            device_id,
+                            param_id,
+                        } => (
+                            RtAutomationTarget::Device {
+                                device_id: *device_id,
+                                param_id: *param_id,
+                            },
+                            AutomationTarget::Device {
+                                device_id: *device_id,
+                                param_id: *param_id,
+                            },
+                        ),
+                        MacroTarget::ModulatorRate { .. }
+                        | MacroTarget::ModulatorDepth { .. } => continue,
+                    };
+                    let Some(param_info) =
+                        self.param_info_for_target(track.id, &automation_target)
+                    else {
+                        continue;
+                    };
+                    if !param_info.automatable {
+                        continue;
+                    }
+                    macros.push(RtMacroParam {
+                        target,
+                        normalized: mapping.mapped_value(macro_knob.value) as f64,
+                        min: param_info.min,
+                        max: param_info.max,
+                        step_count: param_info.step_count,
+                    });
+                }
+            }
+
+            let changed = self
+                .synced_macros
+                .get(&track.id)
+                .map(|prev| prev != &macros)
+                .unwrap_or(true);
+            if !changed {
+                continue;
+            }
+
+            if macros.is_empty() {
+                self.synced_macros.remove(&track.id);
+            } else {
+                self.synced_macros.insert(track.id, macros.clone());
+            }
+            self.send(AudioCommand::SetMacros {
+                track_id: track.id,
+                macros,
             });
         }
 
@@ -2598,6 +2833,7 @@ fn start_stream(
         sample_clips: HashMap::new(),
         automation: HashMap::new(),
         modulators: HashMap::new(),
+        macros: HashMap::new(),
         lfo_phases: HashMap::new(),
         master_gain: 1.0,
         commands: rx,
