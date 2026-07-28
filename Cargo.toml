@@ -14,6 +14,7 @@ opt-level = 1
 opt-level = 2
 
 [dependencies]
+audio_thread_priority = { version = "0.35", default-features = false }
 base64 = "0.22"
 cpal = "0.15"
 directories = "6"
@@ -27,6 +28,14 @@ symphonia = { version = "0.6.0", features = ["mp3", "flac", "vorbis", "isomp4", 
 truce-rack = { version = "1.1", features = ["clap", "vst3"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+# Without `dbus` the crate compiles to a no-op stub on Linux that still reports
+# success, so the audio thread would silently stay on SCHED_OTHER. The feature
+# routes the promotion through rtkit, which is what grants SCHED_FIFO here.
+# Kept target-scoped because the libdbus link would break Windows builds.
+audio_thread_priority = { version = "0.35", default-features = false, features = ["dbus"] }
+# SIGXCPU handler + RLIMIT_RTTIME for the realtime audio thread; see
+# engine/rt_priority.rs for why an unhandled overrun is fatal without this.
+libc = "0.2"
 # Same major as eframe's winit; used to force X11 for plugin editor hosting.
 winit = { version = "0.30", default-features = false, features = ["x11"] }
 # Feature `xlib` makes build.rs link libX11 (needed for shared-Display editor parents).

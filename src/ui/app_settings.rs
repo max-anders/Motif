@@ -12,6 +12,7 @@ use crate::model::{
 
 use super::shortcuts::{ShortcutRegistry, StoredBinding};
 use super::theme::{Theme, ThemeCatalog, DEFAULT_THEME_NAME};
+use super::mixer::{clamp_mixer_panel_fraction, MIXER_PANEL_DEFAULT_FRACTION};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SettingsFile {
@@ -43,6 +44,13 @@ struct SettingsFile {
     recent_projects: Vec<PathBuf>,
     #[serde(default)]
     recent_samples: Vec<PathBuf>,
+    /// Bottom mixer panel height as a fraction of the editor area (0..1).
+    #[serde(default = "default_mixer_panel_fraction")]
+    mixer_panel_fraction: f32,
+}
+
+fn default_mixer_panel_fraction() -> f32 {
+    MIXER_PANEL_DEFAULT_FRACTION
 }
 
 fn default_active_theme() -> String {
@@ -137,6 +145,8 @@ pub struct AppSettings {
     pub metronome_enabled: bool,
     pub recent_projects: Vec<PathBuf>,
     pub recent_samples: Vec<PathBuf>,
+    /// Bottom mixer panel height fraction (editor area below transport).
+    pub mixer_panel_fraction: f32,
 }
 
 /// Cap for recently imported sample paths (add browser Samples tab).
@@ -160,6 +170,7 @@ impl Default for AppSettings {
             metronome_enabled: true,
             recent_projects: Vec::new(),
             recent_samples: Vec::new(),
+            mixer_panel_fraction: MIXER_PANEL_DEFAULT_FRACTION,
         }
     }
 }
@@ -206,6 +217,7 @@ impl AppSettings {
             metronome_enabled: file.metronome_enabled,
             recent_projects: file.recent_projects,
             recent_samples: file.recent_samples,
+            mixer_panel_fraction: clamp_mixer_panel_fraction(file.mixer_panel_fraction),
         })
     }
 
@@ -312,6 +324,7 @@ impl AppSettings {
             metronome_enabled: self.metronome_enabled,
             recent_projects: self.recent_projects.clone(),
             recent_samples: self.recent_samples.clone(),
+            mixer_panel_fraction: clamp_mixer_panel_fraction(self.mixer_panel_fraction),
         };
         let json = serde_json::to_string_pretty(&file).map_err(|error| error.to_string())?;
         fs::write(path, json).map_err(|error| error.to_string())
@@ -353,6 +366,7 @@ mod tests {
                 metronome_enabled: true,
                 recent_projects: Vec::new(),
                 recent_samples: Vec::new(),
+                mixer_panel_fraction: MIXER_PANEL_DEFAULT_FRACTION,
             };
             serde_json::to_string(&file).unwrap()
         };
@@ -402,11 +416,19 @@ mod tests {
                 metronome_enabled: true,
                 recent_projects: Vec::new(),
                 recent_samples: Vec::new(),
+                mixer_panel_fraction: MIXER_PANEL_DEFAULT_FRACTION,
             };
             serde_json::to_string(&file).unwrap()
         };
         let loaded = AppSettings::from_json(&json).unwrap();
         assert_eq!(loaded.last_tweaked_for("uid.b")[0].param_id, 7);
         assert_eq!(loaded.last_tweaked_for("uid.b")[0].name, "Drive");
+    }
+
+    #[test]
+    fn mixer_panel_fraction_round_trip_json() {
+        let json = r#"{"mixer_panel_fraction":0.73}"#;
+        let loaded = AppSettings::from_json(json).unwrap();
+        assert!((loaded.mixer_panel_fraction - 0.73).abs() < f32::EPSILON);
     }
 }

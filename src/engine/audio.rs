@@ -16,7 +16,10 @@ use std::thread;
 use std::time::Instant;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{BufferSize, SampleFormat, Stream, StreamConfig, SupportedBufferSize};
+use cpal::{
+    BufferSize, Device, SampleFormat, SampleRate, Stream, StreamConfig, SupportedBufferSize,
+    SupportedStreamConfig,
+};
 use truce_rack::core::transport::TransportInfo;
 
 use crate::model::{
@@ -30,6 +33,7 @@ use super::plugins::{
     load_and_activate, CatalogEntry, HostedPlugin, PluginCatalog, PluginEditorHost, PluginParamInfo,
     PluginRef,
 };
+use super::rt_priority::RtPriorityState;
 use super::sequencer::{RtClock, RtNote, RtSequencer, SeqEvent};
 use super::DecodedAudio;
 use super::{DawEngine, EnginePerformance, LoopPlayback, TrackPerformance, TrackVoiceKind};
@@ -80,9 +84,48 @@ impl AudioPerfShared {
 const LOADING_STATUS: &str = "Loading plugin...";
 
 /// Output period requested from cpal when the device advertises a range.
-/// ~11 ms at 44.1 kHz - low enough to feel tight, high enough to stay xrun-free
+/// ~11 ms at 48 kHz - low enough to feel tight, high enough to stay xrun-free
 /// in a debug build with plugins loaded.
 const TARGET_BUFFER_FRAMES: u32 = 512;
+
+/// Output rate requested from cpal when the device offers it.
+///
+/// PipeWire runs its whole graph at one rate (48 kHz by default) and resamples
+/// any client that disagrees. The ALSA compatibility device still advertises
+/// 44.1 kHz as its default, which costs a permanent resample and - worse for us
+/// - a callback size that drifts, because 44.1 kHz periods do not divide evenly
+/// into the 48 kHz graph quantum. Matching the graph keeps the period fixed.
+const PREFERRED_SAMPLE_RATE: u32 = 48_000;
+
+
+/// Per-track cap on note edges deferred by a lost `try_lock`. Sized for several
+/// seconds of dense playing; past it the voice is silenced instead (see
+/// [`PendingEvents`]).
+const MAX_PENDING_EVENTS_PER_TRACK: usize = 512;
+
+/// Note edges that could not be handed to a plugin because the audio thread lost
+/// the `try_lock` race against UI-side work (project save, editor open/close).
+///
+/// Dropping them is not an option: a discarded NoteOff leaves the plugin holding
+/// a voice forever, which raises its CPU cost permanently and feeds back into
+/// more missed deadlines and more lost locks.
+struct PendingEvents {
+    /// Replayed at frame 0 on the next successful lock, before the current
+    /// block's edges.
+    events: Vec<SeqEvent>,
+    /// Set when `events` overflowed. Replaying a truncated stream could strand a
+    /// NoteOn without its NoteOff, so the voice is silenced wholesale instead.
+    force_all_notes_off: bool,
+}
+
+impl PendingEvents {
+    fn new() -> Self {
+        Self {
+            events: Vec::with_capacity(MAX_PENDING_EVENTS_PER_TRACK),
+            force_all_notes_off: false,
+        }
+    }
+}
 
 /// Plugin-GUI (or host-observed) parameter touch for the last-tweaked MRU.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -331,6 +374,8 @@ struct AudioCallbackState {
     commands: Receiver<AudioCommand>,
     channels: usize,
     sample_rate: f32,
+    /// Claimed on the first callback; see [`RtPriorityState`].
+    rt_priority: RtPriorityState,
     transport: TransportInfo,
     /// Sample-accurate MIDI sequencing. Owns the note lists, the loop wrap, and
     /// the song position the rest of the callback renders against.
@@ -338,6 +383,9 @@ struct AudioCallbackState {
     /// This block's note edges, copied out of the sequencer so `render_stereo`
     /// can take them while it holds a mutable borrow of the voices.
     seq_events: Vec<SeqEvent>,
+    /// Note edges deferred per track after a lost plugin `try_lock`, preallocated
+    /// on `SetVoice` so deferring never allocates on the RT thread.
+    pending_events: HashMap<u64, PendingEvents>,
     /// Clock epoch last applied, to drive the metronome resync off the same
     /// discontinuity signal as the sequencer.
     clock_epoch: u64,
@@ -369,6 +417,28 @@ struct AudioCallbackState {
     param_id_scratch: HashSet<u32>,
     mod_index_scratch: Vec<usize>,
     live_mod_id_scratch: HashSet<u64>,
+}
+
+/// Park a block's note edges for replay after a lost plugin `try_lock`.
+/// Takes the map rather than `&mut self` so the caller can keep its borrow of
+/// `voices` alive.
+fn defer_events(
+    pending_events: &mut HashMap<u64, PendingEvents>,
+    track_id: u64,
+    events: &[SeqEvent],
+) {
+    if events.is_empty() {
+        return;
+    }
+    let Some(pending) = pending_events.get_mut(&track_id) else {
+        return;
+    };
+    if pending.events.len() + events.len() > MAX_PENDING_EVENTS_PER_TRACK {
+        pending.events.clear();
+        pending.force_all_notes_off = true;
+        return;
+    }
+    pending.events.extend_from_slice(events);
 }
 
 /// One track's slice of the block's note edges. `events` is sorted by
@@ -425,6 +495,7 @@ impl AudioCallbackState {
         self.lfo_phases.clear();
         self.sequencer.reset();
         self.seq_events.clear();
+        self.pending_events.clear();
     }
 
     fn process_commands(&mut self) {
@@ -459,14 +530,24 @@ impl AudioCallbackState {
                     }
                 }
                 Ok(AudioCommand::AllNotesOff) => {
-                    for voice in self.voices.values_mut() {
+                    for (track_id, voice) in self.voices.iter_mut() {
                         match voice {
                             TrackVoice::Piano(synth) => synth.all_notes_off(),
                             TrackVoice::Plugin(plugin) => {
                                 if let Ok(mut guard) = plugin.try_lock() {
                                     guard.all_notes_off();
+                                    if let Some(pending) = self.pending_events.get_mut(track_id) {
+                                        pending.events.clear();
+                                        pending.force_all_notes_off = false;
+                                    }
                                 } else {
                                     self.perf.lock_skips.fetch_add(1, Ordering::Relaxed);
+                                    // Defer the silence itself, or pause leaves
+                                    // the plugin sounding indefinitely.
+                                    if let Some(pending) = self.pending_events.get_mut(track_id) {
+                                        pending.events.clear();
+                                        pending.force_all_notes_off = true;
+                                    }
                                 }
                             }
                             TrackVoice::Silent => {}
@@ -480,6 +561,15 @@ impl AudioCallbackState {
                     if let Some(old) = self.voices.insert(track_id, voice) {
                         self.retire_voice(old);
                     }
+                    // Preallocate here (a rare, user-driven event) so deferring
+                    // events later never allocates on the RT thread. A fresh
+                    // instance carries no notes, so drop anything still pending.
+                    let pending = self
+                        .pending_events
+                        .entry(track_id)
+                        .or_insert_with(PendingEvents::new);
+                    pending.events.clear();
+                    pending.force_all_notes_off = false;
                     self.sequencer.reseed_track(track_id);
                 }
                 Ok(AudioCommand::RemoveVoice { track_id }) => {
@@ -495,6 +585,7 @@ impl AudioCallbackState {
                     self.modulators.remove(&track_id);
                     self.macros.remove(&track_id);
                     self.lfo_phases.retain(|&(tid, _), _| tid != track_id);
+                    self.pending_events.remove(&track_id);
                     self.sequencer.remove_track(track_id);
                 }
                 Ok(AudioCommand::SetChannel {
@@ -1230,6 +1321,21 @@ impl AudioCallbackState {
                             &mut guard,
                         );
                     }
+                    // Edges deferred by an earlier lost lock go first, at offset
+                    // 0, so a NoteOff can never be stranded behind this block.
+                    if let Some(pending) = self.pending_events.get_mut(&track_id) {
+                        if pending.force_all_notes_off {
+                            guard.all_notes_off();
+                            pending.force_all_notes_off = false;
+                        }
+                        for event in pending.events.drain(..) {
+                            if event.on {
+                                guard.push_note_on(event.pitch, event.velocity, 0);
+                            } else {
+                                guard.push_note_off(event.pitch, 0);
+                            }
+                        }
+                    }
                     // After the params: the event list handed to a CLAP/VST3
                     // plugin has to be in ascending sample_offset order, and
                     // params are all block-start (offset 0).
@@ -1257,6 +1363,7 @@ impl AudioCallbackState {
                 } else {
                     lock_skips += 1;
                     self.perf.lock_skips.fetch_add(1, Ordering::Relaxed);
+                    defer_events(&mut self.pending_events, track_id, track_events);
                 }
             } else if matches!(self.voices.get(&track_id), Some(TrackVoice::Silent)) {
                 voice_kind = TrackVoiceKind::Silent;
@@ -1444,6 +1551,7 @@ impl AudioCallbackState {
             return;
         }
         let frames = data.len() / self.channels;
+        self.rt_priority.update(frames, self.sample_rate);
         self.sequence_block(frames);
         self.render_stereo(frames);
         for (frame_index, frame) in data.chunks_mut(self.channels).enumerate() {
@@ -1472,6 +1580,7 @@ impl AudioCallbackState {
             return;
         }
         let frames = data.len() / self.channels;
+        self.rt_priority.update(frames, self.sample_rate);
         self.sequence_block(frames);
         self.render_stereo(frames);
         for (frame_index, frame) in data.chunks_mut(self.channels).enumerate() {
@@ -1500,6 +1609,7 @@ impl AudioCallbackState {
             return;
         }
         let frames = data.len() / self.channels;
+        self.rt_priority.update(frames, self.sample_rate);
         self.sequence_block(frames);
         self.render_stereo(frames);
         for (frame_index, frame) in data.chunks_mut(self.channels).enumerate() {
@@ -2825,7 +2935,10 @@ impl DawEngine for AudioEngine {
                 // Keep last saved blob while the plugin is still loading / missing.
                 continue;
             };
-            let Ok(guard) = slot.lock() else {
+            // try_lock, never lock: blocking here holds the mutex the audio
+            // callback needs and starves it for as long as getState takes.
+            // Keep the previous blob on contention rather than stalling audio.
+            let Ok(guard) = slot.try_lock() else {
                 continue;
             };
             match guard.save_state_blob(format) {
@@ -2950,7 +3063,8 @@ impl DawEngine for AudioEngine {
                     // Keep last saved blob while loading / missing.
                     continue;
                 };
-                let Ok(guard) = slot.lock() else {
+                // try_lock, never lock - see `capture_plugin_states`.
+                let Ok(guard) = slot.try_lock() else {
                     continue;
                 };
                 match guard.save_state_blob(device.format) {
@@ -3291,6 +3405,39 @@ impl DawEngine for AudioEngine {
     }
 }
 
+/// Pick the output config to build the stream with.
+///
+/// Keeps whatever channel layout and sample format the device prefers, and only
+/// overrides the rate to [`PREFERRED_SAMPLE_RATE`] when the device offers a
+/// range covering it. Falls back to the device default otherwise, so a device
+/// that genuinely cannot do 48 kHz still works.
+fn preferred_output_config(device: &Device) -> Result<SupportedStreamConfig, String> {
+    let default = device
+        .default_output_config()
+        .map_err(|error| format!("Default output config failed: {error}"))?;
+    if default.sample_rate().0 == PREFERRED_SAMPLE_RATE {
+        return Ok(default);
+    }
+
+    let target = SampleRate(PREFERRED_SAMPLE_RATE);
+    let matching = device
+        .supported_output_configs()
+        .ok()
+        .and_then(|mut ranges| {
+            ranges.find(|range| {
+                range.channels() == default.channels()
+                    && range.sample_format() == default.sample_format()
+                    && range.min_sample_rate() <= target
+                    && range.max_sample_rate() >= target
+            })
+        });
+
+    Ok(match matching {
+        Some(range) => range.with_sample_rate(target),
+        None => default,
+    })
+}
+
 fn start_stream(
     track_meters: Arc<Mutex<Vec<(u64, f32, f32)>>>,
     master_meter: Arc<Mutex<(f32, f32)>>,
@@ -3308,9 +3455,7 @@ fn start_stream(
         .name()
         .unwrap_or_else(|_| String::from("Unknown output"));
 
-    let supported = device
-        .default_output_config()
-        .map_err(|error| format!("Default output config failed: {error}"))?;
+    let supported = preferred_output_config(&device)?;
 
     let sample_format = supported.sample_format();
     let base_config: StreamConfig = supported.config();
@@ -3349,9 +3494,11 @@ fn start_stream(
             commands: rx,
             channels,
             sample_rate,
+            rt_priority: RtPriorityState::new(),
             transport: TransportInfo::default(),
             sequencer: RtSequencer::new(sample_rate),
             seq_events: Vec::new(),
+            pending_events: HashMap::new(),
             clock_epoch: 0,
             metronome: MetronomeRunner::new(sample_rate),
             mix_l: vec![0.0; 4096],

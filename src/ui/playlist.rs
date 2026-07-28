@@ -72,6 +72,12 @@ pub(crate) struct ClipDrag {
     ignore_ids: Vec<u64>,
 }
 
+impl ClipDrag {
+    pub(crate) fn moving_clip_ids(&self) -> impl Iterator<Item = u64> + '_ {
+        self.originals.iter().map(|original| original.clip_id)
+    }
+}
+
 /// `device_id: None` means the track's instrument; `Some(id)` means one of
 /// its insert-FX devices (see `crate::engine::PluginRef`, which this maps to
 /// 1:1 — kept as plain fields here so the UI layer stays engine-agnostic).
@@ -110,6 +116,8 @@ pub struct PlaylistUi {
     plugin_editor_request: Option<PluginEditorRequest>,
     /// Delete track (consumed by app for piano-roll / engine cleanup).
     delete_track_request: Option<u64>,
+    /// Duplicate track (consumed by app).
+    duplicate_track_request: Option<u64>,
     /// Track header currently under the pointer (for Delete track shortcut).
     hovered_track_header: Option<u64>,
     /// Import audio clip request (consumed by app).
@@ -139,6 +147,7 @@ impl Default for PlaylistUi {
             open_clip_request: None,
             plugin_editor_request: None,
             delete_track_request: None,
+            duplicate_track_request: None,
             hovered_track_header: None,
             audio_import_request: None,
             drag_moved: false,
@@ -221,6 +230,10 @@ impl PlaylistUi {
 
     pub fn take_delete_track_request(&mut self) -> Option<u64> {
         self.delete_track_request.take()
+    }
+
+    pub fn take_duplicate_track_request(&mut self) -> Option<u64> {
+        self.duplicate_track_request.take()
     }
 
     pub fn hovered_track_header(&self) -> Option<u64> {
@@ -421,6 +434,11 @@ impl PlaylistUi {
                     );
                     let timeline_painter = painter.with_clip_rect(timeline_clip);
 
+                    let raise_clip_ids: HashSet<u64> = self
+                        .active_drag
+                        .as_ref()
+                        .map(|drag| drag.moving_clip_ids().collect())
+                        .unwrap_or_default();
                     for (index, track) in project.tracks.iter().enumerate() {
                         let Some(lane_rect) = layout.clip_lane_rect(body, index) else {
                             continue;
@@ -435,6 +453,7 @@ impl PlaylistUi {
                             project.beats_per_bar,
                             &track.clips,
                             &self.selected_clip_ids,
+                            &raise_clip_ids,
                             audible,
                             project.bpm,
                             decoded_audio,
@@ -565,6 +584,7 @@ impl PlaylistUi {
                             selected_track,
                             &mut self.plugin_editor_request,
                             &mut self.delete_track_request,
+                            &mut self.duplicate_track_request,
                             &mut self.hovered_track_header,
                             Some(&mut auto_expanded),
                             "playlist",
@@ -790,6 +810,7 @@ pub(crate) fn track_header_row(
     select_track_request: &mut Option<u64>,
     plugin_editor_request: &mut Option<PluginEditorRequest>,
     delete_track_request: &mut Option<u64>,
+    duplicate_track_request: &mut Option<u64>,
     hovered_track_header: &mut Option<u64>,
     automation_expanded: Option<&mut bool>,
     id_scope: &'static str,
@@ -979,6 +1000,10 @@ pub(crate) fn track_header_row(
             ui.close_menu();
         }
         ui.separator();
+        if ui.button("Duplicate track").clicked() {
+            *duplicate_track_request = Some(track_id);
+            ui.close_menu();
+        }
         let can_delete = project.can_remove_track();
         if ui
             .add_enabled(can_delete, egui::Button::new("Delete track"))
@@ -1045,6 +1070,7 @@ pub(crate) fn draw_lane_timeline(
     beats_per_bar: f32,
     clips: &[Clip],
     selected: &HashSet<u64>,
+    raise_clip_ids: &HashSet<u64>,
     audible: bool,
     bpm: f32,
     decoded_audio: &HashMap<PathBuf, Arc<DecodedAudio>>,
@@ -1064,7 +1090,13 @@ pub(crate) fn draw_lane_timeline(
     // offsets by TIMELINE_GUTTER_WIDTH / TRACK_HEADER_WIDTH.
     draw_timeline_grid_lines(painter, lane, metrics, total_beats, beats_per_bar, theme);
 
-    for clip in clips {
+    let mut draw_order: Vec<&Clip> = clips.iter().collect();
+    if !raise_clip_ids.is_empty() {
+        // Dragged clips paint last so they stay visually on top while overlapping.
+        draw_order.sort_by_key(|clip| raise_clip_ids.contains(&clip.id()));
+    }
+
+    for clip in draw_order {
         let clip_rect = clip_block_rect(timeline, lane, clip, metrics);
         let is_selected = selected.contains(&clip.id());
         let is_audio = clip.as_audio().is_some();
@@ -1925,47 +1957,14 @@ fn finish_clip_drag(
         selected.extend(drag.ignore_ids.iter().copied());
         return;
     }
-    if !drag.ignore_ids.is_empty() {
-        settle_clips_no_overlap(project, &drag.originals);
+    if drag_moved && matches!(drag.mode, ClipDragMode::Move) {
+        let moved_ids: Vec<u64> = drag.originals.iter().map(|original| original.clip_id).collect();
+        project.resolve_clip_move_overlaps(&moved_ids);
     }
     history.commit(project);
     if !drag_moved {
         selected.clear();
         selected.insert(drag.clip_id);
-    }
-}
-
-/// Nudge clips right on the grid until each is free of same-track overlaps.
-fn settle_clips_no_overlap(project: &mut Project, originals: &[ClipOriginal]) {
-    let mut ids: Vec<u64> = originals.iter().map(|original| original.clip_id).collect();
-    ids.sort_by(|a, b| {
-        let sa = project
-            .clip(*a)
-            .map(|clip| clip.start_beats())
-            .unwrap_or(0.0);
-        let sb = project
-            .clip(*b)
-            .map(|clip| clip.start_beats())
-            .unwrap_or(0.0);
-        sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal)
-    });
-    for clip_id in ids {
-        let Some(track_id) = project.track_id_for_clip(clip_id) else {
-            continue;
-        };
-        let Some(clip) = project.clip(clip_id) else {
-            continue;
-        };
-        let length = clip.length_beats();
-        let mut start = clip.start_beats();
-        let mut steps = 0;
-        while !project.clip_range_free(track_id, start, length, &[clip_id]) && steps < 10_000 {
-            start = Project::snap_beats(start + SNAP_BEATS);
-            steps += 1;
-        }
-        if let Some(clip) = project.clip_mut(clip_id) {
-            clip.set_start_beats(start);
-        }
     }
 }
 

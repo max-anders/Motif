@@ -24,7 +24,7 @@ pub use app_settings::AppSettings;
 pub use instrument_menu::{choice_to_instrument, track_name_for_choice};
 pub use devices::DevicesUi;
 pub use inspector::show_inspector;
-pub use mixer::MixerUi;
+pub use mixer::{MixerPanelResize, MixerUi, MIXER_PANEL_ID, MIXER_PANEL_MIN_HEIGHT};
 pub use performance::PerformanceUi;
 pub use piano_roll::PianoRollUi;
 pub use playlist::{AudioImportRequest, PlaylistUi, PluginEditorRequest};

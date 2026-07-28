@@ -24,6 +24,8 @@ pub enum Action {
     CutSelection,
     PasteSelection,
     DuplicateSelection,
+    /// Merge adjacent selected clip(s) on the same track.
+    MergeClips,
     Undo,
     Redo,
     /// Save current project (or Save As when untitled).
@@ -85,6 +87,7 @@ impl<'de> Deserialize<'de> for Action {
             "cut_selection" => Ok(Self::CutSelection),
             "paste_selection" => Ok(Self::PasteSelection),
             "duplicate_selection" => Ok(Self::DuplicateSelection),
+            "merge_clips" => Ok(Self::MergeClips),
             "undo" => Ok(Self::Undo),
             "redo" => Ok(Self::Redo),
             "save" | "save_project" => Ok(Self::Save),
@@ -120,6 +123,7 @@ impl<'de> Deserialize<'de> for Action {
                     "cut_selection",
                     "paste_selection",
                     "duplicate_selection",
+                    "merge_clips",
                     "undo",
                     "redo",
                     "save",
@@ -151,7 +155,7 @@ impl<'de> Deserialize<'de> for Action {
 
 impl Action {
     /// All actions in Settings / docs order (includes actions with no factory binding).
-    pub const ALL: [Self; 32] = [
+    pub const ALL: [Self; 33] = [
         Self::TogglePlayback,
         Self::PauseInPlace,
         Self::ToggleLoop,
@@ -161,6 +165,7 @@ impl Action {
         Self::CutSelection,
         Self::PasteSelection,
         Self::DuplicateSelection,
+        Self::MergeClips,
         Self::Undo,
         Self::Redo,
         Self::NewProject,
@@ -197,6 +202,7 @@ impl Action {
             Self::CutSelection => "Cut selection",
             Self::PasteSelection => "Paste",
             Self::DuplicateSelection => "Duplicate selection",
+            Self::MergeClips => "Merge adjacent clips",
             Self::Undo => "Undo",
             Self::Redo => "Redo",
             Self::Save => "Save",
@@ -259,6 +265,15 @@ impl Chord {
             ctrl_or_cmd: true,
             shift: true,
             alt: false,
+        }
+    }
+
+    pub const fn ctrl_or_cmd_alt(key: Key) -> Self {
+        Self {
+            key,
+            ctrl_or_cmd: true,
+            shift: false,
+            alt: true,
         }
     }
 
@@ -419,6 +434,10 @@ impl ShortcutRegistry {
                     Action::DuplicateSelection,
                     Binding::Key(Chord::ctrl_or_cmd(Key::D)),
                 ),
+                (
+                    Action::MergeClips,
+                    Binding::Key(Chord::ctrl_or_cmd(Key::G)),
+                ),
                 (Action::Undo, Binding::Key(Chord::ctrl_or_cmd(Key::Z))),
                 (
                     Action::Redo,
@@ -428,7 +447,7 @@ impl ShortcutRegistry {
                 (Action::Open, Binding::Key(Chord::ctrl_or_cmd(Key::O))),
                 (
                     Action::SaveProjectAs,
-                    Binding::Key(Chord::ctrl_or_cmd_shift(Key::S)),
+                    Binding::Key(Chord::ctrl_or_cmd_alt(Key::S)),
                 ),
                 (
                     Action::NewProject,
@@ -591,6 +610,21 @@ impl ShortcutRegistry {
                 && !chord.alt
             {
                 *chord = Chord::new(Key::M);
+            }
+        }
+
+        // Save As used Ctrl/Cmd+Shift+S; factory default is now Ctrl/Cmd+Alt+S.
+        for (action, binding) in &mut self.bindings {
+            let Binding::Key(chord) = binding else {
+                continue;
+            };
+            if matches!(action, Action::SaveProjectAs)
+                && chord.key == Key::S
+                && chord.ctrl_or_cmd
+                && chord.shift
+                && !chord.alt
+            {
+                *chord = Chord::ctrl_or_cmd_alt(Key::S);
             }
         }
 

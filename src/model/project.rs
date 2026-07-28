@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 use super::audio_clip::AudioClip;
@@ -108,6 +110,18 @@ impl Default for Project {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum OverlapTrim {
+    Delete,
+    TrimStart { new_start: f32 },
+    TrimEnd { new_end: f32 },
+    Split {
+        left_end: f32,
+        tail_start: f32,
+        tail_end: f32,
+    },
+}
+
 impl Project {
     fn migrate_clip_kinds(value: &mut serde_json::Value) {
         let Some(tracks) = value
@@ -159,6 +173,35 @@ impl Project {
         a_start < b_end && b_start < a_end
     }
 
+    /// How a stationary range should change when a mover overlaps it on release.
+    fn overlap_trim_action(
+        v_start: f32,
+        v_end: f32,
+        m_start: f32,
+        m_end: f32,
+    ) -> Option<OverlapTrim> {
+        if !Self::beat_ranges_overlap(v_start, v_end, m_start, m_end) {
+            return None;
+        }
+        if m_start <= v_start && m_end >= v_end {
+            return Some(OverlapTrim::Delete);
+        }
+        if m_start <= v_start && m_end < v_end {
+            return Some(OverlapTrim::TrimStart { new_start: m_end });
+        }
+        if m_start > v_start && m_end >= v_end {
+            return Some(OverlapTrim::TrimEnd { new_end: m_start });
+        }
+        if m_start > v_start && m_end < v_end {
+            return Some(OverlapTrim::Split {
+                left_end: m_start,
+                tail_start: m_end,
+                tail_end: v_end,
+            });
+        }
+        None
+    }
+
     /// Whether `[start_beats, start_beats + length_beats)` is free on the track.
     pub fn clip_range_free(
         &self,
@@ -192,15 +235,15 @@ impl Project {
         !clip.note_range_overlaps_any(pitch, start, start + duration, ignore_ids)
     }
 
-    /// Clamp time+pitch deltas so movers do not overlap non-ignored same-pitch notes.
-    /// `ignore_ids` are additional notes movers may overlap (Shift+drag sources).
+    /// Clamp time+pitch deltas so movers stay inside the clip and MIDI pitch range.
+    /// Same-pitch overlap is allowed during the drag and resolved on release.
     pub fn clamp_note_move_deltas(
         &self,
         clip_id: u64,
         originals: &[Note],
         mut delta_beats: f32,
         mut delta_pitch: i32,
-        ignore_ids: &[u64],
+        _ignore_ids: &[u64],
     ) -> (f32, i32) {
         if originals.is_empty() {
             return (delta_beats, delta_pitch);
@@ -238,74 +281,123 @@ impl Project {
             delta_beats = clip.length_beats - max_end;
         }
 
+        (delta_beats, delta_pitch)
+    }
+
+    /// After a note move, shorten or remove stationary same-pitch notes the movers overlap.
+    /// Movers win; a fully covered note with the same span is removed.
+    pub fn resolve_note_move_overlaps(&mut self, clip_id: u64, moved_ids: &[u64]) {
+        if moved_ids.is_empty() {
+            return;
+        }
         let moving: std::collections::HashSet<u64> =
-            originals.iter().map(|note| note.id).collect();
+            moved_ids.iter().copied().collect();
+        let movers: Vec<(u8, f32, f32)> = self
+            .midi_clip(clip_id)
+            .map(|clip| {
+                clip.notes
+                    .iter()
+                    .filter(|note| moving.contains(&note.id))
+                    .map(|note| (note.pitch, note.start_beats, note.end_beats()))
+                    .collect()
+            })
+            .unwrap_or_default();
 
-        let clamp_time_for_pitch = |dp: i32, mut db: f32| -> f32 {
-            let min_start = originals
-                .iter()
-                .map(|note| note.start_beats)
-                .fold(f32::INFINITY, f32::min);
-            if min_start + db < 0.0 {
-                db = -min_start;
-            }
-            let max_end = originals
-                .iter()
-                .map(Note::end_beats)
-                .fold(f32::NEG_INFINITY, f32::max);
-            if max_end + db > clip.length_beats {
-                db = clip.length_beats - max_end;
-            }
-            for original in originals {
-                let pitch = Self::clamp_pitch(original.pitch as i32 + dp);
-                let start = original.start_beats;
-                let end = start + original.duration_beats;
-                for other in &clip.notes {
-                    if other.pitch != pitch
-                        || moving.contains(&other.id)
-                        || ignore_ids.contains(&other.id)
-                    {
-                        continue;
-                    }
-                    let o_start = other.start_beats;
-                    let o_end = other.end_beats();
-                    if db >= 0.0 {
-                        if end <= o_start {
-                            db = db.min(o_start - end);
+        for (m_pitch, m_start, m_end) in movers {
+            let victims: Vec<(u64, f32, f32, u8)> = self
+                .midi_clip(clip_id)
+                .map(|clip| {
+                    clip.notes
+                        .iter()
+                        .filter(|note| {
+                            note.pitch == m_pitch
+                                && !moving.contains(&note.id)
+                                && Self::beat_ranges_overlap(
+                                    m_start,
+                                    m_end,
+                                    note.start_beats,
+                                    note.end_beats(),
+                                )
+                        })
+                        .map(|note| {
+                            (
+                                note.id,
+                                note.start_beats,
+                                note.end_beats(),
+                                note.velocity,
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            for (v_id, v_start, v_end, velocity) in victims {
+                let Some(action) = Self::overlap_trim_action(v_start, v_end, m_start, m_end) else {
+                    continue;
+                };
+                match action {
+                    OverlapTrim::Delete => {
+                        if let Some(clip) = self.midi_clip_mut(clip_id) {
+                            clip.remove_note(v_id);
                         }
-                    } else if start >= o_end {
-                        db = db.max(o_end - start);
+                    }
+                    OverlapTrim::TrimStart { new_start } => {
+                        let duration = v_end - new_start;
+                        if duration < SNAP_BEATS {
+                            if let Some(clip) = self.midi_clip_mut(clip_id) {
+                                clip.remove_note(v_id);
+                            }
+                        } else if let Some(note) = self
+                            .midi_clip_mut(clip_id)
+                            .and_then(|clip| clip.note_mut(v_id))
+                        {
+                            note.start_beats = Self::snap_beats(new_start);
+                            note.duration_beats = Self::snap_beats(duration);
+                        }
+                    }
+                    OverlapTrim::TrimEnd { new_end } => {
+                        let duration = new_end - v_start;
+                        if duration < SNAP_BEATS {
+                            if let Some(clip) = self.midi_clip_mut(clip_id) {
+                                clip.remove_note(v_id);
+                            }
+                        } else if let Some(note) = self
+                            .midi_clip_mut(clip_id)
+                            .and_then(|clip| clip.note_mut(v_id))
+                        {
+                            note.duration_beats = Self::snap_beats(duration);
+                        }
+                    }
+                    OverlapTrim::Split {
+                        left_end,
+                        tail_start,
+                        tail_end,
+                    } => {
+                        let left_duration = left_end - v_start;
+                        if left_duration < SNAP_BEATS {
+                            if let Some(clip) = self.midi_clip_mut(clip_id) {
+                                clip.remove_note(v_id);
+                            }
+                        } else if let Some(note) = self
+                            .midi_clip_mut(clip_id)
+                            .and_then(|clip| clip.note_mut(v_id))
+                        {
+                            note.duration_beats = Self::snap_beats(left_duration);
+                        }
+                        let tail_duration = tail_end - tail_start;
+                        if tail_duration >= SNAP_BEATS {
+                            let id = self.next_note_id();
+                            self.bump_note_id();
+                            if let Some(clip) = self.midi_clip_mut(clip_id) {
+                                clip.add_note_with_id(id, m_pitch, tail_start, tail_duration);
+                                if let Some(note) = clip.note_mut(id) {
+                                    note.velocity = velocity;
+                                }
+                            }
+                        }
                     }
                 }
             }
-            db
-        };
-
-        let placement_ok = |db: f32, dp: i32| -> bool {
-            for original in originals {
-                let pitch = Self::clamp_pitch(original.pitch as i32 + dp);
-                let start = (original.start_beats + db).max(0.0);
-                let end = start + original.duration_beats;
-                let mut ignore = Vec::with_capacity(moving.len() + ignore_ids.len());
-                ignore.extend(moving.iter().copied());
-                ignore.extend_from_slice(ignore_ids);
-                if clip.note_range_overlaps_any(pitch, start, end, &ignore) {
-                    return false;
-                }
-            }
-            true
-        };
-
-        let mut dp = delta_pitch;
-        loop {
-            let db = clamp_time_for_pitch(dp, delta_beats);
-            if placement_ok(db, dp) {
-                return (db, dp);
-            }
-            if dp == 0 {
-                return (0.0, 0);
-            }
-            dp -= dp.signum();
         }
     }
 
@@ -416,19 +508,17 @@ impl Project {
         delta
     }
 
-    /// Clamp a multi-clip move delta so no mover overlaps a non-moving clip on its track.
-    /// `ignore_ids` are additional clips movers may overlap (Shift+drag sources).
+    /// Clamp a multi-clip move delta so clips do not start before beat 0.
+    /// Track overlap is allowed during the drag and resolved on release.
     pub fn clamp_clip_move_delta(
         &self,
         originals: &[(u64, f32, f32)],
         mut delta: f32,
-        ignore_ids: &[u64],
+        _ignore_ids: &[u64],
     ) -> f32 {
         if originals.is_empty() {
             return delta;
         }
-        let moving: std::collections::HashSet<u64> =
-            originals.iter().map(|(id, _, _)| *id).collect();
         let min_start = originals
             .iter()
             .map(|(_, start, _)| *start)
@@ -436,31 +526,199 @@ impl Project {
         if min_start + delta < 0.0 {
             delta = -min_start;
         }
+        delta
+    }
 
-        for &(clip_id, start, length) in originals {
-            let Some(track_id) = self.track_id_for_clip(clip_id) else {
-                continue;
-            };
-            let Some(track) = self.track(track_id) else {
-                continue;
-            };
-            let m_end = start + length;
-            for other in &track.clips {
-                if moving.contains(&other.id()) || ignore_ids.contains(&other.id()) {
+    /// After a clip move, shorten or remove stationary clips on the same track that movers overlap.
+    pub fn resolve_clip_move_overlaps(&mut self, moved_ids: &[u64]) {
+        if moved_ids.is_empty() {
+            return;
+        }
+        let moving: std::collections::HashSet<u64> =
+            moved_ids.iter().copied().collect();
+        let movers: Vec<(u64, u64, f32, f32)> = moved_ids
+            .iter()
+            .filter_map(|&clip_id| {
+                let track_id = self.track_id_for_clip(clip_id)?;
+                let clip = self.clip(clip_id)?;
+                Some((
+                    clip_id,
+                    track_id,
+                    clip.start_beats(),
+                    clip.end_beats(),
+                ))
+            })
+            .collect();
+
+        for (_m_id, track_id, m_start, m_end) in movers {
+            let victims: Vec<(u64, f32, f32, Clip)> = self
+                .track(track_id)
+                .map(|track| {
+                    track
+                        .clips
+                        .iter()
+                        .filter(|clip| {
+                            !moving.contains(&clip.id())
+                                && Self::beat_ranges_overlap(
+                                    m_start,
+                                    m_end,
+                                    clip.start_beats(),
+                                    clip.end_beats(),
+                                )
+                        })
+                        .map(|clip| {
+                            (
+                                clip.id(),
+                                clip.start_beats(),
+                                clip.end_beats(),
+                                clip.clone(),
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            for (v_id, v_start, v_end, victim) in victims {
+                let Some(action) = Self::overlap_trim_action(v_start, v_end, m_start, m_end) else {
                     continue;
-                }
-                let o_start = other.start_beats();
-                let o_end = other.end_beats();
-                if delta >= 0.0 {
-                    if m_end <= o_start {
-                        delta = delta.min(o_start - m_end);
+                };
+                let is_audio = victim.as_audio().is_some();
+                match action {
+                    OverlapTrim::Delete => {
+                        if let Some(track) = self.track_mut(track_id) {
+                            track.remove_clip(v_id);
+                        }
                     }
-                } else if start >= o_end {
-                    delta = delta.max(o_end - start);
+                    OverlapTrim::TrimStart { .. } if is_audio => {
+                        if let Some(track) = self.track_mut(track_id) {
+                            track.remove_clip(v_id);
+                        }
+                    }
+                    OverlapTrim::TrimStart { new_start } => {
+                        let length = v_end - new_start;
+                        if length < SNAP_BEATS {
+                            if let Some(track) = self.track_mut(track_id) {
+                                track.remove_clip(v_id);
+                            }
+                        } else if let Some(clip) = self.clip_mut(v_id) {
+                            clip.set_start_beats(new_start);
+                            clip.set_length_beats(length);
+                        }
+                    }
+                    OverlapTrim::TrimEnd { new_end } => {
+                        let length = new_end - v_start;
+                        if length < SNAP_BEATS {
+                            if let Some(track) = self.track_mut(track_id) {
+                                track.remove_clip(v_id);
+                            }
+                        } else if let Some(clip) = self.clip_mut(v_id) {
+                            clip.set_length_beats(length);
+                        }
+                    }
+                    OverlapTrim::Split {
+                        left_end,
+                        tail_start: _,
+                        tail_end: _,
+                    } if is_audio => {
+                        let left_length = left_end - v_start;
+                        if left_length < SNAP_BEATS {
+                            if let Some(track) = self.track_mut(track_id) {
+                                track.remove_clip(v_id);
+                            }
+                        } else if let Some(clip) = self.clip_mut(v_id) {
+                            clip.set_length_beats(left_length);
+                        }
+                    }
+                    OverlapTrim::Split {
+                        left_end,
+                        tail_start,
+                        tail_end,
+                    } => {
+                        let left_length = left_end - v_start;
+                        if left_length < SNAP_BEATS {
+                            if let Some(track) = self.track_mut(track_id) {
+                                track.remove_clip(v_id);
+                            }
+                        } else if let Some(clip) = self.clip_mut(v_id) {
+                            clip.set_length_beats(left_length);
+                        }
+                        let tail_length = tail_end - tail_start;
+                        if tail_length >= SNAP_BEATS {
+                            self.push_clip_tail_segment(track_id, &victim, tail_start, tail_length);
+                        }
+                    }
                 }
             }
         }
-        delta
+    }
+
+    fn push_clip_tail_segment(
+        &mut self,
+        track_id: u64,
+        victim: &Clip,
+        tail_start: f32,
+        tail_length: f32,
+    ) {
+        let clip_id = self.next_clip_id();
+        self.bump_clip_id();
+        let tail_start = Self::snap_beats(tail_start);
+        let tail_length = Self::snap_beats(tail_length.max(SNAP_BEATS));
+        match victim {
+            Clip::Midi(midi) => {
+                let tail_local_start = tail_start - midi.start_beats;
+                let mut notes = Vec::new();
+                for note in &midi.notes {
+                    let n_start = note.start_beats;
+                    let n_end = note.end_beats();
+                    if n_end <= tail_local_start || n_start >= midi.length_beats {
+                        continue;
+                    }
+                    let local_start = n_start.max(tail_local_start);
+                    let local_end = n_end.min(midi.length_beats);
+                    let duration = local_end - local_start;
+                    if duration < SNAP_BEATS {
+                        continue;
+                    }
+                    let id = self.next_note_id();
+                    self.bump_note_id();
+                    notes.push(Note {
+                        id,
+                        pitch: note.pitch,
+                        start_beats: Self::snap_beats(local_start - tail_local_start),
+                        duration_beats: Self::snap_beats(duration),
+                        velocity: note.velocity,
+                    });
+                }
+                let clip = MidiClip {
+                    id: clip_id,
+                    name: format!("{} tail", midi.name),
+                    start_beats: tail_start,
+                    length_beats: tail_length,
+                    notes,
+                };
+                if let Some(track) = self.track_mut(track_id) {
+                    track.clips.push(Clip::Midi(clip));
+                }
+            }
+            Clip::Audio(audio) => {
+                // Audio clips always play from file start; only tail-trim is safe without offsets.
+                if tail_start > audio.start_beats + SNAP_BEATS {
+                    return;
+                }
+                let clip = AudioClip {
+                    id: clip_id,
+                    name: format!("{} tail", audio.name),
+                    start_beats: tail_start,
+                    length_beats: tail_length,
+                    source: audio.source.clone(),
+                    gain_db: audio.gain_db,
+                    missing: audio.missing,
+                };
+                if let Some(track) = self.track_mut(track_id) {
+                    track.clips.push(Clip::Audio(clip));
+                }
+            }
+        }
     }
 
     /// Left edge a resize-start drag may not cross (neighbor end, or 0).
@@ -947,6 +1205,103 @@ impl Project {
         self.tracks.len() != before
     }
 
+    /// Deep-copy a track (clips, notes, FX, automation, modulators, macros, plugin
+    /// state) and insert it directly below the source. Returns the new track id.
+    pub fn duplicate_track(&mut self, track_id: u64) -> Option<u64> {
+        let index = self.tracks.iter().position(|track| track.id == track_id)?;
+        let mut track = self.tracks[index].clone();
+
+        let new_track_id = self.next_track_id();
+        self.bump_track_id();
+        track.id = new_track_id;
+        track.name = format!("{} copy", track.name.trim_end());
+
+        let mut device_map = HashMap::new();
+        for device in &mut track.devices {
+            let old_id = device.id;
+            let new_id = self.next_device_id();
+            self.bump_device_id();
+            device_map.insert(old_id, new_id);
+            device.id = new_id;
+        }
+
+        let mut modulator_map = HashMap::new();
+        for modulator in &mut track.modulators {
+            let old_id = modulator.id;
+            let new_id = self.next_modulator_id();
+            self.bump_modulator_id();
+            modulator_map.insert(old_id, new_id);
+            modulator.id = new_id;
+            Self::remap_automation_target(&mut modulator.target, &device_map);
+        }
+
+        for lane in &mut track.automation_lanes {
+            let new_id = self.next_automation_lane_id();
+            self.bump_automation_lane_id();
+            lane.id = new_id;
+            Self::remap_automation_target(&mut lane.target, &device_map);
+        }
+
+        for macro_knob in &mut track.macros {
+            let new_id = self.next_macro_id();
+            self.bump_macro_id();
+            macro_knob.id = new_id;
+            for mapping in &mut macro_knob.mappings {
+                Self::remap_macro_target(&mut mapping.target, &device_map, &modulator_map);
+            }
+        }
+
+        for clip in &mut track.clips {
+            let clip_id = self.next_clip_id();
+            self.bump_clip_id();
+            match clip {
+                Clip::Midi(midi) => {
+                    midi.id = clip_id;
+                    for note in &mut midi.notes {
+                        let id = self.next_note_id();
+                        self.bump_note_id();
+                        note.id = id;
+                    }
+                }
+                Clip::Audio(audio) => {
+                    audio.id = clip_id;
+                }
+            }
+        }
+
+        self.tracks.insert(index + 1, track);
+        Some(new_track_id)
+    }
+
+    fn remap_automation_target(target: &mut AutomationTarget, device_map: &HashMap<u64, u64>) {
+        if let AutomationTarget::Device { device_id, .. } = target {
+            if let Some(&new_id) = device_map.get(device_id) {
+                *device_id = new_id;
+            }
+        }
+    }
+
+    fn remap_macro_target(
+        target: &mut MacroTarget,
+        device_map: &HashMap<u64, u64>,
+        modulator_map: &HashMap<u64, u64>,
+    ) {
+        match target {
+            MacroTarget::Device { device_id, .. } => {
+                if let Some(&new_id) = device_map.get(device_id) {
+                    *device_id = new_id;
+                }
+            }
+            MacroTarget::ModulatorRate { modulator_id }
+            | MacroTarget::ModulatorDepth { modulator_id } => {
+                if let Some(&new_id) = modulator_map.get(modulator_id) {
+                    *modulator_id = new_id;
+                }
+            }
+            MacroTarget::Instrument { .. } => {}
+        }
+    }
+
     pub fn any_track_soloed(&self) -> bool {
         self.tracks.iter().any(|track| track.solo)
     }
@@ -1414,6 +1769,169 @@ impl Project {
         created
     }
 
+    /// Whether `left` immediately precedes `right` with touching half-open ranges.
+    pub fn clips_are_adjacent(left: &Clip, right: &Clip) -> bool {
+        Self::snap_beats(left.end_beats()) == Self::snap_beats(right.start_beats())
+    }
+
+    /// Find an adjacent left/right pair to merge from a playlist selection.
+    ///
+    /// One selected clip merges with its right neighbor when present, otherwise its left
+    /// neighbor. Two selected clips merge when they touch on the same track (order-independent).
+    pub fn adjacent_clip_pair_for_merge(&self, clip_ids: &[u64]) -> Option<(u64, u64)> {
+        match clip_ids.len() {
+            0 => None,
+            1 => {
+                let id = clip_ids[0];
+                let track_id = self.track_id_for_clip(id)?;
+                let clip = self.clip(id)?;
+                let track = self.track(track_id)?;
+                for other in &track.clips {
+                    let other_id = other.id();
+                    if other_id == id {
+                        continue;
+                    }
+                    if Self::clips_are_adjacent(clip, other) {
+                        return Some((id, other_id));
+                    }
+                }
+                for other in &track.clips {
+                    let other_id = other.id();
+                    if other_id == id {
+                        continue;
+                    }
+                    if Self::clips_are_adjacent(other, clip) {
+                        return Some((other_id, id));
+                    }
+                }
+                None
+            }
+            2 => {
+                let a = clip_ids[0];
+                let b = clip_ids[1];
+                let track_a = self.track_id_for_clip(a);
+                let track_b = self.track_id_for_clip(b);
+                if track_a != track_b || track_a.is_none() {
+                    return None;
+                }
+                let clip_a = self.clip(a)?;
+                let clip_b = self.clip(b)?;
+                if Self::clips_are_adjacent(clip_a, clip_b) {
+                    Some((a, b))
+                } else if Self::clips_are_adjacent(clip_b, clip_a) {
+                    Some((b, a))
+                } else {
+                    None
+                }
+            }
+            _ => {
+                for i in 0..clip_ids.len() {
+                    for j in (i + 1)..clip_ids.len() {
+                        let a = clip_ids[i];
+                        let b = clip_ids[j];
+                        let track_a = self.track_id_for_clip(a);
+                        let track_b = self.track_id_for_clip(b);
+                        if track_a != track_b || track_a.is_none() {
+                            continue;
+                        }
+                        let clip_a = self.clip(a)?;
+                        let clip_b = self.clip(b)?;
+                        if Self::clips_are_adjacent(clip_a, clip_b) {
+                            return Some((a, b));
+                        }
+                        if Self::clips_are_adjacent(clip_b, clip_a) {
+                            return Some((b, a));
+                        }
+                    }
+                }
+                None
+            }
+        }
+    }
+
+    /// Merge two adjacent clips on the same track (`left` immediately before `right`).
+    /// Returns the surviving clip id, or None when types differ or audio sources differ.
+    pub fn can_merge_adjacent_clips(&self, left_id: u64, right_id: u64) -> bool {
+        if left_id == right_id {
+            return false;
+        }
+        let left_track = self.track_id_for_clip(left_id);
+        let right_track = self.track_id_for_clip(right_id);
+        if left_track != right_track || left_track.is_none() {
+            return false;
+        }
+        let Some(left) = self.clip(left_id) else {
+            return false;
+        };
+        let Some(right) = self.clip(right_id) else {
+            return false;
+        };
+        if !Self::clips_are_adjacent(left, right) {
+            return false;
+        }
+        match (left, right) {
+            (Clip::Midi(_), Clip::Midi(_)) => true,
+            (Clip::Audio(l), Clip::Audio(r)) => l.source == r.source,
+            _ => false,
+        }
+    }
+
+    pub fn merge_adjacent_clips(&mut self, left_id: u64, right_id: u64) -> Option<u64> {
+        if left_id == right_id {
+            return None;
+        }
+        let left_track = self.track_id_for_clip(left_id)?;
+        let right_track = self.track_id_for_clip(right_id)?;
+        if left_track != right_track {
+            return None;
+        }
+
+        let left = self.clip(left_id)?.clone();
+        let right = self.clip(right_id)?.clone();
+        if !Self::clips_are_adjacent(&left, &right) {
+            return None;
+        }
+
+        match (left, right) {
+            (Clip::Midi(l), Clip::Midi(r)) => {
+                let offset = l.length_beats;
+                let right_notes = r.notes.clone();
+                let mut notes_to_add = Vec::with_capacity(right_notes.len());
+                for note in right_notes {
+                    let id = self.next_note_id();
+                    self.bump_note_id();
+                    let start = Self::snap_beats(note.start_beats + offset);
+                    let duration = Self::snap_beats(note.duration_beats.max(SNAP_BEATS));
+                    notes_to_add.push((id, note.pitch, start, duration, note.velocity));
+                }
+
+                let left_mut = self.midi_clip_mut(left_id)?;
+                let mut new_note_ids = Vec::with_capacity(notes_to_add.len());
+                for (id, pitch, start, duration, velocity) in notes_to_add {
+                    left_mut.add_note_with_id(id, pitch, start, duration);
+                    if let Some(merged) = left_mut.note_mut(id) {
+                        merged.velocity = velocity;
+                    }
+                    new_note_ids.push(id);
+                }
+                left_mut.set_length_beats(l.length_beats + r.length_beats);
+                self.resolve_note_move_overlaps(left_id, &new_note_ids);
+                self.remove_clip(right_id);
+                Some(left_id)
+            }
+            (Clip::Audio(l), Clip::Audio(r)) => {
+                if l.source != r.source {
+                    return None;
+                }
+                let survivor = self.clip_mut(left_id)?;
+                survivor.set_length_beats(l.length_beats + r.length_beats);
+                self.remove_clip(right_id);
+                Some(left_id)
+            }
+            _ => None,
+        }
+    }
+
     /// Beat span of a time selection: `max(end) - min(start)`, snapped, at least one grid step.
     pub fn selection_span_beats(ranges: impl IntoIterator<Item = (f32, f32)>) -> f32 {
         let mut min_start = f32::INFINITY;
@@ -1720,6 +2238,30 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_track_inserts_below_with_fresh_ids() {
+        let mut project = Project::default();
+        let src_id = project.tracks[0].id;
+        let clip_id = project.tracks[0].clips[0].id();
+        project
+            .add_note_to_clip(clip_id, 60, 0.0, 1.0)
+            .expect("note");
+
+        let new_id = project.duplicate_track(src_id).expect("duplicate");
+        assert_eq!(project.tracks.len(), 2);
+        assert_eq!(project.tracks[0].id, src_id);
+        assert_eq!(project.tracks[1].id, new_id);
+        assert!(project.tracks[1].name.ends_with("copy"));
+        assert_eq!(project.tracks[1].clips.len(), 1);
+        assert_ne!(project.tracks[1].clips[0].id(), clip_id);
+        let dup_clip = project.tracks[1].clips[0].as_midi().expect("midi");
+        assert_eq!(dup_clip.notes.len(), 1);
+        assert_ne!(
+            dup_clip.notes[0].id,
+            project.tracks[0].clips[0].as_midi().unwrap().notes[0].id
+        );
+    }
+
+    #[test]
     fn track_audible_solo_overrides_mute() {
         let mut project = Project::default();
         let a = project.tracks[0].id;
@@ -1944,24 +2486,72 @@ mod tests {
     }
 
     #[test]
-    fn clamp_note_move_stops_at_same_pitch_neighbor() {
+    fn clamp_note_move_allows_same_pitch_overlap() {
         let mut project = Project::default();
         let clip_id = project.tracks[0].clips[0].id();
         let left = project
             .add_note_to_clip(clip_id, 60, 0.0, 1.0)
             .expect("left");
-        let right = project
+        project
             .add_note_to_clip(clip_id, 60, 2.0, 1.0)
             .expect("right");
-        let originals = vec![left];
-        let (delta, pitch) =
-            project.clamp_note_move_deltas(clip_id, &originals, 10.0, 0, &[]);
+        let (delta, pitch) = project.clamp_note_move_deltas(clip_id, &[left], 1.5, 0, &[]);
         assert_eq!(pitch, 0);
-        assert!((delta - 1.0).abs() < 1e-5);
-        let originals_right = vec![right];
-        let (delta_left, _) =
-            project.clamp_note_move_deltas(clip_id, &originals_right, -10.0, 0, &[]);
-        assert!((delta_left - (-1.0)).abs() < 1e-5);
+        assert!((delta - 1.5).abs() < 1e-5);
+    }
+
+    #[test]
+    fn resolve_note_move_replaces_fully_covered_note() {
+        let mut project = Project::default();
+        let clip_id = project.tracks[0].clips[0].id();
+        let stationary = project
+            .add_note_to_clip(clip_id, 60, 1.0, 1.0)
+            .expect("stationary");
+        let mover = project
+            .add_note_to_clip(clip_id, 60, 2.0, 1.0)
+            .expect("mover");
+        if let Some(note) = project
+            .midi_clip_mut(clip_id)
+            .and_then(|clip| clip.note_mut(mover.id))
+        {
+            note.start_beats = 1.0;
+        }
+        project.resolve_note_move_overlaps(clip_id, &[mover.id]);
+        assert!(project
+            .midi_clip(clip_id)
+            .and_then(|clip| clip.note(stationary.id))
+            .is_none());
+        let kept = project
+            .midi_clip(clip_id)
+            .and_then(|clip| clip.note(mover.id))
+            .expect("mover");
+        assert!((kept.start_beats - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn resolve_note_move_shortens_overlapped_tail() {
+        let mut project = Project::default();
+        let clip_id = project.tracks[0].clips[0].id();
+        let victim = project
+            .add_note_to_clip(clip_id, 60, 0.0, 4.0)
+            .expect("victim");
+        let mover = project
+            .add_note_to_clip(clip_id, 64, 0.0, 1.0)
+            .expect("mover");
+        if let Some(note) = project
+            .midi_clip_mut(clip_id)
+            .and_then(|clip| clip.note_mut(mover.id))
+        {
+            note.pitch = 60;
+            note.start_beats = 2.0;
+        }
+        project.resolve_note_move_overlaps(clip_id, &[mover.id]);
+        let trimmed = project
+            .midi_clip(clip_id)
+            .and_then(|clip| clip.note(victim.id))
+            .expect("victim");
+        assert!((trimmed.start_beats - 0.0).abs() < 1e-5);
+        assert!((trimmed.duration_beats - 2.0).abs() < 1e-5);
     }
 
     #[test]
@@ -2088,19 +2678,49 @@ mod tests {
     }
 
     #[test]
-    fn clamp_move_stops_at_neighbor() {
+    fn clamp_move_allows_track_overlap() {
         let mut project = Project::default();
-        let track_id = project.tracks[0].id;
         let left_id = project.tracks[0].clips[0].id();
+        let track_id = project.tracks[0].id;
         let right_id = project
             .add_clip_to_track(track_id, 8.0, 4.0)
             .expect("right");
-        // Moving left clip right by 10 beats should stop adjacent to right ([4, 8)).
         let delta = project.clamp_clip_move_delta(&[(left_id, 0.0, 4.0)], 10.0, &[]);
-        assert!((delta - 4.0).abs() < 1e-5);
-        // Moving right clip left should stop adjacent to left.
+        assert!((delta - 10.0).abs() < 1e-5);
         let delta_left = project.clamp_clip_move_delta(&[(right_id, 8.0, 4.0)], -10.0, &[]);
-        assert!((delta_left - (-4.0)).abs() < 1e-5);
+        assert!((delta_left - (-8.0)).abs() < 1e-5);
+    }
+
+    #[test]
+    fn resolve_clip_move_replaces_fully_covered_clip() {
+        let mut project = Project::default();
+        let track_id = project.tracks[0].id;
+        let victim_id = project
+            .add_clip_to_track(track_id, 4.0, 4.0)
+            .expect("victim");
+        let mover_id = project.tracks[0].clips[0].id();
+        if let Some(clip) = project.clip_mut(mover_id) {
+            clip.set_start_beats(4.0);
+        }
+        project.resolve_clip_move_overlaps(&[mover_id]);
+        assert!(project.clip(victim_id).is_none());
+    }
+
+    #[test]
+    fn resolve_clip_move_shortens_overlapped_tail() {
+        let mut project = Project::default();
+        let track_id = project.tracks[0].id;
+        let victim_id = project.tracks[0].clips[0].id();
+        let mover_id = project
+            .add_clip_to_track(track_id, 8.0, 2.0)
+            .expect("mover");
+        if let Some(clip) = project.clip_mut(mover_id) {
+            clip.set_start_beats(2.0);
+        }
+        project.resolve_clip_move_overlaps(&[mover_id]);
+        let victim = project.clip(victim_id).expect("victim");
+        assert!((victim.start_beats() - 0.0).abs() < 1e-5);
+        assert!((victim.length_beats() - 2.0).abs() < 1e-5);
     }
 
     #[test]
@@ -2128,6 +2748,43 @@ mod tests {
         assert_eq!(created[0].0, src);
         let copy = project.clip(created[0].1).expect("copy");
         assert_eq!(copy.start_beats(), 0.0);
+    }
+
+    #[test]
+    fn merge_adjacent_midi_clips() {
+        let mut project = Project::default();
+        let track_id = project.tracks[0].id;
+        let left_id = project.tracks[0].clips[0].id();
+        let right_id = project
+            .add_clip_to_track(track_id, 4.0, 4.0)
+            .expect("right");
+        project.add_note_to_clip(left_id, 60, 0.0, 1.0);
+        project.add_note_to_clip(right_id, 64, 0.0, 1.0);
+        assert!(project.can_merge_adjacent_clips(left_id, right_id));
+        let survivor = project
+            .merge_adjacent_clips(left_id, right_id)
+            .expect("merged");
+        assert_eq!(survivor, left_id);
+        assert!(project.clip(right_id).is_none());
+        let clip = project.clip(left_id).expect("survivor");
+        assert_eq!(clip.length_beats(), 8.0);
+        let midi = clip.as_midi().expect("midi");
+        assert_eq!(midi.notes.len(), 2);
+        assert!(midi.notes.iter().any(|note| {
+            note.pitch == 64 && (note.start_beats - 4.0).abs() < 1e-5
+        }));
+    }
+
+    #[test]
+    fn merge_adjacent_clips_rejects_gap() {
+        let mut project = Project::default();
+        let track_id = project.tracks[0].id;
+        let left_id = project.tracks[0].clips[0].id();
+        let right_id = project
+            .add_clip_to_track(track_id, 8.0, 4.0)
+            .expect("right");
+        assert!(!project.can_merge_adjacent_clips(left_id, right_id));
+        assert!(project.merge_adjacent_clips(left_id, right_id).is_none());
     }
 
     #[test]

@@ -4,7 +4,7 @@ Experimental music sketchpad: piano roll, playlist, soft-synth piano, and CLAP/V
 
 ## Status
 
-**Early but usable sketchpad** (2026-07-24): playlist + piano roll editing with undo/redo, transport, cpal playback (built-in piano, CLAP/VST3, and imported audio sample clips), plugin manager + editor windows (Linux X11/XWayland), multi-project `.motif` save/open with recent list + recovery autosave, and Settings for shortcuts, themes, plugins, editing, and project prefs. Not a full DAW.
+**Early but usable sketchpad** (2026-07-29): playlist + piano roll editing with undo/redo, transport, cpal playback (built-in piano, CLAP/VST3, and imported audio sample clips), bottom mixer dock, plugin manager + editor windows (Linux X11/XWayland), multi-project `.motif` save/open with recent list + recovery autosave, and Settings for shortcuts, themes, plugins, editing, and project prefs. Not a full DAW.
 
 | Area | State |
 |---|---|
@@ -13,6 +13,7 @@ Experimental music sketchpad: piano roll, playlist, soft-synth piano, and CLAP/V
 | Plugin manager (scan / cache) | Working (`plugin_cache.json` in CWD) |
 | Plugin editor GUI | Working on Linux (X11 / XWayland); not Wayland-native |
 | Piano roll (notes + key audition + copy/paste) | Working |
+| Mixer (bottom dock, gain / pan / M/S / meters) | Working (resizable; height in `settings.json`) |
 | Undo / redo (clips + notes) | Working (depth in Settings → Editing) |
 | Transport + loop + BPM + metronome | Working (includes live CPU / buffer / xrun strip) |
 | Performance view | Working (CPU graph + per-track DSP; Ctrl/Cmd+Shift+P) |
@@ -86,7 +87,7 @@ cargo run --release
 - **Double-click clip** - open piano roll for that clip (zoomed out to fit the clip)
 - **Audio clips** - do not open piano roll (arrangement-only clips)
 - **Ctrl/Cmd + left-click clip** - toggle multi-select
-- **Drag clip body** - move selected clip(s) on timeline (same-track clips cannot overlap)
+- **Drag clip body** - move selected clip(s) on timeline (overlapping clips shorten or are replaced on release)
 - **Shift + drag clip body** - duplicate selection, then move the copies
 - **Drag clip edges** - resize clip length (stops at neighboring clips)
 - **Delete / Backspace** - remove selected clip(s)
@@ -94,6 +95,7 @@ cargo run --release
 - **Ctrl/Cmd+X** - cut selected clip(s)
 - **Ctrl/Cmd+V** - paste clips at the playhead (same tracks)
 - **Ctrl/Cmd+D** - duplicate selected clip(s) to the right by selection length (remappable)
+- **Ctrl/Cmd+G** - merge adjacent selected clip(s) on the same track (remappable)
 - **Ctrl/Cmd+Z** - undo last clip/note edit (remappable)
 - **Ctrl/Cmd+Shift+Z** - redo (remappable)
 - **Add track** - menu: Built-in Piano or a scanned CLAP/VST3 instrument
@@ -101,6 +103,7 @@ cargo run --release
 - **M / S** on track header (or right-click **Mute** / **Solo**) - mute or solo a track; when any track is soloed, only soloed tracks play; otherwise muted tracks are silent
 - **Shift+S** - exclusive solo the selected track (clears other solos; press again to clear; remappable). Same with **Shift+click S** on a track header / mixer strip, or right-click **Solo exclusive**
 - **Shift+M** - exclusive mute the selected track (clears solos and other mutes; only this track silent; press again to clear; remappable). Same with **Shift+click M** or right-click **Mute exclusive**
+- **Right-click track header → Duplicate track** - copy the track (clips, notes, FX, automation, plugin state) directly below; the duplicate is selected and undoable (Ctrl/Cmd+Z)
 - **Right-click track header → Delete track** - remove the track and its clips (last track cannot be deleted; Ctrl/Cmd+Z restores a deleted track)
 - **X** (while pointer is over a track header) - delete that track (remappable; same rules as context-menu delete)
 - **Right-click track header** - open/close plugin editor (plugin tracks) or change instrument (searchable list)
@@ -122,7 +125,7 @@ cargo run --release
 - **Shift+Up / Shift+Down** - move selected note(s) up/down one semitone (remappable; blocked/clamped if same-pitch overlap)
 - **Ctrl/Cmd+Up / Down** - move selected note(s) up/down one octave (remappable)
 - **Drag empty grid** - marquee multi-select
-- **Drag note body** - move selected note(s) (pitch/start; same-pitch notes cannot overlap; adjacent OK; cannot leave the clip)
+- **Drag note body** - move selected note(s) (pitch/start; overlapping same-pitch notes shorten or are replaced on release; adjacent OK; cannot leave the clip)
 - **Alt + drag note body or resize** - free horizontal placement (no 1/16 snap)
 - **Shift + drag note body** - duplicate selection, then move the copies
 - **Drag left/right edge** - resize selected note(s) (same delta; stops at same-pitch neighbors and clip end)
@@ -152,15 +155,15 @@ cargo run --release
 - **Ctrl/Cmd+N** - new project (remappable)
 - **Ctrl/Cmd+O** - open `.motif` via native file dialog (remappable)
 - **Ctrl/Cmd+S** - save (or Save As when untitled; includes per-track CLAP/VST3 state; remappable)
-- **Ctrl/Cmd+Shift+S** - Save As... (remappable)
+- **Ctrl/Cmd+Alt+S** - Save As... (remappable)
 - **Projects...** - in-app Recent Projects loader
 - Window title and toolbar show the project name with `*` when unsaved
 - **Perf** toolbar / **Ctrl/Cmd+Shift+P** - Performance view (CPU graph, per-track DSP ms, xruns / lock skips; remappable)
-- **Mixer** toolbar / **M** - mixer view (remappable)
+- **Mixer** toolbar / **M** - toggle the bottom mixer panel on playlist / piano roll (drag the top edge to resize; snaps to half / full; remappable)
 - **Devices** toolbar / **D** - toggle the bottom device strip (instruments, FX, macros, modulators; remappable)
 - Transport strip also shows live **CPU % / buffer / latency / xruns / locks**
 - **Settings** - themes, shortcut remapping (multiple keys per action, conflict Override), Plugin Manager (Rescan / extra paths), Editing (undo depth), Project (autosave recovery interval, recent list); saved to `settings.json` + `plugin_cache.json`
-- **Escape** - leave piano roll, mixer, devices, Performance, or Settings (factory default; remappable)
+- **Escape** - leave piano roll, devices full view, Performance, or Settings (factory default; remappable)
 
 ### Projects (`.motif`)
 

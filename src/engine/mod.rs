@@ -4,6 +4,7 @@ mod mock;
 mod metronome;
 mod piano;
 pub mod plugins;
+mod rt_priority;
 mod sample;
 mod sequencer;
 

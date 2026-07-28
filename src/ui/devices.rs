@@ -34,7 +34,7 @@ use crate::ui::timeline::{
 };
 
 const TILE_WIDTH: f32 = 146.0;
-const TILE_HEIGHT: f32 = 74.0;t 86uifz i
+const TILE_HEIGHT: f32 = 74.0;
 const TILE_ROUNDING: f32 = 4.0;
 const TILE_INNER_MARGIN: f32 = 6.0;
 const TILE_CONTENT_WIDTH: f32 = TILE_WIDTH - TILE_INNER_MARGIN * 2.0;
@@ -183,6 +183,8 @@ pub struct DevicesUi {
     plugin_editor_request: Option<PluginEditorRequest>,
     /// Delete track request (consumed by app).
     delete_track_request: Option<u64>,
+    /// Duplicate track request (consumed by app).
+    duplicate_track_request: Option<u64>,
     /// Track header currently under the pointer (for Delete track shortcut).
     hovered_track_header: Option<u64>,
     /// Open clip request (consumed by app for piano-roll transition).
@@ -232,6 +234,7 @@ impl Default for DevicesUi {
             change_instrument_search: String::new(),
             plugin_editor_request: None,
             delete_track_request: None,
+            duplicate_track_request: None,
             hovered_track_header: None,
             open_clip_request: None,
             mini_selected_clip_ids: HashSet::new(),
@@ -260,6 +263,10 @@ impl DevicesUi {
 
     pub fn take_delete_track_request(&mut self) -> Option<u64> {
         self.delete_track_request.take()
+    }
+
+    pub fn take_duplicate_track_request(&mut self) -> Option<u64> {
+        self.duplicate_track_request.take()
     }
 
     pub fn hovered_track_header(&self) -> Option<u64> {
@@ -452,6 +459,7 @@ impl DevicesUi {
                                             &mut select_request,
                                             &mut self.plugin_editor_request,
                                             &mut self.delete_track_request,
+                                            &mut self.duplicate_track_request,
                                             &mut self.hovered_track_header,
                                             None,
                                             "devices",
@@ -705,6 +713,11 @@ impl DevicesUi {
                         );
                     }
 
+                    let raise_clip_ids: HashSet<u64> = self
+                        .mini_active_drag
+                        .as_ref()
+                        .map(|drag| drag.moving_clip_ids().collect())
+                        .unwrap_or_default();
                     let timeline_painter = painter.with_clip_rect(content);
                     draw_lane_timeline(
                         &timeline_painter,
@@ -715,6 +728,7 @@ impl DevicesUi {
                         project.beats_per_bar,
                         &track.clips,
                         &self.mini_selected_clip_ids,
+                        &raise_clip_ids,
                         project.track_audible(track),
                         project.bpm,
                         decoded_audio,

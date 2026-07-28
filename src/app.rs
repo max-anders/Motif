@@ -17,7 +17,8 @@ use crate::model::{
 };
 use crate::ui::{
     choice_to_instrument, show_inspector, track_name_for_choice, Action, AddBrowserAction,
-    AddBrowserUi, AppSettings, AudioImportRequest, BrowserTab, Chord, DevicesUi, MixerUi,
+    AddBrowserUi, AppSettings, AudioImportRequest, BrowserTab, Chord, DevicesUi, MixerPanelResize,
+    MixerUi, MIXER_PANEL_ID, MIXER_PANEL_MIN_HEIGHT,
     PerformanceUi, PianoRollUi, PlaylistUi, PluginEditorRequest, PollFilter,
     ProjectBrowserAction, ProjectBrowserUi, SettingsAction, SettingsUi, TransportUi,
     SETTINGS_FILE,
@@ -27,7 +28,6 @@ use crate::ui::{
 enum CenterView {
     Playlist,
     PianoRoll { clip_id: u64 },
-    Mixer,
     Devices,
     Performance,
     Settings,
@@ -48,6 +48,7 @@ pub struct DawApp {
     playlist: PlaylistUi,
     piano_roll: PianoRollUi,
     mixer: MixerUi,
+    mixer_panel_resize: MixerPanelResize,
     performance: PerformanceUi,
     devices: DevicesUi,
     settings_ui: SettingsUi,
@@ -64,6 +65,8 @@ pub struct DawApp {
     device_errors: HashMap<(u64, u64), String>,
     /// Shared selection for Mixer + Inspector (playlist header / mixer strip).
     selected_track: Option<u64>,
+    /// Toggleable bottom mixer panel (playlist / piano roll).
+    show_mixer_panel: bool,
     /// Toggleable properties panel (same Track facets as Mixer).
     show_inspector: bool,
     /// Bottom device strip (primary Devices UI over playlist / piano roll).
@@ -128,6 +131,7 @@ impl DawApp {
             playlist: PlaylistUi::default(),
             piano_roll: PianoRollUi::default(),
             mixer: MixerUi::default(),
+            mixer_panel_resize: MixerPanelResize::default(),
             performance: PerformanceUi::default(),
             devices: DevicesUi::default(),
             settings_ui: SettingsUi::default(),
@@ -141,6 +145,7 @@ impl DawApp {
             device_errors: HashMap::new(),
             selected_track,
             show_inspector: false,
+            show_mixer_panel: false,
             show_devices_strip: false,
             clipboard: EditClipboard::Empty,
             history: EditHistory::new(undo_limit),
@@ -200,7 +205,8 @@ impl DawApp {
             .map(|chord| chord.display())
             .unwrap_or_else(|| "M".to_string());
         format!(
-            "Open or close the mixer view.\nShortcut: {chord} (remappable in Settings)."
+            "Show or hide the mixer panel (drag the top edge to resize; snaps half / full).\n\
+             Shortcut: {chord} (remappable in Settings)."
         )
     }
 
@@ -738,8 +744,14 @@ impl DawApp {
     }
 
     fn write_recovery_backup(&mut self) {
-        self.engine.capture_plugin_states(&mut self.project);
-        self.engine.capture_device_states(&mut self.project);
+        // Autosave runs unattended, so it must never contend for the plugin
+        // mutexes mid-playback: capturing state there costs the audio callback
+        // its try_lock for as long as each plugin's getState takes. The last
+        // captured blob is good enough for crash recovery.
+        if !self.engine.is_playing() {
+            self.engine.capture_plugin_states(&mut self.project);
+            self.engine.capture_device_states(&mut self.project);
+        }
         match write_recovery(
             &self.project,
             self.current_path.as_deref(),
@@ -1068,6 +1080,23 @@ impl DawApp {
         self.engine.sync_channels(&self.project);
     }
 
+    fn duplicate_track(&mut self, track_id: u64) {
+        if self.project.track(track_id).is_none() {
+            return;
+        }
+        self.history.push_before(self.project.clone());
+        let Some(new_id) = self.project.duplicate_track(track_id) else {
+            return;
+        };
+        self.selected_track = Some(new_id);
+        let name = self
+            .project
+            .track(new_id)
+            .map(|track| track.name.clone())
+            .unwrap_or_default();
+        self.status_message = format!("Duplicated track: {name}");
+    }
+
     fn duplicate_selected_notes(&mut self) {
         let CenterView::PianoRoll { clip_id } = self.center_view else {
             return;
@@ -1147,6 +1176,37 @@ impl DawApp {
         if !new_ids.is_empty() {
             self.playlist.set_selection(new_ids);
         }
+    }
+
+    fn merge_selected_clips(&mut self) {
+        let ids: Vec<u64> = self.playlist.selected_clip_ids().iter().copied().collect();
+        let Some((left_id, right_id)) = self.project.adjacent_clip_pair_for_merge(&ids) else {
+            self.status_message = "Select adjacent clip(s) on the same track to merge".into();
+            return;
+        };
+        if !self.project.can_merge_adjacent_clips(left_id, right_id) {
+            self.status_message =
+                "Cannot merge clips (different types or different audio sources)".into();
+            return;
+        }
+        self.history.push_before(self.project.clone());
+        let survivor = self
+            .project
+            .merge_adjacent_clips(left_id, right_id)
+            .expect("prechecked merge");
+        if matches!(self.center_view, CenterView::PianoRoll { clip_id } if clip_id == right_id)
+        {
+            self.center_view = CenterView::PianoRoll { clip_id: survivor };
+            self.piano_roll.clear_selection();
+        }
+        if matches!(
+            self.settings_return,
+            CenterView::PianoRoll { clip_id } if clip_id == right_id
+        ) {
+            self.settings_return = CenterView::PianoRoll { clip_id: survivor };
+        }
+        self.playlist.set_selection(vec![survivor]);
+        self.status_message = "Merged clips".into();
     }
 
     fn copy_selected_notes(&mut self) {
@@ -1491,17 +1551,29 @@ impl DawApp {
         self.center_view = CenterView::Playlist;
     }
 
-    fn open_mixer(&mut self) {
-        if matches!(self.center_view, CenterView::Mixer) {
+    fn toggle_mixer_panel(&mut self) {
+        if self.mixer_panel_visible() {
+            self.show_mixer_panel = false;
             return;
         }
-        if matches!(self.center_view, CenterView::PianoRoll { .. }) {
-            self.piano_roll.release_audition(&mut self.engine);
-        }
+        self.show_mixer_panel = true;
         if self.selected_track.is_none() {
             self.selected_track = self.project.tracks.first().map(|t| t.id);
         }
-        self.center_view = CenterView::Mixer;
+    }
+
+    fn mixer_panel_visible(&self) -> bool {
+        self.show_mixer_panel
+            && matches!(
+                self.center_view,
+                CenterView::Playlist | CenterView::PianoRoll { .. }
+            )
+    }
+
+    fn mixer_panel_target_height(&self, available_height: f32) -> f32 {
+        let max_height = available_height * 0.95;
+        (available_height * self.settings.mixer_panel_fraction)
+            .clamp(MIXER_PANEL_MIN_HEIGHT.min(max_height), max_height)
     }
 
     fn open_performance(&mut self) {
@@ -1583,42 +1655,32 @@ impl DawApp {
             Action::DeleteSelection => match self.center_view {
                 CenterView::Playlist => self.delete_selected_clips(),
                 CenterView::PianoRoll { .. } => self.delete_selected_notes(),
-                CenterView::Mixer
-                | CenterView::Devices
-                | CenterView::Performance
-                | CenterView::Settings => {}
+                CenterView::Devices | CenterView::Performance | CenterView::Settings => {}
             },
             Action::CopySelection => match self.center_view {
                 CenterView::Playlist => self.copy_selected_clips(),
                 CenterView::PianoRoll { .. } => self.copy_selected_notes(),
-                CenterView::Mixer
-                | CenterView::Devices
-                | CenterView::Performance
-                | CenterView::Settings => {}
+                CenterView::Devices | CenterView::Performance | CenterView::Settings => {}
             },
             Action::CutSelection => match self.center_view {
                 CenterView::Playlist => self.cut_selected_clips(),
                 CenterView::PianoRoll { .. } => self.cut_selected_notes(),
-                CenterView::Mixer
-                | CenterView::Devices
-                | CenterView::Performance
-                | CenterView::Settings => {}
+                CenterView::Devices | CenterView::Performance | CenterView::Settings => {}
             },
             Action::PasteSelection => match self.center_view {
                 CenterView::Playlist => self.paste_clips_at_playhead(),
                 CenterView::PianoRoll { clip_id } => self.paste_notes_at_playhead(clip_id),
-                CenterView::Mixer
-                | CenterView::Devices
-                | CenterView::Performance
-                | CenterView::Settings => {}
+                CenterView::Devices | CenterView::Performance | CenterView::Settings => {}
             },
             Action::DuplicateSelection => match self.center_view {
                 CenterView::Playlist => self.duplicate_selected_clips(),
                 CenterView::PianoRoll { .. } => self.duplicate_selected_notes(),
-                CenterView::Mixer
-                | CenterView::Devices
-                | CenterView::Performance
-                | CenterView::Settings => {}
+                CenterView::Devices | CenterView::Performance | CenterView::Settings => {}
+            },
+            Action::MergeClips => {
+                if matches!(self.center_view, CenterView::Playlist) {
+                    self.merge_selected_clips();
+                }
             },
             Action::Undo => match self.center_view {
                 CenterView::Settings => {}
@@ -1644,7 +1706,6 @@ impl DawApp {
                 match self.center_view {
                     CenterView::Settings => self.close_settings(),
                     CenterView::PianoRoll { .. }
-                    | CenterView::Mixer
                     | CenterView::Devices
                     | CenterView::Performance => {
                         self.back_to_playlist()
@@ -1653,9 +1714,8 @@ impl DawApp {
                 }
             }
             Action::ToggleMixer => match self.center_view {
-                CenterView::Mixer => self.back_to_playlist(),
                 CenterView::Settings => {}
-                _ => self.open_mixer(),
+                _ => self.toggle_mixer_panel(),
             },
             Action::TogglePerformance => match self.center_view {
                 CenterView::Performance => self.back_to_playlist(),
@@ -1813,7 +1873,6 @@ impl eframe::App for DawApp {
                         ui.separator();
                     }
                     CenterView::PianoRoll { .. }
-                    | CenterView::Mixer
                     | CenterView::Devices
                     | CenterView::Performance => {
                         if ui.button("Back to playlist").clicked() {
@@ -1826,13 +1885,21 @@ impl eframe::App for DawApp {
 
                 self.show_file_menu(ui);
 
-                if !matches!(self.center_view, CenterView::Settings | CenterView::Mixer)
+                if !matches!(self.center_view, CenterView::Settings)
+                    && matches!(
+                        self.center_view,
+                        CenterView::Playlist | CenterView::PianoRoll { .. }
+                    )
                     && ui
-                        .button("Mixer")
+                        .button(if self.show_mixer_panel {
+                            "Hide mixer"
+                        } else {
+                            "Mixer"
+                        })
                         .on_hover_text(self.mixer_shortcut_hint())
                         .clicked()
                 {
-                    self.open_mixer();
+                    self.toggle_mixer_panel();
                 }
 
                 if !matches!(
@@ -1856,8 +1923,10 @@ impl eframe::App for DawApp {
                     self.toggle_devices_strip();
                 }
 
-                if matches!(self.center_view, CenterView::Playlist | CenterView::Mixer)
-                    && ui
+                if matches!(
+                    self.center_view,
+                    CenterView::Playlist | CenterView::PianoRoll { .. }
+                ) && ui
                         .button(if self.show_inspector {
                             "Hide inspector"
                         } else {
@@ -1885,9 +1954,6 @@ impl eframe::App for DawApp {
                         ui.label(format!("Editing: {}", clip.name()));
                     }
                 }
-                if matches!(self.center_view, CenterView::Mixer) {
-                    ui.label("Mixer");
-                }
                 if matches!(self.center_view, CenterView::Devices) {
                     ui.label("Devices");
                 }
@@ -1901,7 +1967,10 @@ impl eframe::App for DawApp {
         });
 
         if self.show_inspector
-            && matches!(self.center_view, CenterView::Playlist | CenterView::Mixer)
+            && matches!(
+                self.center_view,
+                CenterView::Playlist | CenterView::PianoRoll { .. }
+            )
         {
             egui::SidePanel::right("track_inspector")
                 .default_width(260.0)
@@ -1984,11 +2053,70 @@ impl eframe::App for DawApp {
                 .note_dock_panel_width(panel_response.response.rect.width());
         }
 
+        if self.mixer_panel_visible() {
+            let available = ctx.available_rect();
+            let available_height = available.height();
+            let target_height = self.mixer_panel_target_height(available_height);
+            let max_height = available_height * 0.95;
+            // Pin height from settings when idle. egui persists content-sized
+            // PanelState, which otherwise ratchets the panel taller each frame.
+            if !MixerPanelResize::is_resize_dragging(ctx) {
+                MixerPanelResize::force_height(ctx, available, target_height);
+            }
+            let mut hide_mixer = false;
+            let panel_response = egui::TopBottomPanel::bottom(MIXER_PANEL_ID)
+                .resizable(true)
+                .default_height(target_height)
+                .height_range(MIXER_PANEL_MIN_HEIGHT.min(max_height)..=max_height)
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.heading("Mixer");
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("Hide").clicked() {
+                                hide_mixer = true;
+                            }
+                        });
+                    });
+                    ui.separator();
+                    let theme = self.settings.themes.colors().clone();
+                    let DawApp {
+                        mixer,
+                        project,
+                        engine,
+                        history,
+                        selected_track,
+                        ..
+                    } = self;
+                    mixer.show(
+                        ui,
+                        project,
+                        engine,
+                        history,
+                        selected_track,
+                        &theme,
+                    );
+                });
+            if hide_mixer {
+                self.show_mixer_panel = false;
+            }
+            if self.mixer_panel_resize.note_height(
+                ctx,
+                panel_response.response.rect.height(),
+                available_height,
+                &mut self.settings.mixer_panel_fraction,
+                &mut self.show_mixer_panel,
+            ) {
+                let snapped = self.mixer_panel_target_height(available_height);
+                MixerPanelResize::force_height(ctx, available, snapped);
+                self.save_settings();
+            }
+        }
+
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show(ctx, |ui| match self.center_view {
                 CenterView::Playlist => {
-                    let (open_clip, editor_request, delete_track, import_audio, hovered_header, settings_dirty) = {
+                    let (open_clip, editor_request, delete_track, duplicate_track, import_audio, hovered_header, settings_dirty) = {
                         let DawApp {
                             playlist,
                             project,
@@ -2016,6 +2144,7 @@ impl eframe::App for DawApp {
                             playlist.take_open_clip_request(),
                             playlist.take_plugin_editor_request(),
                             playlist.take_delete_track_request(),
+                            playlist.take_duplicate_track_request(),
                             playlist.take_audio_import_request(),
                             playlist.hovered_track_header(),
                             settings_dirty,
@@ -2037,31 +2166,15 @@ impl eframe::App for DawApp {
                             self.delete_track(track_id);
                         }
                     }
+                    if let Some(track_id) = duplicate_track {
+                        self.duplicate_track(track_id);
+                    }
                     if let Some(request) = import_audio {
                         self.import_audio_clip(request);
                     }
                 }
-                CenterView::Mixer => {
-                    let DawApp {
-                        mixer,
-                        project,
-                        engine,
-                        settings,
-                        history,
-                        selected_track,
-                        ..
-                    } = self;
-                    mixer.show(
-                        ui,
-                        project,
-                        engine,
-                        history,
-                        selected_track,
-                        settings.themes.colors(),
-                    );
-                }
                 CenterView::Devices => {
-                    let (editor_request, open_clip, delete_track, hovered_header, settings_dirty) = {
+                    let (editor_request, open_clip, delete_track, duplicate_track, hovered_header, settings_dirty) = {
                         let DawApp {
                             devices,
                             project,
@@ -2091,6 +2204,7 @@ impl eframe::App for DawApp {
                             devices.take_plugin_editor_request(),
                             devices.take_open_clip_request(),
                             devices.take_delete_track_request(),
+                            devices.take_duplicate_track_request(),
                             devices.hovered_track_header(),
                             settings_dirty,
                         )
@@ -2110,6 +2224,9 @@ impl eframe::App for DawApp {
                         if let Some(track_id) = hovered_header {
                             self.delete_track(track_id);
                         }
+                    }
+                    if let Some(track_id) = duplicate_track {
+                        self.duplicate_track(track_id);
                     }
                 }
                 CenterView::PianoRoll { clip_id } => {

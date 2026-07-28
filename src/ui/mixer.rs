@@ -17,42 +17,156 @@
 //! so strips fill the mixer view instead of sitting in a short top band.
 
 use std::collections::HashMap;
+use std::f32::consts::FRAC_PI_2;
 use std::ops::RangeInclusive;
 
-use egui::{Align, Align2, Color32, FontFamily, FontId, Id, Layout, Pos2, Rect, Sense, Stroke, Ui, UiBuilder, Vec2};
+use egui::{
+    epaint::TextShape, Align, Align2, Color32, Context, FontFamily, FontId, Id, Layout, Pos2,
+    Rect, Sense, Stroke, Ui, UiBuilder, Vec2,
+};
 
 use crate::engine::DawEngine;
 use crate::model::{EditHistory, Project, MAX_GAIN_DB, MIN_GAIN_DB};
 use crate::ui::playlist::ms_toggle_button;
 use crate::ui::theme::ThemeColors;
 
-const STRIP_WIDTH: f32 = 132.0;
+/// Compact strip width (FL-style narrow channel).
+const STRIP_WIDTH: f32 = 58.0;
 /// Design / minimum strip height; taller panels grow strips from here.
-const STRIP_HEIGHT_MIN: f32 = 352.0;
-const STRIP_ROUNDING: f32 = 6.0;
-const STRIP_MARGIN: f32 = 10.0;
-const STRIP_GAP: f32 = 10.0;
+const STRIP_HEIGHT_MIN: f32 = 320.0;
+const STRIP_ROUNDING: f32 = 4.0;
+const STRIP_MARGIN: f32 = 4.0;
+const STRIP_GAP: f32 = 4.0;
 /// Inset of the strip row from the mixer panel edges.
-const MIXER_PADDING_LEFT: f32 = 12.0;
-const MIXER_PADDING_BOTTOM: f32 = 12.0;
+const MIXER_PADDING_LEFT: f32 = 8.0;
+const MIXER_PADDING_BOTTOM: f32 = 8.0;
 
-const TOP_BAR_HEIGHT: f32 = 3.0;
-const CONTROL_ROW_HEIGHT: f32 = 24.0;
+const TOP_BAR_HEIGHT: f32 = 2.0;
+const HEADER_HEIGHT: f32 = 88.0;
+const CONTROL_ROW_HEIGHT: f32 = 18.0;
 /// Fader track height at [`STRIP_HEIGHT_MIN`]; grows 1:1 with strip height.
-const FADER_HEIGHT_MIN: f32 = 148.0;
-const FADER_TRACK_WIDTH: f32 = 22.0;
-const FADER_VALUE_HEIGHT: f32 = 14.0;
+const FADER_HEIGHT_MIN: f32 = 140.0;
+const FADER_TRACK_WIDTH: f32 = 14.0;
+const FADER_VALUE_HEIGHT: f32 = 12.0;
 /// Gain readout under the fader — smaller than body text so the rail dominates.
-const FADER_VALUE_FONT: f32 = 9.0;
-const METER_WIDTH: f32 = 8.0;
-const METER_GAP: f32 = 3.0;
+const FADER_VALUE_FONT: f32 = 8.0;
+const METER_WIDTH: f32 = 4.0;
+const METER_GAP: f32 = 2.0;
 const METER_DECAY: f32 = 0.85;
-const PAN_ROW_HEIGHT: f32 = 20.0;
-const PAN_LABEL_WIDTH: f32 = 22.0;
-const PAN_SLIDER_WIDTH: f32 = 48.0;
-const PAN_VALUE_WIDTH: f32 = 28.0;
-const PAN_VALUE_FONT: f32 = 9.0;
-const FOOTER_ROW_HEIGHT: f32 = 28.0;
+/// Snap gain to unity when the fader is within this many dB of 0.
+const GAIN_UNITY_SNAP_DB: f32 = 0.6;
+const PAN_KNOB_SIZE: f32 = 26.0;
+const PAN_ROW_HEIGHT: f32 = PAN_KNOB_SIZE + 2.0;
+const PAN_SNAP: f32 = 0.04;
+const FOOTER_ROW_HEIGHT: f32 = 22.0;
+const VERTICAL_NAME_FONT: f32 = 9.0;
+
+/// Default bottom-panel height as a fraction of the editor area (below transport).
+pub const MIXER_PANEL_DEFAULT_FRACTION: f32 = 0.5;
+/// Snap targets while dragging the panel resize handle.
+pub const MIXER_PANEL_SNAP_HALF: f32 = 0.5;
+pub const MIXER_PANEL_SNAP_FULL: f32 = 0.92;
+/// Drag below this fraction on release closes the panel.
+pub const MIXER_PANEL_CLOSE_FRACTION: f32 = 0.18;
+pub const MIXER_PANEL_MIN_HEIGHT: f32 = 240.0;
+const MIXER_PANEL_SNAP_EPS: f32 = 0.06;
+
+/// Clamp a stored mixer height fraction to sane bounds.
+pub fn clamp_mixer_panel_fraction(fraction: f32) -> f32 {
+    fraction.clamp(MIXER_PANEL_CLOSE_FRACTION, MIXER_PANEL_SNAP_FULL)
+}
+
+/// Nearest snap target after the user releases the resize handle.
+pub fn snap_mixer_panel_fraction(fraction: f32) -> f32 {
+    let fraction = clamp_mixer_panel_fraction(fraction);
+    let snaps = [MIXER_PANEL_SNAP_HALF, MIXER_PANEL_SNAP_FULL];
+    let mut best = snaps[0];
+    let mut best_dist = (fraction - best).abs();
+    for snap in snaps {
+        let dist = (fraction - snap).abs();
+        if dist < best_dist {
+            best = snap;
+            best_dist = dist;
+        }
+    }
+    if best_dist <= MIXER_PANEL_SNAP_EPS {
+        best
+    } else {
+        fraction
+    }
+}
+
+/// Stable egui id for the bottom mixer `TopBottomPanel` (and its resize grip).
+pub const MIXER_PANEL_ID: &str = "mixer_panel";
+
+#[derive(Debug, Default)]
+pub struct MixerPanelResize {
+    tracking: bool,
+}
+
+impl MixerPanelResize {
+    pub fn panel_id() -> Id {
+        Id::new(MIXER_PANEL_ID)
+    }
+
+    /// True while the user is dragging the panel's top resize grip.
+    pub fn is_resize_dragging(ctx: &Context) -> bool {
+        let resize_id = Self::panel_id().with("__resize");
+        ctx.read_response(resize_id)
+            .is_some_and(|response| response.dragged())
+    }
+
+    /// Write egui's persisted panel height so content cannot expand the panel.
+    ///
+    /// egui `TopBottomPanel` stores the *content* rect as `PanelState`; if content
+    /// asks for more height than allocated, the panel grows every frame. Pinning
+    /// the stored height from our remembered fraction stops that feedback loop.
+    pub fn force_height(ctx: &Context, available: Rect, height: f32) {
+        let height = height.clamp(0.0, available.height().max(0.0));
+        let rect = Rect::from_min_max(
+            Pos2::new(available.left(), available.bottom() - height),
+            available.max,
+        );
+        ctx.data_mut(|data| {
+            data.insert_persisted(
+                Self::panel_id(),
+                egui::containers::panel::PanelState { rect },
+            );
+        });
+    }
+
+    /// Call after `TopBottomPanel::show` each frame. Returns `true` when settings
+    /// should be persisted (snap on resize release).
+    pub fn note_height(
+        &mut self,
+        ctx: &Context,
+        height: f32,
+        available_height: f32,
+        fraction: &mut f32,
+        open: &mut bool,
+    ) -> bool {
+        if available_height <= 1.0 {
+            return false;
+        }
+
+        let dragging = Self::is_resize_dragging(ctx);
+        let mut save = false;
+        if self.tracking && !dragging {
+            let raw = height / available_height;
+            if raw < MIXER_PANEL_CLOSE_FRACTION {
+                *open = false;
+            } else {
+                *fraction = snap_mixer_panel_fraction(raw);
+                save = true;
+            }
+            self.tracking = false;
+        } else if dragging {
+            self.tracking = true;
+            *fraction = clamp_mixer_panel_fraction(height / available_height);
+        }
+        save
+    }
+}
 
 #[derive(Debug, Default)]
 pub struct MixerUi {
@@ -72,27 +186,31 @@ impl MixerUi {
         theme: &ThemeColors,
     ) {
         ui.painter().rect_filled(ui.max_rect(), 0.0, theme.panel_bg);
-        ui.heading("Mixer");
-        ui.label(
-            egui::RichText::new(
-                "Same track object as playlist / inspector — gain, pan, M/S, meters.",
-            )
-            .color(theme.text_muted)
-            .small(),
-        );
-        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("Drag the top edge to resize (snaps half / full).")
+                    .color(theme.text_muted)
+                    .small(),
+            );
+        });
+        ui.add_space(4.0);
 
         self.decay_meters(engine);
 
-        // Fill the panel: strip chrome stays fixed, fader/meter absorb the delta.
-        let strip_height =
-            (ui.available_height() - MIXER_PADDING_BOTTOM).max(STRIP_HEIGHT_MIN);
-        let fader_height = FADER_HEIGHT_MIN + (strip_height - STRIP_HEIGHT_MIN);
+        // Measure AFTER the chrome above so strip min-height cannot exceed the
+        // panel and feed egui's content-sized PanelState growth loop.
+        let strip_height = (ui.available_height() - MIXER_PADDING_BOTTOM).max(0.0);
+        let fader_height = if strip_height >= STRIP_HEIGHT_MIN {
+            FADER_HEIGHT_MIN + (strip_height - STRIP_HEIGHT_MIN)
+        } else {
+            (FADER_HEIGHT_MIN * (strip_height / STRIP_HEIGHT_MIN)).max(48.0)
+        };
 
         egui::ScrollArea::horizontal()
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                ui.set_min_height(strip_height);
+                // Never request more than the remaining panel space.
+                ui.set_min_height(strip_height.min(ui.available_height()));
                 ui.horizontal_top(|ui| {
                     ui.add_space(MIXER_PADDING_LEFT);
                     ui.spacing_mut().item_spacing.x = STRIP_GAP;
@@ -191,7 +309,7 @@ impl MixerUi {
             selected,
             theme,
             |ui| {
-                let header = strip_header(
+                let header = vertical_strip_header(
                     ui,
                     &track.name,
                     track.instrument.display_name(),
@@ -200,10 +318,9 @@ impl MixerUi {
                 );
                 clicked = header.clicked();
 
-                ui.add_space(6.0);
                 fixed_height_row(ui, CONTROL_ROW_HEIGHT, |ui| {
                     ui.horizontal_centered(|ui| {
-                        ui.spacing_mut().item_spacing.x = 4.0;
+                        ui.spacing_mut().item_spacing.x = 2.0;
                         if ms_toggle_button(ui, "M", track.muted, theme) {
                             history.push_before(project.clone());
                             let exclusive = ui.input(|i| i.modifiers.shift);
@@ -227,7 +344,7 @@ impl MixerUi {
                     });
                 });
 
-                ui.add_space(8.0);
+                ui.add_space(4.0);
                 let mut gain = track.gain_db;
                 let response = fader_section(
                     ui,
@@ -240,33 +357,28 @@ impl MixerUi {
                 );
                 apply_slider_with_history(history, project, &response, |project| {
                     if let Some(t) = project.track_mut(track_id) {
-                        t.gain_db = gain;
+                        t.gain_db = snap_gain_db(gain);
                     }
                 });
 
-                ui.add_space(8.0);
+                ui.add_space(4.0);
                 let mut pan = track.pan;
-                let pan_response = pan_row(ui, &mut pan, theme);
+                let pan_response = pan_knob(ui, &mut pan, theme);
                 apply_slider_with_history(history, project, &pan_response, |project| {
                     if let Some(t) = project.track_mut(track_id) {
-                        t.pan = pan;
+                        t.pan = snap_pan(pan);
                     }
                 });
 
-                ui.add_space(6.0);
-                ui.add(egui::Separator::default().spacing(4.0));
+                ui.add_space(4.0);
                 fixed_height_row(ui, FOOTER_ROW_HEIGHT, |ui| {
-                    ui.vertical(|ui| {
+                    ui.vertical_centered(|ui| {
                         footer_chip(
                             ui,
-                            &format!("{} send{}", track.sends.len(), plural(track.sends.len())),
+                            &format!("{}s", track.sends.len()),
                             theme.text_muted,
                         );
-                        footer_chip(
-                            ui,
-                            &format!("{} fx", track.devices.len()),
-                            theme.text_muted,
-                        );
+                        footer_chip(ui, &format!("{}fx", track.devices.len()), theme.text_muted);
                     });
                 });
             },
@@ -296,12 +408,11 @@ impl MixerUi {
             false,
             theme,
             |ui| {
-                strip_header(ui, "Master", "Stereo bus", theme.accent, theme.text_muted);
+                vertical_strip_header(ui, "Master", "Out", theme.accent, theme.text_muted);
 
-                ui.add_space(6.0);
                 fixed_height_row(ui, CONTROL_ROW_HEIGHT, |_ui| {});
 
-                ui.add_space(8.0);
+                ui.add_space(4.0);
                 let mut gain = project.master_gain_db;
                 let response = fader_section(
                     ui,
@@ -313,18 +424,16 @@ impl MixerUi {
                     theme,
                 );
                 apply_slider_with_history(history, project, &response, |project| {
-                    project.master_gain_db = gain;
+                    project.master_gain_db = snap_gain_db(gain);
                 });
 
-                ui.add_space(8.0);
+                ui.add_space(4.0);
                 fixed_height_row(ui, PAN_ROW_HEIGHT, |_ui| {});
 
-                ui.add_space(6.0);
-                ui.add(egui::Separator::default().spacing(4.0));
+                ui.add_space(4.0);
                 fixed_height_row(ui, FOOTER_ROW_HEIGHT, |ui| {
-                    ui.vertical(|ui| {
-                        footer_chip(ui, "output", theme.text_muted);
-                        footer_chip(ui, "stereo out", theme.text_muted);
+                    ui.vertical_centered(|ui| {
+                        footer_chip(ui, "out", theme.text_muted);
                     });
                 });
             },
@@ -391,28 +500,30 @@ fn strip_container(
     add_contents(&mut content_ui);
 }
 
-/// Name (truncated, clickable) + subtitle line. Same two-line shape for every strip.
-fn strip_header(
+/// Vertical track name + tiny subtitle, FL-style compact header.
+fn vertical_strip_header(
     ui: &mut Ui,
     title: &str,
     subtitle: &str,
     title_color: Color32,
     subtitle_color: Color32,
 ) -> egui::Response {
-    let title_response = ui.add(
-        egui::Label::new(egui::RichText::new(title).color(title_color).strong())
-            .truncate()
-            .sense(Sense::click()),
+    let width = ui.available_width();
+    let (rect, response) =
+        ui.allocate_exact_size(Vec2::new(width, HEADER_HEIGHT), Sense::click());
+    paint_vertical_label(ui, rect, title, title_color, VERTICAL_NAME_FONT);
+    let sub_rect = Rect::from_min_max(
+        Pos2::new(rect.left(), rect.bottom() - 10.0),
+        rect.max,
     );
-    ui.add(
-        egui::Label::new(
-            egui::RichText::new(subtitle)
-                .color(subtitle_color)
-                .small(),
-        )
-        .truncate(),
+    ui.painter().text(
+        sub_rect.center(),
+        Align2::CENTER_CENTER,
+        truncate_chars(subtitle, 8),
+        FontId::new(7.0, FontFamily::Proportional),
+        subtitle_color,
     );
-    title_response
+    response.on_hover_text(format!("{title}\n{subtitle}"))
 }
 
 /// Runs `add_contents` inside a child UI whose reported height is forced to
@@ -427,11 +538,7 @@ fn fixed_height_row(ui: &mut Ui, height: f32, add_contents: impl FnOnce(&mut Ui)
     });
 }
 
-/// Vertical fader + stereo meter, with a manually-painted (never-wrapping) dB readout.
-///
-/// egui vertical sliders take their *length* from [`egui::style::Spacing::slider_width`],
-/// not from [`Ui::add_sized`] — set that before adding the slider or the rail stays
-/// at the default short length while the strip grows around it.
+/// Vertical fader + stereo meter, centered in the strip, with a 0 dB tick and snap.
 fn fader_section(
     ui: &mut Ui,
     value: &mut f32,
@@ -444,19 +551,19 @@ fn fader_section(
     let mut slider_response = None;
     let column_width = FADER_TRACK_WIDTH + METER_GAP + METER_WIDTH * 2.0;
 
-    ui.vertical(|ui| {
-        ui.horizontal(|ui| {
+    ui.with_layout(Layout::top_down(Align::Center), |ui| {
+        ui.horizontal_centered(|ui| {
             ui.spacing_mut().item_spacing.x = METER_GAP;
-            // Vertical rail length (see module note above).
             ui.spacing_mut().slider_width = fader_height;
 
-            let slider = egui::Slider::new(value, range)
+            let slider = egui::Slider::new(value, range.clone())
                 .vertical()
                 .show_value(false)
                 .trailing_fill(true);
-            // Thickness x length; length is driven by slider_width set above.
-            slider_response =
-                Some(ui.add_sized(Vec2::new(FADER_TRACK_WIDTH, fader_height), slider));
+            let response =
+                ui.add_sized(Vec2::new(FADER_TRACK_WIDTH, fader_height), slider);
+            paint_unity_tick(ui, response.rect, &range, theme);
+            slider_response = Some(response);
 
             let (meter_rect, _) = ui.allocate_exact_size(
                 Vec2::new(METER_WIDTH * 2.0, fader_height),
@@ -469,46 +576,129 @@ fn fader_section(
         painted_value(
             ui,
             Vec2::new(column_width, FADER_VALUE_HEIGHT),
-            &format!("{value:+.1}"),
+            &format!("{:.1}", snap_gain_db(*value)),
             FADER_VALUE_FONT,
             theme.text_muted,
         );
     });
 
+    if slider_response
+        .as_ref()
+        .is_some_and(|r| r.changed() || r.drag_stopped())
+    {
+        *value = snap_gain_db(*value);
+    }
+
     slider_response.expect("slider is always added above")
 }
 
-/// Compact pan control: fixed-width label, fixed-width slider, painted readout.
-fn pan_row(ui: &mut Ui, pan: &mut f32, theme: &ThemeColors) -> egui::Response {
-    let mut slider_response = None;
+/// Rotary pan knob (compact, centered).
+fn pan_knob(ui: &mut Ui, pan: &mut f32, theme: &ThemeColors) -> egui::Response {
+    let mut knob_response = None;
     fixed_height_row(ui, PAN_ROW_HEIGHT, |ui| {
-        ui.horizontal_centered(|ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
-            ui.add_sized(
-                Vec2::new(PAN_LABEL_WIDTH, PAN_ROW_HEIGHT),
-                egui::Label::new(
-                    egui::RichText::new("Pan")
-                        .color(theme.text_muted)
-                        .small(),
-                ),
+        ui.with_layout(Layout::top_down(Align::Center), |ui| {
+            let size = Vec2::splat(PAN_KNOB_SIZE);
+            let (rect, mut response) = ui.allocate_exact_size(size, Sense::drag());
+            let center = rect.center();
+            let radius = rect.width() * 0.42;
+            let painter = ui.painter();
+
+            painter.circle_filled(center, radius, theme.widget_bg);
+            painter.circle_stroke(center, radius, Stroke::new(1.0_f32, theme.separator));
+
+            let angle = pan_to_angle(*pan);
+            let indicator = center + Vec2::angled(angle) * radius * 0.72;
+            painter.line_segment(
+                [center, indicator],
+                Stroke::new(1.5_f32, theme.track_header_text),
             );
-            let slider = egui::Slider::new(pan, -1.0..=1.0).show_value(false);
-            slider_response = Some(
-                ui.add_sized(Vec2::new(PAN_SLIDER_WIDTH, PAN_ROW_HEIGHT * 0.7), slider),
-            );
-            painted_value(
-                ui,
-                Vec2::new(PAN_VALUE_WIDTH, PAN_ROW_HEIGHT),
-                &pan_label(*pan),
-                PAN_VALUE_FONT,
-                theme.text_muted,
-            );
+
+            if response.dragged() {
+                let delta = response.drag_delta();
+                *pan = (*pan + delta.x * 0.01 - delta.y * 0.01).clamp(-1.0, 1.0);
+                *pan = snap_pan(*pan);
+                response.mark_changed();
+            }
+            if response.double_clicked() {
+                *pan = 0.0;
+                response.mark_changed();
+            }
+
+            knob_response = Some(response.on_hover_text(format!("Pan: {}", pan_label(*pan))));
         });
     });
-    slider_response.expect("slider is always added above")
+    knob_response.expect("knob is always added above")
+}
+
+fn pan_to_angle(pan: f32) -> f32 {
+    // -1 (full L) .. +1 (full R), 12 o'clock = center.
+    -FRAC_PI_2 + pan.clamp(-1.0, 1.0) * FRAC_PI_2 * 0.85
+}
+
+fn snap_gain_db(db: f32) -> f32 {
+    if db.abs() <= GAIN_UNITY_SNAP_DB {
+        0.0
+    } else {
+        db.clamp(MIN_GAIN_DB, MAX_GAIN_DB)
+    }
+}
+
+fn snap_pan(pan: f32) -> f32 {
+    if pan.abs() <= PAN_SNAP {
+        0.0
+    } else {
+        pan.clamp(-1.0, 1.0)
+    }
+}
+
+fn paint_unity_tick(
+    ui: &Ui,
+    slider_rect: Rect,
+    range: &RangeInclusive<f32>,
+    theme: &ThemeColors,
+) {
+    let min = *range.start();
+    let max = *range.end();
+    if !(min..=max).contains(&0.0) {
+        return;
+    }
+    let t = (0.0 - min) / (max - min);
+    let y = slider_rect.top() + (1.0 - t) * slider_rect.height();
+    let tick = Stroke::new(1.0_f32, theme.accent.gamma_multiply(0.85));
+    ui.painter().line_segment(
+        [
+            Pos2::new(slider_rect.left() - 2.0, y),
+            Pos2::new(slider_rect.right() + 2.0, y),
+        ],
+        tick,
+    );
+}
+
+/// Horizontal label rotated 90 deg counter-clockwise for FL-style strip names.
+fn paint_vertical_label(ui: &Ui, rect: Rect, text: &str, color: Color32, font_size: f32) {
+    let label = truncate_chars(text, 14);
+    let font_id = FontId::new(font_size, FontFamily::Proportional);
+    let galley = ui.painter().layout_no_wrap(label, font_id, color);
+    let size = galley.size();
+    let center = rect.center();
+    // Pivot is the galley top-left; -90 deg puts the string along the strip.
+    let pos = Pos2::new(center.x + size.y * 0.5, center.y - size.x * 0.5);
+    let shape = TextShape::new(pos, galley, color)
+        .with_angle(-FRAC_PI_2)
+        .with_override_text_color(color);
+    ui.painter().add(shape);
+}
+
+fn truncate_chars(text: &str, max_chars: usize) -> String {
+    let mut out: String = text.chars().take(max_chars).collect();
+    if text.chars().count() > max_chars {
+        out.push_str("...");
+    }
+    out
 }
 
 fn pan_label(pan: f32) -> String {
+    let pan = snap_pan(pan);
     let amount = (pan.abs() * 100.0).round() as i32;
     if amount == 0 {
         "C".to_string()
@@ -516,14 +706,6 @@ fn pan_label(pan: f32) -> String {
         format!("L{amount}")
     } else {
         format!("R{amount}")
-    }
-}
-
-fn plural(count: usize) -> &'static str {
-    if count == 1 {
-        ""
-    } else {
-        "s"
     }
 }
 
@@ -569,7 +751,7 @@ fn apply_slider_with_history(
     } else if response.changed() && !response.dragged() {
         history.push_before(project.clone());
     }
-    if response.changed() {
+    if response.changed() || response.drag_stopped() {
         apply(project);
     }
     if response.drag_stopped() {
@@ -607,4 +789,32 @@ fn paint_meter_bar(ui: &Ui, rect: Rect, peak: f32, theme: &ThemeColors) {
         theme.meter_low
     };
     painter.rect_filled(fill, 2.0, color);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gain_snaps_near_unity() {
+        assert_eq!(snap_gain_db(0.0), 0.0);
+        assert_eq!(snap_gain_db(0.5), 0.0);
+        assert_eq!(snap_gain_db(-0.6), 0.0);
+        assert!((snap_gain_db(1.0) - 1.0).abs() < f32::EPSILON);
+        assert!((snap_gain_db(-2.0) - (-2.0)).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn pan_snaps_to_center() {
+        assert_eq!(snap_pan(0.0), 0.0);
+        assert_eq!(snap_pan(0.03), 0.0);
+        assert!((snap_pan(0.5) - 0.5).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn mixer_panel_fraction_snaps_to_half_and_full() {
+        assert_eq!(snap_mixer_panel_fraction(0.48), MIXER_PANEL_SNAP_HALF);
+        assert_eq!(snap_mixer_panel_fraction(0.9), MIXER_PANEL_SNAP_FULL);
+        assert!((snap_mixer_panel_fraction(0.62) - 0.62).abs() < f32::EPSILON);
+    }
 }

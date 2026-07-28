@@ -1243,8 +1243,9 @@ fn finish_active_drag(
         return;
     }
 
-    if !drag.ignore_ids.is_empty() {
-        settle_notes_no_overlap(project, clip_id, &drag.originals);
+    if drag_moved && matches!(drag.mode, DragMode::Move) {
+        let moved_ids: Vec<u64> = drag.originals.iter().map(|note| note.id).collect();
+        project.resolve_note_move_overlaps(clip_id, &moved_ids);
     }
 
     history.commit(project);
@@ -1264,46 +1265,6 @@ fn finish_active_drag(
             audition_held,
             audition_until,
         );
-    }
-}
-
-/// Nudge notes right on the grid until each is free of same-pitch overlaps.
-fn settle_notes_no_overlap(project: &mut Project, clip_id: u64, originals: &[Note]) {
-    let mut ids: Vec<u64> = originals.iter().map(|note| note.id).collect();
-    ids.sort_by(|a, b| {
-        let sa = project
-            .midi_clip(clip_id)
-            .and_then(|clip| clip.note(*a))
-            .map(|note| note.start_beats)
-            .unwrap_or(0.0);
-        let sb = project
-            .midi_clip(clip_id)
-            .and_then(|clip| clip.note(*b))
-            .map(|note| note.start_beats)
-            .unwrap_or(0.0);
-        sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal)
-    });
-    for note_id in ids {
-        let Some((pitch, duration, mut start)) = project
-            .midi_clip(clip_id)
-            .and_then(|clip| clip.note(note_id))
-            .map(|note| (note.pitch, note.duration_beats, note.start_beats))
-        else {
-            continue;
-        };
-        let mut steps = 0;
-        while !project.note_range_free(clip_id, pitch, start, duration, &[note_id])
-            && steps < 10_000
-        {
-            start = Project::snap_beats(start + SNAP_BEATS);
-            steps += 1;
-        }
-        if let Some(note) = project
-            .midi_clip_mut(clip_id)
-            .and_then(|clip| clip.note_mut(note_id))
-        {
-            note.start_beats = start;
-        }
     }
 }
 
