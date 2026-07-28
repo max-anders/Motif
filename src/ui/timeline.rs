@@ -63,8 +63,23 @@ pub const RULER_HEIGHT: f32 = 26.0;
 pub const DEFAULT_BEAT_WIDTH: f32 = 88.0;
 pub const MIN_BEAT_WIDTH: f32 = 24.0;
 pub const MAX_BEAT_WIDTH: f32 = 400.0;
+/// Fraction of the timeline viewport the arrangement fills at maximum zoom-out.
+pub const ARRANGEMENT_VIEW_FILL: f32 = 0.90;
+/// Lowest px/beat when fitting a long arrangement (below note-editing `MIN_BEAT_WIDTH`).
+const HARD_MIN_BEAT_WIDTH: f32 = 1.0;
 
 const SCROLL_ZOOM_SPEED: f32 = 1.0 / 200.0;
+
+/// Horizontal zoom bounds for playlist / devices arrangement lanes.
+pub fn arrangement_beat_width_bounds(timeline_view_w: f32, total_beats: f32) -> (f32, f32) {
+    let beats = total_beats.max(1.0);
+    let view_w = timeline_view_w.max(1.0);
+    let fit_beat_width = view_w / beats;
+    let min_beat_width = (fit_beat_width * ARRANGEMENT_VIEW_FILL)
+        .max(HARD_MIN_BEAT_WIDTH)
+        .min(MAX_BEAT_WIDTH);
+    (min_beat_width, MAX_BEAT_WIDTH)
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct TimelineMetrics {
@@ -115,6 +130,8 @@ pub fn apply_horizontal_wheel_controls(
     viewport: Rect,
     beat_width: &mut f32,
     scroll_offset_x: &mut f32,
+    min_beat_width: f32,
+    max_beat_width: f32,
 ) {
     if !ui.rect_contains_pointer(viewport) {
         return;
@@ -130,7 +147,7 @@ pub fn apply_horizontal_wheel_controls(
     if zoom_horizontal && zoom_delta != 1.0 {
         let content_pos = pointer - viewport.min + Vec2::new(*scroll_offset_x, 0.0);
         let old = *beat_width;
-        let new = (old * zoom_delta).clamp(MIN_BEAT_WIDTH, MAX_BEAT_WIDTH);
+        let new = (old * zoom_delta).clamp(min_beat_width, max_beat_width);
         let actual = new / old;
         if (actual - 1.0).abs() > f32::EPSILON && content_pos.x > TIMELINE_GUTTER_WIDTH {
             let timeline_x_pos = content_pos.x - TIMELINE_GUTTER_WIDTH;
@@ -686,4 +703,25 @@ pub fn handle_timeline_playhead_pointer(
     }
 
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn arrangement_zoom_fits_long_songs_in_viewport() {
+        let view_w = 900.0;
+        let beats = 400.0;
+        let (min_bw, max_bw) = arrangement_beat_width_bounds(view_w, beats);
+        assert!(beats * min_bw <= view_w * ARRANGEMENT_VIEW_FILL + 0.01);
+        assert!(min_bw < MIN_BEAT_WIDTH);
+        assert_eq!(max_bw, MAX_BEAT_WIDTH);
+    }
+
+    #[test]
+    fn arrangement_zoom_short_song_keeps_readable_floor() {
+        let (min_bw, _) = arrangement_beat_width_bounds(900.0, 8.0);
+        assert!(min_bw >= HARD_MIN_BEAT_WIDTH);
+    }
 }

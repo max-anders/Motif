@@ -27,10 +27,10 @@ use crate::ui::playlist::{
 };
 use crate::ui::theme::ThemeColors;
 use crate::ui::timeline::{
-    apply_horizontal_wheel_controls, draw_loop_region, draw_playhead, draw_playback_anchor,
-    draw_ruler, handle_loop_region_pointer, handle_timeline_playhead_pointer, hit_test_loop_edge,
-    timeline_body_rect, with_solid_scrollbars, LoopEdge, TimelineMetrics, DEFAULT_BEAT_WIDTH,
-    RULER_HEIGHT,
+    apply_horizontal_wheel_controls, arrangement_beat_width_bounds, draw_loop_region, draw_playhead,
+    draw_playback_anchor, draw_ruler, handle_loop_region_pointer, handle_timeline_playhead_pointer,
+    hit_test_loop_edge, timeline_body_rect, with_solid_scrollbars, LoopEdge, TimelineMetrics,
+    DEFAULT_BEAT_WIDTH, RULER_HEIGHT,
 };
 
 const TILE_WIDTH: f32 = 146.0;
@@ -194,6 +194,7 @@ pub struct DevicesUi {
     mini_dragging_loop_edge: Option<LoopEdge>,
     mini_beat_width: f32,
     mini_scroll_offset: Vec2,
+    mini_timeline_view_w: f32,
     mini_drag_moved: bool,
     /// Selected modulator target per track (`0` = instrument, else FX device id).
     selected_modulator_target: HashMap<u64, u64>,
@@ -240,6 +241,7 @@ impl Default for DevicesUi {
             mini_dragging_loop_edge: None,
             mini_beat_width: DEFAULT_BEAT_WIDTH,
             mini_scroll_offset: Vec2::ZERO,
+            mini_timeline_view_w: 0.0,
             mini_drag_moved: false,
             selected_modulator_target: HashMap::new(),
             mod_panel_open: None,
@@ -601,17 +603,29 @@ impl DevicesUi {
                 .layout(Layout::top_down(Align::Min)),
         );
         mini_ui.set_clip_rect(mini_rect);
+        let total_beats = project.arrangement_length_beats();
+        let timeline_view_w = if self.mini_timeline_view_w > 0.0 {
+            self.mini_timeline_view_w
+        } else {
+            mini_rect.width().max(1.0)
+        };
+        let (min_beat_width, max_beat_width) =
+            arrangement_beat_width_bounds(timeline_view_w, total_beats);
+        self.mini_beat_width = self
+            .mini_beat_width
+            .clamp(min_beat_width, max_beat_width);
         apply_horizontal_wheel_controls(
             &mini_ui,
             mini_rect,
             &mut self.mini_beat_width,
             &mut self.mini_scroll_offset.x,
+            min_beat_width,
+            max_beat_width,
         );
 
         let metrics = TimelineMetrics {
             beat_width: self.mini_beat_width,
         };
-        let total_beats = project.arrangement_length_beats();
         let content_width = total_beats * metrics.beat_width;
         // Exactly ruler + one lane tall: single-track lane never scrolls vertically,
         // so this keeps the lane flush against the horizontal scrollbar (no dead gap).
@@ -760,6 +774,7 @@ impl DevicesUi {
         });
 
         self.mini_scroll_offset = output.state.offset;
+        self.mini_timeline_view_w = output.inner_rect.width().max(1.0);
         if self.mini_active_drag.is_none() && self.mini_marquee.is_none() {
             self.mini_drag_moved = false;
         }

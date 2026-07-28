@@ -108,7 +108,7 @@ cargo run --release
 - **Shift+Q** - close a focused plugin editor window (remappable; default)
 - **Left-click / drag ruler** - move playhead (snapped to 1/16)
 - **Shift + left-click**, **right-click empty timeline**, or **right-click drag** on the timeline - move playhead
-- **Wheel** - scroll; **Shift+Wheel** - horizontal scroll; **Ctrl/Cmd+Wheel** - zoom time
+- **Wheel** - scroll; **Shift+Wheel** - horizontal scroll; **Ctrl/Cmd+Wheel** - zoom time (zoom-out floor fits the whole arrangement in view)
 - **Scrollbars** - always-visible solid bars (drag to scroll)
 - Track headers stay pinned on the left while the timeline scrolls horizontally (vertical scroll stays synced); the beat ruler stays pinned to the top
 

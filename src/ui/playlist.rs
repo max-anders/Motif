@@ -18,11 +18,11 @@ use crate::ui::instrument_menu::{
 };
 use crate::ui::theme::ThemeColors;
 use crate::ui::timeline::{
-    apply_horizontal_wheel_controls, daw_editor_scroll_area, draw_loop_region, draw_playhead,
-    draw_playback_anchor, draw_ruler, draw_timeline_grid_lines, handle_loop_region_pointer,
-    handle_timeline_playhead_pointer, hit_test_loop_edge, is_timeline_pointer, timeline_body_rect,
-    timeline_x, with_solid_scrollbars, x_to_beat, LoopEdge, TimelineMetrics, DEFAULT_BEAT_WIDTH,
-    RULER_HEIGHT, TIMELINE_GUTTER_WIDTH,
+    apply_horizontal_wheel_controls, arrangement_beat_width_bounds, daw_editor_scroll_area,
+    draw_loop_region, draw_playhead, draw_playback_anchor, draw_ruler, draw_timeline_grid_lines,
+    handle_loop_region_pointer, handle_timeline_playhead_pointer, hit_test_loop_edge,
+    is_timeline_pointer, timeline_body_rect, timeline_x, with_solid_scrollbars, x_to_beat,
+    LoopEdge, TimelineMetrics, DEFAULT_BEAT_WIDTH, RULER_HEIGHT, TIMELINE_GUTTER_WIDTH,
 };
 
 pub(crate) const TRACK_HEADER_WIDTH: f32 = TIMELINE_GUTTER_WIDTH;
@@ -102,6 +102,8 @@ pub struct PlaylistUi {
     dragging_loop_edge: Option<LoopEdge>,
     beat_width: f32,
     scroll_offset: Vec2,
+    /// Timeline viewport width from the previous frame (excludes track headers + scrollbar).
+    timeline_view_w: f32,
     /// Set when user clicks a clip without dragging (consumed by app).
     open_clip_request: Option<u64>,
     /// Open/close native plugin editor (consumed by app).
@@ -133,6 +135,7 @@ impl Default for PlaylistUi {
             dragging_loop_edge: None,
             beat_width: DEFAULT_BEAT_WIDTH,
             scroll_offset: Vec2::ZERO,
+            timeline_view_w: 0.0,
             open_clip_request: None,
             plugin_editor_request: None,
             delete_track_request: None,
@@ -295,17 +298,27 @@ impl PlaylistUi {
 
         let viewport_rect = ui.available_rect_before_wrap();
         ui.painter().rect_filled(viewport_rect, 0.0, theme.panel_bg);
+        let total_beats = project.arrangement_length_beats();
+        let timeline_view_w = if self.timeline_view_w > 0.0 {
+            self.timeline_view_w
+        } else {
+            (viewport_rect.width() - TRACK_HEADER_WIDTH).max(1.0)
+        };
+        let (min_beat_width, max_beat_width) =
+            arrangement_beat_width_bounds(timeline_view_w, total_beats);
+        self.beat_width = self.beat_width.clamp(min_beat_width, max_beat_width);
         apply_horizontal_wheel_controls(
             ui,
             viewport_rect,
             &mut self.beat_width,
             &mut self.scroll_offset.x,
+            min_beat_width,
+            max_beat_width,
         );
 
         let metrics = TimelineMetrics {
             beat_width: self.beat_width,
         };
-        let total_beats = project.arrangement_length_beats();
         let layout = TrackLayout::from_project(project, &self.automation_expanded);
         let content_height = RULER_HEIGHT + layout.total_height() + ADD_TRACK_ROW_HEIGHT;
         let content_width = TRACK_HEADER_WIDTH + total_beats * metrics.beat_width;
@@ -689,6 +702,7 @@ impl PlaylistUi {
         });
 
         self.scroll_offset = output.state.offset;
+        self.timeline_view_w = (output.inner_rect.width() - TRACK_HEADER_WIDTH).max(1.0);
 
         if self.active_drag.is_none() && !self.drag_moved {
             // click-without-drag handled in handle_clip_pointer
