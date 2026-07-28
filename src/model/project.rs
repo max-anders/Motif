@@ -1579,6 +1579,46 @@ mod tests {
     }
 
     #[test]
+    fn paste_notes_after_clearing_destination_replaces_content() {
+        let mut project = Project::default();
+        let track_id = project.tracks[0].id;
+        let src = project.tracks[0].clips[0].id();
+        let dst = project
+            .add_clip_to_track(track_id, 4.0, 4.0)
+            .expect("dst clip");
+
+        let src_note = project
+            .add_note_to_clip(src, 60, 0.0, 1.0)
+            .expect("src note");
+        project
+            .add_note_to_clip(dst, 72, 0.0, 1.0)
+            .expect("old note");
+
+        let clipboard =
+            EditClipboard::from_notes(&project.notes_for_clipboard(src, &[src_note.id]));
+        let EditClipboard::Notes(entries) = clipboard else {
+            panic!("notes");
+        };
+
+        let existing: Vec<u64> = project
+            .midi_clip(dst)
+            .map(|clip| clip.notes.iter().map(|note| note.id).collect())
+            .unwrap_or_default();
+        for id in existing {
+            project
+                .midi_clip_mut(dst)
+                .expect("dst")
+                .remove_note(id);
+        }
+        let new_ids = project.paste_notes_into_clip(dst, &entries, 0.0);
+        assert_eq!(new_ids.len(), 1);
+        let dst_clip = project.midi_clip(dst).expect("dst");
+        assert_eq!(dst_clip.notes.len(), 1);
+        assert_eq!(dst_clip.notes[0].pitch, 60);
+        assert_eq!(dst_clip.notes[0].start_beats, 0.0);
+    }
+
+    #[test]
     fn paste_clips_at_playhead_keeps_notes() {
         let mut project = Project::default();
         let track_id = project.tracks[0].id;

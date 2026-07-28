@@ -1193,13 +1193,26 @@ impl DawApp {
             return;
         };
         let notes = notes.clone();
+        let replace = self.piano_roll.all_notes_selected_in_clip(clip_id, &self.project);
         let clip_start = self
             .project
             .clip(clip_id)
             .map(|clip| clip.start_beats())
             .unwrap_or(0.0);
-        let origin = (self.engine.current_beats() - clip_start).max(0.0);
+        let origin = if replace {
+            0.0
+        } else {
+            (self.engine.current_beats() - clip_start).max(0.0)
+        };
         let before = self.project.clone();
+        if replace {
+            let existing: Vec<u64> = self
+                .project
+                .midi_clip(clip_id)
+                .map(|clip| clip.notes.iter().map(|note| note.id).collect())
+                .unwrap_or_default();
+            self.remove_notes_from_clip(clip_id, &existing);
+        }
         let new_ids = self.project.paste_notes_into_clip(clip_id, &notes, origin);
         if new_ids.is_empty() {
             self.project = before;
@@ -1208,7 +1221,11 @@ impl DawApp {
         }
         self.history.push_before(before);
         self.piano_roll.set_selection(new_ids);
-        self.status_message = format!("Pasted {} note(s)", notes.len());
+        self.status_message = if replace {
+            format!("Replaced clip notes with {} note(s)", notes.len())
+        } else {
+            format!("Pasted {} note(s)", notes.len())
+        };
     }
 
     fn paste_clips_at_playhead(&mut self) {

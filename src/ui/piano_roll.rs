@@ -144,6 +144,18 @@ impl PianoRollUi {
         }
     }
 
+    /// True when the clip has at least one note and every note in it is selected.
+    pub fn all_notes_selected_in_clip(&self, clip_id: u64, project: &Project) -> bool {
+        let Some(clip) = project.midi_clip(clip_id) else {
+            return false;
+        };
+        !clip.notes.is_empty()
+            && clip
+                .notes
+                .iter()
+                .all(|note| self.selected_note_ids.contains(&note.id))
+    }
+
     pub fn prune_selection(&mut self, clip_id: u64, project: &Project) {
         let Some(clip) = project.midi_clip(clip_id) else {
             self.selected_note_ids.clear();

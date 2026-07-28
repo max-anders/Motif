@@ -34,7 +34,7 @@ use crate::ui::timeline::{
 };
 
 const TILE_WIDTH: f32 = 146.0;
-const TILE_HEIGHT: f32 = 74.0;
+const TILE_HEIGHT: f32 = 74.0;t 86uifz i
 const TILE_ROUNDING: f32 = 4.0;
 const TILE_INNER_MARGIN: f32 = 6.0;
 const TILE_CONTENT_WIDTH: f32 = TILE_WIDTH - TILE_INNER_MARGIN * 2.0;

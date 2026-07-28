@@ -132,7 +132,7 @@ cargo run --release
 - **Delete / Backspace** - remove selected note(s)
 - **Ctrl/Cmd+C** - copy selected note(s)
 - **Ctrl/Cmd+X** - cut selected note(s)
-- **Ctrl/Cmd+V** - paste notes into the open clip at the playhead (works across clips)
+- **Ctrl/Cmd+V** - paste notes into the open clip at the playhead (works across clips; with all notes selected, replaces the clip contents from beat 0)
 - **Ctrl/Cmd+D** - duplicate selected note(s) to the right by selection length (remappable)
 - **Ctrl/Cmd+Z** - undo last clip/note edit (remappable)
 - **Ctrl/Cmd+Shift+Z** - redo (remappable)
