@@ -1,5 +1,10 @@
 //! Mixer view: channel strips over the same Track model (gain, pan, M/S, meters).
 //!
+//! Layout: the master strip is **docked on the left** (outside the horizontal
+//! scroll) so it stays visible while track strips scroll. Signal-flow-wise some
+//! DAWs put master on the right; here master leads the row as the output bus you
+//! reach after the channels.
+//!
 //! Every strip (channel or master) reserves an *exact* `STRIP_WIDTH x
 //! strip_height` footprint up front via [`Ui::allocate_exact_size`], then
 //! draws its contents into a detached child `Ui` clipped to that rect. This
@@ -40,6 +45,8 @@ const STRIP_GAP: f32 = 4.0;
 /// Inset of the strip row from the mixer panel edges.
 const MIXER_PADDING_LEFT: f32 = 8.0;
 const MIXER_PADDING_BOTTOM: f32 = 8.0;
+/// Gap between the docked master strip and the scrollable track row.
+const MASTER_DOCK_GAP: f32 = 8.0;
 
 const TOP_BAR_HEIGHT: f32 = 2.0;
 const HEADER_HEIGHT: f32 = 88.0;
@@ -206,50 +213,53 @@ impl MixerUi {
             (FADER_HEIGHT_MIN * (strip_height / STRIP_HEIGHT_MIN)).max(48.0)
         };
 
-        egui::ScrollArea::horizontal()
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                // Never request more than the remaining panel space.
-                ui.set_min_height(strip_height.min(ui.available_height()));
-                ui.horizontal_top(|ui| {
-                    ui.add_space(MIXER_PADDING_LEFT);
-                    ui.spacing_mut().item_spacing.x = STRIP_GAP;
-                    let track_ids: Vec<u64> = project.tracks.iter().map(|t| t.id).collect();
-                    for track_id in track_ids {
-                        let selected = *selected_track == Some(track_id);
-                        let (peak_l, peak_r) =
-                            self.displayed.get(&track_id).copied().unwrap_or((0.0, 0.0));
-                        self.channel_strip(
-                            ui,
-                            project,
-                            engine,
-                            history,
-                            selected_track,
-                            track_id,
-                            selected,
-                            peak_l,
-                            peak_r,
-                            strip_height,
-                            fader_height,
-                            theme,
-                        );
-                    }
+        ui.horizontal_top(|ui| {
+            ui.add_space(MIXER_PADDING_LEFT);
 
-                    ui.add_space(4.0);
-                    let (ml, mr) = self.master_displayed;
-                    self.master_strip(
-                        ui,
-                        project,
-                        history,
-                        ml,
-                        mr,
-                        strip_height,
-                        fader_height,
-                        theme,
-                    );
+            // Docked master: outside the scroll area so it stays visible.
+            let (ml, mr) = self.master_displayed;
+            self.master_strip(
+                ui,
+                project,
+                history,
+                ml,
+                mr,
+                strip_height,
+                fader_height,
+                theme,
+            );
+            ui.add_space(MASTER_DOCK_GAP);
+
+            egui::ScrollArea::horizontal()
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.set_min_height(strip_height.min(ui.available_height()));
+                    ui.horizontal_top(|ui| {
+                        ui.spacing_mut().item_spacing.x = STRIP_GAP;
+                        let track_ids: Vec<u64> = project.tracks.iter().map(|t| t.id).collect();
+                        for track_id in track_ids {
+                            let selected = *selected_track == Some(track_id);
+                            let (peak_l, peak_r) =
+                                self.displayed.get(&track_id).copied().unwrap_or((0.0, 0.0));
+                            self.channel_strip(
+                                ui,
+                                project,
+                                engine,
+                                history,
+                                selected_track,
+                                track_id,
+                                selected,
+                                peak_l,
+                                peak_r,
+                                strip_height,
+                                fader_height,
+                                theme,
+                            );
+                        }
+                    });
                 });
-                ui.add_space(MIXER_PADDING_BOTTOM);
-            });
+        });
+        ui.add_space(MIXER_PADDING_BOTTOM);
     }
 
     fn decay_meters(&mut self, engine: &dyn DawEngine) {

@@ -13,15 +13,14 @@ use crate::model::{
     clear_recovery, ensure_motif_extension, format_unix_time, legacy_project_path,
     load_project_from, load_recovery_meta, load_recovery_project, project_display_name,
     projects_dir, push_recent, save_project_to, write_recovery, EditClipboard, EditHistory,
-    Project, TrackInstrument, PROJECT_EXTENSION, RecoveryMeta,
+    Project, RecoveryMeta, TrackInstrument, PROJECT_EXTENSION,
 };
 use crate::ui::{
     choice_to_instrument, show_inspector, track_name_for_choice, Action, AddBrowserAction,
     AddBrowserUi, AppSettings, AudioImportRequest, BrowserTab, Chord, DevicesUi, MixerPanelResize,
-    MixerUi, MIXER_PANEL_ID, MIXER_PANEL_MIN_HEIGHT,
-    PerformanceUi, PianoRollUi, PlaylistUi, PluginEditorRequest, PollFilter,
+    MixerUi, PerformanceUi, PianoRollUi, PlaylistUi, PluginEditorRequest, PollFilter,
     ProjectBrowserAction, ProjectBrowserUi, SettingsAction, SettingsUi, TransportUi,
-    SETTINGS_FILE,
+    MIXER_PANEL_ID, MIXER_PANEL_MIN_HEIGHT, SETTINGS_FILE,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -385,7 +384,8 @@ impl DawApp {
     fn apply_decoded_audio(&mut self, path: &Path, decoded: Arc<DecodedAudio>) {
         let duration_beats = decoded.duration_seconds() * self.project.beats_per_second();
         let length_beats = Project::snap_beats(duration_beats.max(crate::model::SNAP_BEATS));
-        self.decoded_audio.insert(path.to_path_buf(), Arc::clone(&decoded));
+        self.decoded_audio
+            .insert(path.to_path_buf(), Arc::clone(&decoded));
         for track in &mut self.project.tracks {
             for clip in &mut track.clips {
                 let Some(audio) = clip.as_audio_mut() else {
@@ -414,9 +414,12 @@ impl DawApp {
                                 format!("Decoded sample: {}", result.path.display());
                         }
                         Err(error) => {
-                            self.audio_decode_errors.insert(result.path.clone(), error.clone());
-                            self.status_message =
-                                format!("Sample decode failed ({}): {error}", result.path.display());
+                            self.audio_decode_errors
+                                .insert(result.path.clone(), error.clone());
+                            self.status_message = format!(
+                                "Sample decode failed ({}): {error}",
+                                result.path.display()
+                            );
                         }
                     }
                 }
@@ -594,10 +597,7 @@ impl DawApp {
                 .find(|param| param.id == touch.param_id)
                 .map(|param| param.name)
                 .unwrap_or_default();
-            if self
-                .settings
-                .touch_param(&unique_id, touch.param_id, name)
-            {
+            if self.settings.touch_param(&unique_id, touch.param_id, name) {
                 dirty = true;
             }
         }
@@ -800,8 +800,7 @@ impl DawApp {
         let _ = clear_recovery();
         self.pending_recovery = None;
         // After discard, offer the normal startup path (recent / empty + browser).
-        let (project, path, show_browser, status) =
-            Self::startup_project(&self.settings, false);
+        let (project, path, show_browser, status) = Self::startup_project(&self.settings, false);
         self.apply_loaded_project(project, path);
         self.show_project_browser = show_browser;
         self.status_message = if status.starts_with("Opened") || status.starts_with("Loaded") {
@@ -831,9 +830,7 @@ impl DawApp {
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .show(ctx, |ui| {
-                ui.label(format!(
-                    "Motif found unsaved changes from {when} ({name})."
-                ));
+                ui.label(format!("Motif found unsaved changes from {when} ({name})."));
                 ui.label("Restore them, or discard the recovery backup?");
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
@@ -913,11 +910,7 @@ impl DawApp {
                 } else {
                     let recent = self.settings.recent_projects.clone();
                     for path in recent {
-                        let label = format!(
-                            "{} — {}",
-                            project_display_name(&path),
-                            path.display()
-                        );
+                        let label = format!("{} — {}", project_display_name(&path), path.display());
                         let enabled = path.exists();
                         if ui.add_enabled(enabled, egui::Button::new(label)).clicked() {
                             self.open_path(&path);
@@ -943,7 +936,8 @@ impl DawApp {
     }
 
     fn prune_ui_after_history(&mut self) {
-        self.engine.set_beats_per_second(self.project.beats_per_second());
+        self.engine
+            .set_beats_per_second(self.project.beats_per_second());
         self.playlist.prune_selection(&self.project);
         if let Some(track_id) = self.selected_track {
             if self.project.track(track_id).is_none() {
@@ -1059,19 +1053,22 @@ impl DawApp {
                 self.center_view = CenterView::Playlist;
                 self.piano_roll.clear_selection();
             }
-            if matches!(self.settings_return, CenterView::PianoRoll { clip_id } if clip_id == *id)
-            {
+            if matches!(self.settings_return, CenterView::PianoRoll { clip_id } if clip_id == *id) {
                 self.settings_return = CenterView::Playlist;
             }
         }
 
         let removed = self.project.remove_track(track_id);
-        debug_assert!(removed, "delete_track preconditions should guarantee removal");
+        debug_assert!(
+            removed,
+            "delete_track preconditions should guarantee removal"
+        );
         self.playlist.prune_selection(&self.project);
         if self.selected_track == Some(track_id) {
             self.selected_track = self.project.tracks.first().map(|t| t.id);
         }
-        self.engine.close_plugin_editor(PluginRef::instrument(track_id));
+        self.engine
+            .close_plugin_editor(PluginRef::instrument(track_id));
         self.engine.all_notes_off();
         self.instrument_errors.remove(&track_id);
         self.device_errors.retain(|(tid, _), _| *tid != track_id);
@@ -1120,7 +1117,9 @@ impl DawApp {
             }))
         };
         self.history.push_before(self.project.clone());
-        let new_ids = self.project.duplicate_notes_in_clip(clip_id, &ids, span, 0, false);
+        let new_ids = self
+            .project
+            .duplicate_notes_in_clip(clip_id, &ids, span, 0, false);
         if !new_ids.is_empty() {
             self.piano_roll.set_selection(new_ids);
         }
@@ -1194,8 +1193,7 @@ impl DawApp {
             .project
             .merge_adjacent_clips(left_id, right_id)
             .expect("prechecked merge");
-        if matches!(self.center_view, CenterView::PianoRoll { clip_id } if clip_id == right_id)
-        {
+        if matches!(self.center_view, CenterView::PianoRoll { clip_id } if clip_id == right_id) {
             self.center_view = CenterView::PianoRoll { clip_id: survivor };
             self.piano_roll.clear_selection();
         }
@@ -1253,7 +1251,9 @@ impl DawApp {
             return;
         };
         let notes = notes.clone();
-        let replace = self.piano_roll.all_notes_selected_in_clip(clip_id, &self.project);
+        let replace = self
+            .piano_roll
+            .all_notes_selected_in_clip(clip_id, &self.project);
         let clip_start = self
             .project
             .clip(clip_id)
@@ -1303,8 +1303,7 @@ impl DawApp {
         let new_ids = self.project.paste_clips(&clips, origin);
         if new_ids.is_empty() {
             self.project = before;
-            self.status_message =
-                String::from("Paste failed (overlap or missing track)");
+            self.status_message = String::from("Paste failed (overlap or missing track)");
             return;
         }
         self.history.push_before(before);
@@ -1362,11 +1361,7 @@ impl DawApp {
         }
     }
 
-    fn toggle_selected_track_plugin_editor(
-        &mut self,
-        ctx: &egui::Context,
-        frame: &eframe::Frame,
-    ) {
+    fn toggle_selected_track_plugin_editor(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
         let Some(track_id) = self.selected_track else {
             self.status_message = String::from("No track selected");
             return;
@@ -1407,11 +1402,7 @@ impl DawApp {
         }
     }
 
-    fn close_selected_track_plugin_editor(
-        &mut self,
-        ctx: &egui::Context,
-        frame: &eframe::Frame,
-    ) {
+    fn close_selected_track_plugin_editor(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
         let Some(track_id) = self.selected_track else {
             return;
         };
@@ -1440,10 +1431,16 @@ impl DawApp {
                 device_id,
                 title,
             } => {
-                let target = PluginRef { track_id, device_id };
+                let target = PluginRef {
+                    track_id,
+                    device_id,
+                };
                 let host_x11 = host_x11_from_frame(frame);
                 let forward = self.plugin_forward_transport(target);
-                match self.engine.open_plugin_editor(target, &title, host_x11, forward) {
+                match self
+                    .engine
+                    .open_plugin_editor(target, &title, host_x11, forward)
+                {
                     Ok(()) => {
                         self.status_message = format!("Opened plugin editor: {title}");
                         ctx.request_repaint();
@@ -1453,9 +1450,14 @@ impl DawApp {
                     }
                 }
             }
-            PluginEditorRequest::Close { track_id, device_id } => {
-                self.engine
-                    .close_plugin_editor(PluginRef { track_id, device_id });
+            PluginEditorRequest::Close {
+                track_id,
+                device_id,
+            } => {
+                self.engine.close_plugin_editor(PluginRef {
+                    track_id,
+                    device_id,
+                });
                 self.status_message = String::from("Closed plugin editor");
             }
         }
@@ -1484,10 +1486,7 @@ impl DawApp {
     /// Effective "forward Space to Motif" setting for a slot's plugin.
     fn plugin_forward_transport(&self, target: PluginRef) -> bool {
         match self.plugin_unique_id_for(target) {
-            Some(unique_id) => self
-                .settings
-                .plugin_keys
-                .forward_transport_for(&unique_id),
+            Some(unique_id) => self.settings.plugin_keys.forward_transport_for(&unique_id),
             None => self.settings.plugin_keys.forward_transport_default,
         }
     }
@@ -1681,7 +1680,7 @@ impl DawApp {
                 if matches!(self.center_view, CenterView::Playlist) {
                     self.merge_selected_clips();
                 }
-            },
+            }
             Action::Undo => match self.center_view {
                 CenterView::Settings => {}
                 _ => self.undo_edit(),
@@ -1707,9 +1706,7 @@ impl DawApp {
                     CenterView::Settings => self.close_settings(),
                     CenterView::PianoRoll { .. }
                     | CenterView::Devices
-                    | CenterView::Performance => {
-                        self.back_to_playlist()
-                    }
+                    | CenterView::Performance => self.back_to_playlist(),
                     CenterView::Playlist => {}
                 }
             }
@@ -1927,12 +1924,12 @@ impl eframe::App for DawApp {
                     self.center_view,
                     CenterView::Playlist | CenterView::PianoRoll { .. }
                 ) && ui
-                        .button(if self.show_inspector {
-                            "Hide inspector"
-                        } else {
-                            "Inspector"
-                        })
-                        .clicked()
+                    .button(if self.show_inspector {
+                        "Hide inspector"
+                    } else {
+                        "Inspector"
+                    })
+                    .clicked()
                 {
                     self.show_inspector = !self.show_inspector;
                     if self.show_inspector && self.selected_track.is_none() {
@@ -2011,44 +2008,44 @@ impl eframe::App for DawApp {
                 panel.exact_width(plan.default_width).resizable(false)
             };
             let panel_response = panel.show(ctx, |ui| {
-                    let theme = self.settings.themes.colors().clone();
-                    let strip_output = {
-                        let DawApp {
-                            devices,
-                            project,
-                            engine,
-                            catalog,
-                            history,
-                            device_errors,
-                            selected_track,
-                            settings,
-                            ..
-                        } = self;
-                        devices.show_strip(
-                            ui,
-                            project,
-                            engine,
-                            catalog,
-                            history,
-                            device_errors,
-                            selected_track,
-                            settings,
-                            &theme,
-                        )
-                    };
-                    if strip_output.hide {
-                        self.show_devices_strip = false;
-                    }
-                    if strip_output.expand {
-                        self.open_devices();
-                    }
-                    if strip_output.settings_dirty {
-                        self.save_settings();
-                    }
-                    if let Some(request) = self.devices.take_plugin_editor_request() {
-                        self.handle_plugin_editor_request(ctx, frame, request);
-                    }
-                });
+                let theme = self.settings.themes.colors().clone();
+                let strip_output = {
+                    let DawApp {
+                        devices,
+                        project,
+                        engine,
+                        catalog,
+                        history,
+                        device_errors,
+                        selected_track,
+                        settings,
+                        ..
+                    } = self;
+                    devices.show_strip(
+                        ui,
+                        project,
+                        engine,
+                        catalog,
+                        history,
+                        device_errors,
+                        selected_track,
+                        settings,
+                        &theme,
+                    )
+                };
+                if strip_output.hide {
+                    self.show_devices_strip = false;
+                }
+                if strip_output.expand {
+                    self.open_devices();
+                }
+                if strip_output.settings_dirty {
+                    self.save_settings();
+                }
+                if let Some(request) = self.devices.take_plugin_editor_request() {
+                    self.handle_plugin_editor_request(ctx, frame, request);
+                }
+            });
             self.devices
                 .note_dock_panel_width(panel_response.response.rect.width());
         }
@@ -2087,14 +2084,7 @@ impl eframe::App for DawApp {
                         selected_track,
                         ..
                     } = self;
-                    mixer.show(
-                        ui,
-                        project,
-                        engine,
-                        history,
-                        selected_track,
-                        &theme,
-                    );
+                    mixer.show(ui, project, engine, history, selected_track, &theme);
                 });
             if hide_mixer {
                 self.show_mixer_panel = false;
@@ -2116,7 +2106,15 @@ impl eframe::App for DawApp {
             .frame(egui::Frame::NONE)
             .show(ctx, |ui| match self.center_view {
                 CenterView::Playlist => {
-                    let (open_clip, editor_request, delete_track, duplicate_track, import_audio, hovered_header, settings_dirty) = {
+                    let (
+                        open_clip,
+                        editor_request,
+                        delete_track,
+                        duplicate_track,
+                        import_audio,
+                        hovered_header,
+                        settings_dirty,
+                    ) = {
                         let DawApp {
                             playlist,
                             project,
@@ -2174,7 +2172,14 @@ impl eframe::App for DawApp {
                     }
                 }
                 CenterView::Devices => {
-                    let (editor_request, open_clip, delete_track, duplicate_track, hovered_header, settings_dirty) = {
+                    let (
+                        editor_request,
+                        open_clip,
+                        delete_track,
+                        duplicate_track,
+                        hovered_header,
+                        settings_dirty,
+                    ) = {
                         let DawApp {
                             devices,
                             project,
@@ -2320,12 +2325,7 @@ impl eframe::App for DawApp {
                     settings,
                     ..
                 } = self;
-                add_browser.show(
-                    ctx,
-                    show_add_browser,
-                    catalog,
-                    &settings.recent_samples,
-                )
+                add_browser.show(ctx, show_add_browser, catalog, &settings.recent_samples)
             } {
                 self.handle_add_browser_action(action);
             }
