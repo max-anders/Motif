@@ -2495,8 +2495,7 @@ impl eframe::App for DawApp {
         }
 
         if self.devices_strip_visible() {
-            // Only the LFO column stretches: with it closed the dock is pinned to an
-            // exact width so it always snaps back instead of keeping a dragged width.
+            // Single resizable patch column; width remembered in DevicesUi.
             let plan = {
                 let DawApp {
                     devices,

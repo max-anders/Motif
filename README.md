@@ -201,7 +201,7 @@ The pattern strip sits under the playlist tracks for drafting section-scoped MID
 - Window title and toolbar show the project name with `*` when unsaved
 - **Perf** toolbar / **Ctrl/Cmd+Shift+P** - Performance view (CPU graph, per-track DSP ms, xruns / lock skips; remappable)
 - **Mixer** toolbar / **M** - toggle the bottom mixer panel on playlist / piano roll (drag the top edge to resize; snaps to half / full; remappable)
-- **Devices** toolbar / **D** - toggle the bottom device strip (instruments, FX, macros, modulators; remappable)
+- **Devices** toolbar / **D** - toggle the right device strip (vertical patch: instrument + FX; M/L/*/Det strip buttons; remappable)
 - Transport strip also shows live **CPU % / buffer / latency / xruns / locks**
 - **Settings** - themes, shortcut remapping (multiple keys per action, conflict Override), Plugin Manager (Rescan / extra paths), Editing (undo depth), Project (autosave recovery interval, recent list); saved to `settings.json` + `plugin_cache.json`
 - **Escape** - leave piano roll, devices full view, Performance, or Settings (factory default; remappable)
