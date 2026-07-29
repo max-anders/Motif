@@ -63,6 +63,9 @@ pub struct Project {
     /// Missing on projects saved before clip variations; starts at 1.
     #[serde(default = "default_next_variation_id")]
     next_variation_id: u64,
+    /// Missing on projects saved before linked clips; starts at 1.
+    #[serde(default = "default_next_link_group_id")]
+    next_link_group_id: u64,
     /// Missing on projects saved before insert FX (Phase 2); starts at 1.
     #[serde(default = "default_next_device_id")]
     next_device_id: u64,
@@ -111,6 +114,10 @@ fn default_next_variation_id() -> u64 {
     1
 }
 
+fn default_next_link_group_id() -> u64 {
+    1
+}
+
 fn default_pattern_overrides_playlist() -> bool {
     true
 }
@@ -141,6 +148,7 @@ impl Default for Project {
             next_clip_id: 2,
             next_track_id: 2,
             next_variation_id: 1,
+            next_link_group_id: 1,
             next_device_id: 1,
             next_automation_lane_id: 1,
             next_modulator_id: 1,
@@ -448,6 +456,7 @@ impl Project {
                 }
             }
         }
+        self.sync_link_group_from(clip_id);
     }
 
     /// Left edge a note resize-start drag may not cross (neighbor end, or 0).
@@ -771,6 +780,8 @@ impl Project {
                     length_beats: tail_length,
                     variations,
                     active_variation_id,
+                    link_group_id: None,
+                    muted: false,
                 };
                 if let Some(track) = self.track_mut(track_id) {
                     track.clips.push(Clip::Midi(clip));
@@ -788,6 +799,7 @@ impl Project {
                     length_beats: tail_length,
                     source: audio.source.clone(),
                     gain_db: audio.gain_db,
+                    muted: audio.muted,
                     missing: audio.missing,
                 };
                 if let Some(track) = self.track_mut(track_id) {
@@ -855,6 +867,14 @@ impl Project {
 
     pub fn bump_variation_id(&mut self) {
         self.next_variation_id += 1;
+    }
+
+    pub fn next_link_group_id(&self) -> u64 {
+        self.next_link_group_id
+    }
+
+    pub fn bump_link_group_id(&mut self) {
+        self.next_link_group_id += 1;
     }
 
     pub fn next_track_id(&self) -> u64 {
@@ -1130,18 +1150,216 @@ impl Project {
         midi.active_variation_id = new_active;
     }
 
+    /// Put this clip into link mode (new group id if unlinked). Returns the group id.
+    pub fn enable_clip_link(&mut self, clip_id: u64) -> Option<u64> {
+        if let Some(group_id) = self.midi_clip(clip_id)?.link_group_id {
+            return Some(group_id);
+        }
+        let group_id = self.next_link_group_id();
+        self.bump_link_group_id();
+        self.midi_clip_mut(clip_id)?.link_group_id = Some(group_id);
+        Some(group_id)
+    }
+
+    /// Clear link membership; package stays as a private deep copy.
+    pub fn unlink_clip(&mut self, clip_id: u64) -> bool {
+        let Some(clip) = self.midi_clip_mut(clip_id) else {
+            return false;
+        };
+        clip.link_group_id = None;
+        true
+    }
+
+    /// Replace this clip's package with a remapped copy from `group_id` and join the group.
+    pub fn join_clip_link_group(&mut self, clip_id: u64, group_id: u64) -> bool {
+        if self.midi_clip(clip_id).is_none() {
+            return false;
+        }
+        if self
+            .midi_clip(clip_id)
+            .map(|c| c.link_group_id == Some(group_id))
+            .unwrap_or(false)
+        {
+            return true;
+        }
+        let donor = self
+            .tracks
+            .iter()
+            .flat_map(|track| track.clips.iter())
+            .filter_map(Clip::as_midi)
+            .find(|midi| midi.link_group_id == Some(group_id) && midi.id != clip_id)
+            .cloned();
+        let Some(donor) = donor else {
+            return false;
+        };
+        let mut package = donor;
+        self.remap_midi_clip_ids(&mut package);
+        let Some(clip) = self.midi_clip_mut(clip_id) else {
+            return false;
+        };
+        clip.variations = package.variations;
+        clip.active_variation_id = package.active_variation_id;
+        clip.link_group_id = Some(group_id);
+        true
+    }
+
+    /// All link groups with member clip ids (stable order by group id).
+    pub fn link_groups(&self) -> Vec<(u64, Vec<u64>)> {
+        let mut map: std::collections::BTreeMap<u64, Vec<u64>> = std::collections::BTreeMap::new();
+        for track in &self.tracks {
+            for clip in &track.clips {
+                if let Some(midi) = clip.as_midi() {
+                    if let Some(group_id) = midi.link_group_id {
+                        map.entry(group_id).or_default().push(midi.id);
+                    }
+                }
+            }
+        }
+        map.into_iter().collect()
+    }
+
+    /// Copy this clip's variation package onto every other member of its link group
+    /// (remapped note/variation ids; geometry untouched).
+    pub fn sync_link_group_from(&mut self, clip_id: u64) {
+        let Some(source) = self.midi_clip(clip_id).cloned() else {
+            return;
+        };
+        let Some(group_id) = source.link_group_id else {
+            return;
+        };
+        let sibling_ids: Vec<u64> = self
+            .tracks
+            .iter()
+            .flat_map(|track| track.clips.iter())
+            .filter_map(Clip::as_midi)
+            .filter(|midi| midi.id != clip_id && midi.link_group_id == Some(group_id))
+            .map(|midi| midi.id)
+            .collect();
+        for sibling_id in sibling_ids {
+            let mut package = source.clone();
+            self.remap_midi_clip_ids(&mut package);
+            if let Some(sibling) = self.midi_clip_mut(sibling_id) {
+                sibling.variations = package.variations;
+                sibling.active_variation_id = package.active_variation_id;
+            }
+        }
+    }
+
+    fn remap_pattern_block_track_ids(
+        &mut self,
+        tracks: &mut [super::pattern::PatternTrackContent],
+    ) {
+        for row in tracks {
+            for note in &mut row.notes {
+                let id = self.next_note_id();
+                self.bump_note_id();
+                note.id = id;
+            }
+        }
+    }
+
+    /// Put this pattern block into link mode. Returns the group id.
+    pub fn enable_pattern_block_link(&mut self, block_id: u64) -> Option<u64> {
+        if let Some(group_id) = self.pattern_block(block_id)?.link_group_id {
+            return Some(group_id);
+        }
+        let group_id = self.next_link_group_id();
+        self.bump_link_group_id();
+        self.pattern_block_mut(block_id)?.link_group_id = Some(group_id);
+        Some(group_id)
+    }
+
+    /// Clear pattern-block link membership; row content stays as a private copy.
+    pub fn unlink_pattern_block(&mut self, block_id: u64) -> bool {
+        let Some(block) = self.pattern_block_mut(block_id) else {
+            return false;
+        };
+        block.link_group_id = None;
+        true
+    }
+
+    /// Replace this block's rows with a remapped copy from `group_id` and join.
+    pub fn join_pattern_block_link_group(&mut self, block_id: u64, group_id: u64) -> bool {
+        if self.pattern_block(block_id).is_none() {
+            return false;
+        }
+        if self
+            .pattern_block(block_id)
+            .map(|b| b.link_group_id == Some(group_id))
+            .unwrap_or(false)
+        {
+            return true;
+        }
+        let donor_tracks = self
+            .pattern_lanes
+            .iter()
+            .flat_map(|lane| lane.blocks.iter())
+            .find(|block| block.link_group_id == Some(group_id) && block.id != block_id)
+            .map(|block| block.tracks.clone());
+        let Some(mut tracks) = donor_tracks else {
+            return false;
+        };
+        self.remap_pattern_block_track_ids(&mut tracks);
+        let Some(block) = self.pattern_block_mut(block_id) else {
+            return false;
+        };
+        block.tracks = tracks;
+        block.link_group_id = Some(group_id);
+        true
+    }
+
+    /// Pattern-block link groups (id + member block ids), stable by group id.
+    pub fn pattern_link_groups(&self) -> Vec<(u64, Vec<u64>)> {
+        let mut map: std::collections::BTreeMap<u64, Vec<u64>> = std::collections::BTreeMap::new();
+        for lane in &self.pattern_lanes {
+            for block in &lane.blocks {
+                if let Some(group_id) = block.link_group_id {
+                    map.entry(group_id).or_default().push(block.id);
+                }
+            }
+        }
+        map.into_iter().collect()
+    }
+
+    /// Copy this block's row package onto every other member of its link group.
+    pub fn sync_pattern_link_group_from(&mut self, block_id: u64) {
+        let Some(source) = self.pattern_block(block_id).cloned() else {
+            return;
+        };
+        let Some(group_id) = source.link_group_id else {
+            return;
+        };
+        let sibling_ids: Vec<u64> = self
+            .pattern_lanes
+            .iter()
+            .flat_map(|lane| lane.blocks.iter())
+            .filter(|block| block.id != block_id && block.link_group_id == Some(group_id))
+            .map(|block| block.id)
+            .collect();
+        for sibling_id in sibling_ids {
+            let mut tracks = source.tracks.clone();
+            self.remap_pattern_block_track_ids(&mut tracks);
+            if let Some(sibling) = self.pattern_block_mut(sibling_id) {
+                sibling.tracks = tracks;
+            }
+        }
+    }
+
     /// Add an empty variation and activate it. Returns the new variation id.
     pub fn add_clip_variation_empty(&mut self, clip_id: u64) -> Option<u64> {
         let name = self.midi_clip(clip_id)?.next_variation_name();
         let variation_id = self.next_variation_id();
         self.bump_variation_id();
-        let clip = self.midi_clip_mut(clip_id)?;
-        clip.variations.push(MidiVariation {
-            id: variation_id,
-            name,
-            notes: Vec::new(),
-        });
-        clip.active_variation_id = variation_id;
+        {
+            let clip = self.midi_clip_mut(clip_id)?;
+            clip.variations.push(MidiVariation {
+                id: variation_id,
+                name,
+                notes: Vec::new(),
+            });
+            clip.active_variation_id = variation_id;
+        }
+        self.sync_link_group_from(clip_id);
         Some(variation_id)
     }
 
@@ -1163,25 +1381,31 @@ impl Project {
         }
         let variation_id = self.next_variation_id();
         self.bump_variation_id();
-        let clip = self.midi_clip_mut(clip_id)?;
-        clip.variations.push(MidiVariation {
-            id: variation_id,
-            name,
-            notes: remapped,
-        });
-        clip.active_variation_id = variation_id;
+        {
+            let clip = self.midi_clip_mut(clip_id)?;
+            clip.variations.push(MidiVariation {
+                id: variation_id,
+                name,
+                notes: remapped,
+            });
+            clip.active_variation_id = variation_id;
+        }
+        self.sync_link_group_from(clip_id);
         Some(variation_id)
     }
 
     /// Switch the active variation. Returns false if the id is unknown.
     pub fn set_active_clip_variation(&mut self, clip_id: u64, variation_id: u64) -> bool {
-        let Some(clip) = self.midi_clip_mut(clip_id) else {
-            return false;
-        };
-        if !clip.variations.iter().any(|v| v.id == variation_id) {
-            return false;
+        {
+            let Some(clip) = self.midi_clip_mut(clip_id) else {
+                return false;
+            };
+            if !clip.variations.iter().any(|v| v.id == variation_id) {
+                return false;
+            }
+            clip.active_variation_id = variation_id;
         }
-        clip.active_variation_id = variation_id;
+        self.sync_link_group_from(clip_id);
         true
     }
 
@@ -1191,38 +1415,44 @@ impl Project {
         variation_id: u64,
         name: String,
     ) -> bool {
-        let Some(variation) = self
-            .midi_clip_mut(clip_id)
-            .and_then(|clip| clip.variation_mut(variation_id))
-        else {
-            return false;
-        };
-        let trimmed = name.trim();
+        let trimmed = name.trim().to_string();
         if trimmed.is_empty() {
             return false;
         }
-        variation.name = trimmed.to_string();
+        {
+            let Some(variation) = self
+                .midi_clip_mut(clip_id)
+                .and_then(|clip| clip.variation_mut(variation_id))
+            else {
+                return false;
+            };
+            variation.name = trimmed;
+        }
+        self.sync_link_group_from(clip_id);
         true
     }
 
     /// Remove a variation. Refuses when it is the last take. If the active take is
     /// removed, activates another (prefer previous index).
     pub fn remove_clip_variation(&mut self, clip_id: u64, variation_id: u64) -> bool {
-        let Some(clip) = self.midi_clip_mut(clip_id) else {
-            return false;
-        };
-        if clip.variations.len() <= 1 {
-            return false;
+        {
+            let Some(clip) = self.midi_clip_mut(clip_id) else {
+                return false;
+            };
+            if clip.variations.len() <= 1 {
+                return false;
+            }
+            let Some(index) = clip.variations.iter().position(|v| v.id == variation_id) else {
+                return false;
+            };
+            let was_active = clip.active_variation_id == variation_id;
+            clip.variations.remove(index);
+            if was_active {
+                let new_index = index.saturating_sub(1).min(clip.variations.len() - 1);
+                clip.active_variation_id = clip.variations[new_index].id;
+            }
         }
-        let Some(index) = clip.variations.iter().position(|v| v.id == variation_id) else {
-            return false;
-        };
-        let was_active = clip.active_variation_id == variation_id;
-        clip.variations.remove(index);
-        if was_active {
-            let new_index = index.saturating_sub(1).min(clip.variations.len() - 1);
-            clip.active_variation_id = clip.variations[new_index].id;
-        }
+        self.sync_link_group_from(clip_id);
         true
     }
 
@@ -1402,6 +1632,7 @@ impl Project {
             length_beats: length,
             source,
             gain_db: 0.0,
+            muted: false,
             missing: false,
         };
         self.track_mut(track_id)?.clips.push(Clip::Audio(clip));
@@ -1433,6 +1664,7 @@ impl Project {
         let note = self
             .midi_clip_mut(clip_id)?
             .add_note_with_id(id, pitch, start, duration);
+        self.sync_link_group_from(clip_id);
         Some(note)
     }
 
@@ -1514,6 +1746,7 @@ impl Project {
             match clip {
                 Clip::Midi(midi) => {
                     midi.id = clip_id;
+                    midi.link_group_id = None;
                     self.remap_midi_clip_ids(midi);
                 }
                 Clip::Audio(audio) => {
@@ -1712,6 +1945,9 @@ impl Project {
                 new_ids.push(id);
             }
         }
+        if !new_ids.is_empty() {
+            self.sync_link_group_from(clip_id);
+        }
         new_ids
     }
 
@@ -1775,14 +2011,17 @@ impl Project {
             return false;
         }
 
-        let Some(clip) = self.midi_clip_mut(clip_id) else {
-            return false;
-        };
-        for note in clip.active_notes_mut() {
-            if ids.contains(&note.id) {
-                note.pitch = Self::clamp_pitch(note.pitch as i32 + delta);
+        {
+            let Some(clip) = self.midi_clip_mut(clip_id) else {
+                return false;
+            };
+            for note in clip.active_notes_mut() {
+                if ids.contains(&note.id) {
+                    note.pitch = Self::clamp_pitch(note.pitch as i32 + delta);
+                }
             }
         }
+        self.sync_link_group_from(clip_id);
         true
     }
 
@@ -1834,6 +2073,9 @@ impl Project {
                 placed.push((template.pitch, start, end));
                 new_ids.push(id);
             }
+        }
+        if !new_ids.is_empty() {
+            self.sync_link_group_from(clip_id);
         }
         new_ids
     }
@@ -1962,6 +2204,8 @@ impl Project {
                 length_beats: length,
                 variations,
                 active_variation_id,
+                link_group_id: None,
+                muted: false,
             });
             if let Some(track) = self.track_mut(template.track_id) {
                 track.clips.push(clip);
@@ -1977,6 +2221,7 @@ impl Project {
     ///
     /// When `allow_overlap_sources` is true (Shift+drag), copies may start on top of the
     /// clips being duplicated; they still cannot overlap any other clip.
+    /// Linked MIDI sources keep their `link_group_id` on the copy (package remapped).
     pub fn duplicate_clips(
         &mut self,
         clip_ids: &[u64],
@@ -2206,6 +2451,7 @@ impl Project {
                 left_mut.set_length_beats(l.length_beats + r.length_beats);
                 self.resolve_note_move_overlaps(left_id, &new_note_ids);
                 self.remove_clip(right_id);
+                self.sync_link_group_from(left_id);
                 Some(left_id)
             }
             (Clip::Audio(l), Clip::Audio(r)) => {
@@ -2339,6 +2585,7 @@ impl Project {
             next_clip_id: 2,
             next_track_id: 2,
             next_variation_id: 1,
+            next_link_group_id: 1,
             next_device_id: 1,
             next_automation_lane_id: 1,
             next_modulator_id: 1,
@@ -2472,6 +2719,9 @@ impl Project {
             start_beats: start,
             length_beats: length,
             solo: false,
+            locked: false,
+            muted: false,
+            link_group_id: None,
             tracks: Vec::new(),
         };
         self.pattern_lane_mut(lane_id)?.blocks.push(block);
@@ -2547,6 +2797,9 @@ impl Project {
                 start_beats: block.start_beats,
                 length_beats: block.length_beats,
                 solo: block.solo,
+                locked: block.locked,
+                muted: block.muted,
+                link_group_id: None,
                 tracks,
             });
         }
@@ -2776,6 +3029,32 @@ impl Project {
         self.set_pattern_block_solo(block_id, solo);
     }
 
+    pub fn set_pattern_block_locked(&mut self, block_id: u64, locked: bool) {
+        if let Some(block) = self.pattern_block_mut(block_id) {
+            block.locked = locked;
+        }
+    }
+
+    pub fn toggle_pattern_block_locked(&mut self, block_id: u64) {
+        if let Some(block) = self.pattern_block_mut(block_id) {
+            block.locked = !block.locked;
+        }
+    }
+
+    pub fn toggle_pattern_block_muted(&mut self, block_id: u64) {
+        if let Some(block) = self.pattern_block_mut(block_id) {
+            block.muted = !block.muted;
+        }
+    }
+
+    pub fn toggle_clip_muted(&mut self, clip_id: u64) -> bool {
+        let Some(clip) = self.clip_mut(clip_id) else {
+            return false;
+        };
+        clip.set_muted(!clip.muted());
+        true
+    }
+
     /// Whether a playlist track has an explicit row entry in this pattern block.
     /// Empty entries are still "off" for overrides; presence mainly stores notes / row mode.
     pub fn pattern_row_included(&self, block_id: u64, track_id: u64) -> bool {
@@ -2792,20 +3071,23 @@ impl Project {
         track_id: u64,
         included: bool,
     ) -> bool {
-        let Some(block) = self.pattern_block_mut(block_id) else {
-            return false;
-        };
-        if included {
-            if block.track_content(track_id).is_none() {
-                block.tracks.push(super::pattern::PatternTrackContent {
-                    track_id,
-                    notes: Vec::new(),
-                    row_mode: None,
-                });
+        {
+            let Some(block) = self.pattern_block_mut(block_id) else {
+                return false;
+            };
+            if included {
+                if block.track_content(track_id).is_none() {
+                    block.tracks.push(super::pattern::PatternTrackContent {
+                        track_id,
+                        notes: Vec::new(),
+                        row_mode: None,
+                    });
+                }
+            } else {
+                block.tracks.retain(|row| row.track_id != track_id);
             }
-        } else {
-            block.tracks.retain(|row| row.track_id != track_id);
         }
+        self.sync_pattern_link_group_from(block_id);
         true
     }
 
@@ -2908,6 +3190,7 @@ impl Project {
             start_beats: f32,
             length_beats: f32,
             solo: bool,
+            link_group_id: Option<u64>,
             tracks: Vec<super::pattern::PatternTrackContent>,
         }
 
@@ -2926,6 +3209,7 @@ impl Project {
                 start_beats: block.start_beats,
                 length_beats: block.length_beats,
                 solo: block.solo,
+                link_group_id: block.link_group_id,
                 tracks: block.tracks.clone(),
             });
         }
@@ -2967,6 +3251,9 @@ impl Project {
                 start_beats: start,
                 length_beats: length,
                 solo: false,
+                locked: false,
+                muted: false,
+                link_group_id: template.link_group_id,
                 tracks,
             };
             if let Some(lane) = self.pattern_lane_mut(template.lane_id) {
@@ -3023,6 +3310,7 @@ impl Project {
         {
             content.notes.retain(|note| note.id != note_id);
         }
+        self.sync_pattern_link_group_from(block_id);
     }
 
     /// Whether `[start_beats, start_beats + duration_beats)` is free at `pitch` in a pattern row.
@@ -3076,9 +3364,6 @@ impl Project {
         let id = self.next_note_id();
         self.bump_note_id();
         self.set_pattern_row_included(block_id, track_id, true);
-        let content = self
-            .pattern_block_mut(block_id)?
-            .track_content_mut(track_id)?;
         let note = Note {
             id,
             pitch,
@@ -3086,7 +3371,13 @@ impl Project {
             duration_beats: duration,
             velocity: 100,
         };
-        content.notes.push(note);
+        {
+            let content = self
+                .pattern_block_mut(block_id)?
+                .track_content_mut(track_id)?;
+            content.notes.push(note);
+        }
+        self.sync_pattern_link_group_from(block_id);
         Some(note)
     }
 
@@ -3237,6 +3528,7 @@ impl Project {
                 }
             }
         }
+        self.sync_pattern_link_group_from(block_id);
     }
 
     /// Left edge a pattern-row note resize-start drag may not cross.
@@ -3403,6 +3695,9 @@ impl Project {
                 new_ids.push(id);
             }
         }
+        if !new_ids.is_empty() {
+            self.sync_pattern_link_group_from(block_id);
+        }
         new_ids
     }
 
@@ -3479,6 +3774,9 @@ impl Project {
                 new_ids.push(id);
             }
         }
+        if !new_ids.is_empty() {
+            self.sync_pattern_link_group_from(block_id);
+        }
         new_ids
     }
 
@@ -3502,13 +3800,16 @@ impl Project {
         if !self.set_pattern_row_included(block_id, track_id, true) {
             return false;
         }
-        let Some(content) = self
-            .pattern_block_mut(block_id)
-            .and_then(|block| block.track_content_mut(track_id))
-        else {
-            return false;
-        };
-        content.row_mode = mode;
+        {
+            let Some(content) = self
+                .pattern_block_mut(block_id)
+                .and_then(|block| block.track_content_mut(track_id))
+            else {
+                return false;
+            };
+            content.row_mode = mode;
+        }
+        self.sync_pattern_link_group_from(block_id);
         true
     }
 
@@ -3577,7 +3878,7 @@ impl Project {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{ClipboardNote, EditClipboard, EditHistory};
+    use crate::model::{ClipboardNote, EditClipboard, EditHistory, PatternBlock};
     use std::path::PathBuf;
 
     #[test]
@@ -5291,5 +5592,225 @@ mod tests {
         assert_eq!(dup.variations.len(), 2);
         assert_ne!(dup.variations[0].id, src.variations[0].id);
         assert_ne!(dup.active_variation_id, src.active_variation_id);
+        assert_eq!(dup.link_group_id, None);
+    }
+
+    fn package_shape(clip: &MidiClip) -> Vec<(String, bool, Vec<(u8, f32, f32)>)> {
+        let active = clip.active_variation_id;
+        clip.variations
+            .iter()
+            .map(|v| {
+                (
+                    v.name.clone(),
+                    v.id == active,
+                    v.notes
+                        .iter()
+                        .map(|n| (n.pitch, n.start_beats, n.duration_beats))
+                        .collect(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn linked_clip_duplicate_keeps_group_and_syncs_edits() {
+        let mut project = Project::default();
+        let track_id = project.tracks[0].id;
+        let clip_a = project.tracks[0].clips[0].id();
+        project
+            .add_note_to_clip(clip_a, 60, 0.0, 1.0)
+            .expect("note");
+        let group = project.enable_clip_link(clip_a).expect("link");
+        assert_eq!(
+            project.midi_clip(clip_a).unwrap().link_group_id,
+            Some(group)
+        );
+
+        let created = project.duplicate_clips(&[clip_a], 4.0, false);
+        assert_eq!(created.len(), 1);
+        let clip_b = created[0].1;
+        assert_eq!(
+            project.midi_clip(clip_b).unwrap().link_group_id,
+            Some(group)
+        );
+        assert_ne!(
+            project.midi_clip(clip_a).unwrap().active_notes()[0].id,
+            project.midi_clip(clip_b).unwrap().active_notes()[0].id
+        );
+        assert_eq!(
+            package_shape(project.midi_clip(clip_a).unwrap()),
+            package_shape(project.midi_clip(clip_b).unwrap())
+        );
+
+        project
+            .add_note_to_clip(clip_a, 64, 1.0, 0.5)
+            .expect("second note");
+        assert_eq!(
+            package_shape(project.midi_clip(clip_a).unwrap()),
+            package_shape(project.midi_clip(clip_b).unwrap())
+        );
+        assert_eq!(project.midi_clip(clip_b).unwrap().active_notes().len(), 2);
+
+        let b_id = project
+            .add_clip_variation_from_active(clip_a)
+            .expect("take B");
+        assert_eq!(project.midi_clip(clip_a).unwrap().variations.len(), 2);
+        assert_eq!(project.midi_clip(clip_b).unwrap().variations.len(), 2);
+        assert_eq!(
+            project.midi_clip(clip_a).unwrap().active_variation().unwrap().name,
+            project.midi_clip(clip_b).unwrap().active_variation().unwrap().name
+        );
+        assert_ne!(
+            project.midi_clip(clip_b).unwrap().active_variation_id,
+            b_id
+        );
+
+        project.unlink_clip(clip_b);
+        assert_eq!(project.midi_clip(clip_b).unwrap().link_group_id, None);
+        assert_eq!(
+            project.midi_clip(clip_a).unwrap().link_group_id,
+            Some(group)
+        );
+        project
+            .add_note_to_clip(clip_a, 67, 2.0, 0.5)
+            .expect("after unlink");
+        assert_eq!(project.midi_clip(clip_a).unwrap().active_notes().len(), 3);
+        assert_eq!(project.midi_clip(clip_b).unwrap().active_notes().len(), 2);
+
+        let clip_c = project
+            .add_clip_to_track(track_id, 8.0, 4.0)
+            .expect("third");
+        assert!(project.join_clip_link_group(clip_c, group));
+        assert_eq!(
+            project.midi_clip(clip_c).unwrap().link_group_id,
+            Some(group)
+        );
+        assert_eq!(
+            package_shape(project.midi_clip(clip_a).unwrap()),
+            package_shape(project.midi_clip(clip_c).unwrap())
+        );
+    }
+
+    #[test]
+    fn legacy_load_has_no_link_group() {
+        let json = r#"{
+            "bpm": 120.0,
+            "beats_per_bar": 4.0,
+            "loop_end_beats": 16.0,
+            "tracks": [{
+                "id": 1,
+                "name": "Track 1",
+                "muted": false,
+                "solo": false,
+                "instrument": { "type": "built_in_piano" },
+                "clips": [{
+                    "id": 1,
+                    "name": "Clip 1",
+                    "start_beats": 0.0,
+                    "length_beats": 4.0,
+                    "notes": [
+                        {"id": 1, "pitch": 64, "start_beats": 0.0, "duration_beats": 1.0, "velocity": 100}
+                    ]
+                }]
+            }],
+            "next_note_id": 2,
+            "next_clip_id": 2,
+            "next_track_id": 2
+        }"#;
+        let loaded = Project::from_json(json).expect("legacy");
+        assert_eq!(loaded.midi_clip(1).unwrap().link_group_id, None);
+    }
+
+    fn pattern_row_shape(block: &PatternBlock, track_id: u64) -> Vec<(u8, f32, f32)> {
+        block
+            .track_content(track_id)
+            .map(|row| {
+                row.notes
+                    .iter()
+                    .map(|n| (n.pitch, n.start_beats, n.duration_beats))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn linked_pattern_block_duplicate_keeps_group_and_syncs_edits() {
+        let mut project = Project::default();
+        let track_id = project.tracks[0].id;
+        project.ensure_pattern_lane();
+        let lane_id = project.pattern_lanes[0].id;
+        let block_a = project
+            .add_pattern_block(lane_id, 0.0, 4.0)
+            .expect("block a");
+        project
+            .add_note_to_pattern_track(block_a, track_id, 60, 0.0, 1.0)
+            .expect("note");
+        let group = project
+            .enable_pattern_block_link(block_a)
+            .expect("link");
+
+        let created = project.duplicate_pattern_blocks(&[block_a], 4.0, false);
+        assert_eq!(created.len(), 1);
+        let block_b = created[0].1;
+        assert_eq!(
+            project.pattern_block(block_b).unwrap().link_group_id,
+            Some(group)
+        );
+        assert_eq!(
+            pattern_row_shape(project.pattern_block(block_a).unwrap(), track_id),
+            pattern_row_shape(project.pattern_block(block_b).unwrap(), track_id)
+        );
+
+        project
+            .add_note_to_pattern_track(block_a, track_id, 64, 1.0, 0.5)
+            .expect("second");
+        assert_eq!(
+            pattern_row_shape(project.pattern_block(block_a).unwrap(), track_id),
+            pattern_row_shape(project.pattern_block(block_b).unwrap(), track_id)
+        );
+        assert_eq!(
+            project
+                .pattern_block(block_b)
+                .unwrap()
+                .track_content(track_id)
+                .unwrap()
+                .notes
+                .len(),
+            2
+        );
+
+        project.unlink_pattern_block(block_b);
+        project
+            .add_note_to_pattern_track(block_a, track_id, 67, 2.0, 0.5)
+            .expect("after unlink");
+        assert_eq!(
+            project
+                .pattern_block(block_a)
+                .unwrap()
+                .track_content(track_id)
+                .unwrap()
+                .notes
+                .len(),
+            3
+        );
+        assert_eq!(
+            project
+                .pattern_block(block_b)
+                .unwrap()
+                .track_content(track_id)
+                .unwrap()
+                .notes
+                .len(),
+            2
+        );
+
+        let block_c = project
+            .add_pattern_block(lane_id, 8.0, 4.0)
+            .expect("block c");
+        assert!(project.join_pattern_block_link_group(block_c, group));
+        assert_eq!(
+            pattern_row_shape(project.pattern_block(block_a).unwrap(), track_id),
+            pattern_row_shape(project.pattern_block(block_c).unwrap(), track_id)
+        );
     }
 }

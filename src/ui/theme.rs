@@ -92,6 +92,10 @@ pub struct ThemeColors {
     pub clip_label: Color32,
     #[serde(with = "color32_serde")]
     pub clip_note_preview: Color32,
+    #[serde(default = "default_clip_linked_stroke", with = "color32_serde")]
+    pub clip_linked_stroke: Color32,
+    #[serde(default = "default_clip_linked_fill", with = "color32_serde")]
+    pub clip_linked_fill: Color32,
 
     // Pattern strip (section MIDI overrides)
     #[serde(default = "default_pattern_block_fill", with = "color32_serde")]
@@ -255,6 +259,8 @@ impl ThemeColors {
             clip_stroke_selected: Color32::WHITE,
             clip_label: Color32::from_rgb(240, 240, 250),
             clip_note_preview: Color32::from_rgba_unmultiplied(255, 255, 255, 120),
+            clip_linked_stroke: default_clip_linked_stroke(),
+            clip_linked_fill: default_clip_linked_fill(),
 
             pattern_block_fill: default_pattern_block_fill(),
             pattern_block_fill_selected: default_pattern_block_fill_selected(),
@@ -389,6 +395,8 @@ impl ThemeColors {
             ),
             ("Playlist", "Clip label", &mut self.clip_label),
             ("Playlist", "Clip note preview", &mut self.clip_note_preview),
+            ("Playlist", "Clip linked stroke", &mut self.clip_linked_stroke),
+            ("Playlist", "Clip linked fill", &mut self.clip_linked_fill),
             ("Playlist", "Pattern block fill", &mut self.pattern_block_fill),
             (
                 "Playlist",
@@ -719,6 +727,14 @@ fn default_pattern_block_solo() -> Color32 {
 
 fn default_clip_ghosted() -> Color32 {
     Color32::from_rgb(60, 110, 180)
+}
+
+fn default_clip_linked_stroke() -> Color32 {
+    Color32::from_rgb(120, 220, 180)
+}
+
+fn default_clip_linked_fill() -> Color32 {
+    Color32::from_rgb(50, 130, 110)
 }
 
 fn default_pattern_rack_row_bg() -> Color32 {

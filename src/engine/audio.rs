@@ -3340,6 +3340,9 @@ impl DawEngine for AudioEngine {
         for track in &project.tracks {
             let mut clips = Vec::new();
             for clip in &track.clips {
+                if clip.muted() {
+                    continue;
+                }
                 let Some(audio) = clip.as_audio() else {
                     continue;
                 };
@@ -3653,6 +3656,9 @@ mod tests {
                 start_beats: 4.0,
                 length_beats: 4.0,
                 solo: false,
+                locked: false,
+                muted: false,
+                link_group_id: None,
                 tracks: vec![PatternTrackContent {
                     track_id: 1,
                     notes: vec![note(10, 72, 0.0, 2.0)],
@@ -3687,6 +3693,9 @@ mod tests {
                 start_beats: 4.0,
                 length_beats: 4.0,
                 solo: false,
+                locked: false,
+                muted: false,
+                link_group_id: None,
                 tracks: vec![PatternTrackContent {
                     track_id: 1,
                     notes: vec![note(10, 72, 0.0, 2.0)],
@@ -3699,6 +3708,38 @@ mod tests {
         assert_eq!(rt_notes.len(), 1);
         assert_eq!(rt_notes[0].pitch, 60);
         assert_eq!(rt_notes[0].end_beats, 8.0);
+    }
+
+    #[test]
+    fn playback_locked_block_in_playlist_priority_mode() {
+        let mut project = Project::default();
+        project.tracks = vec![track_with_clip(1, vec![note(1, 60, 0.0, 8.0)])];
+        project.pattern_overrides_playlist = false;
+        project.pattern_lanes = vec![PatternLane {
+            id: 1,
+            name: String::from("Lane 1"),
+            blocks: vec![PatternBlock {
+                id: 1,
+                name: String::from("Locked drums"),
+                start_beats: 4.0,
+                length_beats: 4.0,
+                solo: false,
+                locked: true,
+                muted: false,
+                link_group_id: None,
+                tracks: vec![PatternTrackContent {
+                    track_id: 1,
+                    notes: vec![note(10, 72, 0.0, 2.0)],
+                    row_mode: None,
+                }],
+            }],
+        }];
+
+        let rt_notes = track_rt_notes(&project, &project.tracks[0]);
+        assert_eq!(rt_notes.len(), 2);
+        assert_eq!(rt_notes[0].pitch, 60);
+        assert_eq!(rt_notes[0].end_beats, 4.0);
+        assert_eq!(rt_notes[1].pitch, 72);
     }
 
     #[test]
@@ -3717,6 +3758,9 @@ mod tests {
                 start_beats: 0.0,
                 length_beats: 4.0,
                 solo: true,
+                locked: false,
+                muted: false,
+                link_group_id: None,
                 tracks: vec![PatternTrackContent {
                     track_id: 1,
                     notes: vec![note(10, 72, 0.0, 2.0)],
@@ -3750,6 +3794,9 @@ mod tests {
                 start_beats: 0.0,
                 length_beats: 4.0,
                 solo: false,
+                locked: false,
+                muted: false,
+                link_group_id: None,
                 tracks: vec![PatternTrackContent {
                     track_id: 1,
                     notes: vec![note(10, 72, 0.0, 2.0)],

@@ -24,6 +24,11 @@ pub struct MidiClip {
     /// Alternate takes; always non-empty after normalize / constructors.
     pub variations: Vec<MidiVariation>,
     pub active_variation_id: u64,
+    /// When set, clips sharing this id sync the full variation package on edit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link_group_id: Option<u64>,
+    #[serde(default)]
+    pub muted: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -38,6 +43,10 @@ struct MidiClipDe {
     variations: Option<Vec<MidiVariation>>,
     #[serde(default)]
     active_variation_id: Option<u64>,
+    #[serde(default)]
+    link_group_id: Option<u64>,
+    #[serde(default)]
+    muted: bool,
 }
 
 impl<'de> Deserialize<'de> for MidiClip {
@@ -75,6 +84,8 @@ impl MidiClip {
             length_beats: raw.length_beats,
             variations,
             active_variation_id,
+            link_group_id: raw.link_group_id,
+            muted: raw.muted,
         }
     }
 
@@ -98,6 +109,8 @@ impl MidiClip {
                 notes,
             }],
             active_variation_id: variation_id,
+            link_group_id: None,
+            muted: false,
         }
     }
 
@@ -310,6 +323,20 @@ impl Clip {
             Self::Midi(_) => None,
         }
     }
+
+    pub fn muted(&self) -> bool {
+        match self {
+            Self::Midi(clip) => clip.muted,
+            Self::Audio(clip) => clip.muted,
+        }
+    }
+
+    pub fn set_muted(&mut self, muted: bool) {
+        match self {
+            Self::Midi(clip) => clip.muted = muted,
+            Self::Audio(clip) => clip.muted = muted,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -332,6 +359,7 @@ mod tests {
         assert_eq!(clip.variations[0].name, "A");
         assert_eq!(clip.active_notes().len(), 1);
         assert_eq!(clip.active_notes()[0].pitch, 60);
+        assert_eq!(clip.link_group_id, None);
     }
 
     #[test]

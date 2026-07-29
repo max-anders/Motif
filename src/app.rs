@@ -1134,6 +1134,7 @@ impl DawApp {
                 clip.remove_note(*id);
             }
         }
+        self.project.sync_link_group_from(clip_id);
     }
 
     // ---- Pattern row editor note editing (Phase D2) ----

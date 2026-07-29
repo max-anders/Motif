@@ -15,6 +15,9 @@ pub struct AudioClip {
     /// Per-clip pre-fader gain in dB (0 = unity).
     #[serde(default)]
     pub gain_db: f32,
+    /// When true, this clip is silent during playback.
+    #[serde(default)]
+    pub muted: bool,
     /// Runtime-only state, set true when the source cannot be resolved.
     #[serde(skip)]
     pub missing: bool,

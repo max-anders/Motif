@@ -233,6 +233,12 @@ pub fn show_playlist_clip_variation_menu(
         egui::pos2(clip_rect.right() - btn_w - 3.0, clip_rect.top() + 2.0),
         Vec2::new(btn_w, btn_h),
     );
+    // Never widen past the ScrollArea viewport (was painting over the devices dock).
+    let paint_clip = ui.clip_rect().intersect(clip_rect);
+    let btn_visible = btn_rect.intersect(paint_clip);
+    if btn_visible.width() < 1.0 || btn_visible.height() < 1.0 {
+        return false;
+    }
 
     let mut switched = false;
     let mut child = ui.new_child(
@@ -241,7 +247,7 @@ pub fn show_playlist_clip_variation_menu(
             .max_rect(btn_rect)
             .layout(Layout::centered_and_justified(egui::Direction::TopDown)),
     );
-    child.set_clip_rect(clip_rect);
+    child.set_clip_rect(paint_clip);
     let label = if variation_count > 1 {
         active_name
     } else {
@@ -293,4 +299,323 @@ pub fn show_playlist_clip_variation_menu(
     );
 
     switched
+}
+
+/// Playlist chrome: link toggle (top-left) + right-click join menu.
+pub fn show_playlist_clip_link_control(
+    ui: &mut Ui,
+    clip_rect: Rect,
+    clip_id: u64,
+    project: &mut Project,
+    history: &mut EditHistory,
+    theme: &ThemeColors,
+) {
+    let Some(clip) = project.midi_clip(clip_id) else {
+        return;
+    };
+    let linked = clip.link_group_id.is_some();
+    let own_group = clip.link_group_id;
+    let clip_name = clip.name.clone();
+
+    let btn_w = 18.0_f32.min(clip_rect.width() * 0.28);
+    let btn_h = 16.0_f32.min(clip_rect.height() - 4.0).max(12.0);
+    if btn_w < 14.0 || clip_rect.height() < 18.0 {
+        return;
+    }
+    let btn_rect = Rect::from_min_size(
+        egui::pos2(clip_rect.left() + 3.0, clip_rect.top() + 2.0),
+        Vec2::new(btn_w, btn_h),
+    );
+    // Never widen past the ScrollArea viewport (was painting over the devices dock).
+    let paint_clip = ui.clip_rect().intersect(clip_rect);
+    let btn_visible = btn_rect.intersect(paint_clip);
+    if btn_visible.width() < 1.0 || btn_visible.height() < 1.0 {
+        return;
+    }
+
+    let other_groups: Vec<(u64, String, usize)> = project
+        .link_groups()
+        .into_iter()
+        .filter(|(group_id, members)| Some(*group_id) != own_group && !members.is_empty())
+        .map(|(group_id, members)| {
+            let label_name = members
+                .iter()
+                .find_map(|id| project.midi_clip(*id).map(|c| c.name.clone()))
+                .unwrap_or_else(|| format!("Group {group_id}"));
+            let extra = members.len().saturating_sub(1);
+            (group_id, label_name, extra)
+        })
+        .collect();
+
+    let mut child = ui.new_child(
+        UiBuilder::new()
+            .id_salt(("clip_link", clip_id))
+            .max_rect(btn_rect)
+            .layout(Layout::centered_and_justified(egui::Direction::TopDown)),
+    );
+    child.set_clip_rect(paint_clip);
+    let label = if linked { "L" } else { "o" };
+    let fill = if linked {
+        theme.clip_linked_fill.gamma_multiply(0.85)
+    } else {
+        theme.clip_fill.gamma_multiply(0.45)
+    };
+    let response = child
+        .add(
+            egui::Button::new(RichText::new(label).small().color(theme.clip_label))
+                .fill(fill)
+                .sense(Sense::click()),
+        )
+        .on_hover_text(if linked {
+            "Unlink this clip (make unique)"
+        } else {
+            "Link mode: further duplicates stay linked"
+        });
+
+    if response.clicked() {
+        let before = project.clone();
+        if linked {
+            if project.unlink_clip(clip_id) {
+                history.push_before(before);
+            }
+        } else if project.enable_clip_link(clip_id).is_some() {
+            history.push_before(before);
+        }
+    }
+
+    let popup_id = response.id.with("link_join_popup");
+    if response.secondary_clicked() {
+        ui.memory_mut(|m| m.toggle_popup(popup_id));
+    }
+
+    egui::popup::popup_below_widget(
+        ui,
+        popup_id,
+        &response,
+        egui::popup::PopupCloseBehavior::CloseOnClick,
+        |ui| {
+            ui.set_min_width(140.0);
+            ui.label(
+                RichText::new(format!("Join group ({clip_name})"))
+                    .small()
+                    .color(theme.text_muted),
+            );
+            ui.separator();
+            if other_groups.is_empty() {
+                ui.label(RichText::new("No other link groups").small());
+            } else {
+                for (group_id, name, extra) in &other_groups {
+                    let label = if *extra > 0 {
+                        format!("Group {group_id} · {name} (+{extra})")
+                    } else {
+                        format!("Group {group_id} · {name}")
+                    };
+                    if ui.button(label).clicked() {
+                        let before = project.clone();
+                        if project.join_clip_link_group(clip_id, *group_id) {
+                            history.push_before(before);
+                        }
+                    }
+                }
+            }
+        },
+    );
+}
+
+/// Pattern-strip chrome: link toggle (top-left) + right-click join menu.
+pub fn show_pattern_block_link_control(
+    ui: &mut Ui,
+    block_rect: Rect,
+    block_id: u64,
+    project: &mut Project,
+    history: &mut EditHistory,
+    theme: &ThemeColors,
+) {
+    let Some(block) = project.pattern_block(block_id) else {
+        return;
+    };
+    let linked = block.link_group_id.is_some();
+    let own_group = block.link_group_id;
+    let block_name = block.name.clone();
+
+    let btn_w = 18.0_f32.min(block_rect.width() * 0.28);
+    let btn_h = 16.0_f32.min(block_rect.height() - 4.0).max(12.0);
+    if btn_w < 14.0 || block_rect.height() < 18.0 {
+        return;
+    }
+    let btn_rect = Rect::from_min_size(
+        egui::pos2(block_rect.left() + 3.0, block_rect.top() + 2.0),
+        Vec2::new(btn_w, btn_h),
+    );
+    let paint_clip = ui.clip_rect().intersect(block_rect);
+    let btn_visible = btn_rect.intersect(paint_clip);
+    if btn_visible.width() < 1.0 || btn_visible.height() < 1.0 {
+        return;
+    }
+
+    let other_groups: Vec<(u64, String, usize)> = project
+        .pattern_link_groups()
+        .into_iter()
+        .filter(|(group_id, members)| Some(*group_id) != own_group && !members.is_empty())
+        .map(|(group_id, members)| {
+            let label_name = members
+                .iter()
+                .find_map(|id| project.pattern_block(*id).map(|b| b.name.clone()))
+                .unwrap_or_else(|| format!("Group {group_id}"));
+            let extra = members.len().saturating_sub(1);
+            (group_id, label_name, extra)
+        })
+        .collect();
+
+    let mut child = ui.new_child(
+        UiBuilder::new()
+            .id_salt(("pattern_link", block_id))
+            .max_rect(btn_rect)
+            .layout(Layout::centered_and_justified(egui::Direction::TopDown)),
+    );
+    child.set_clip_rect(paint_clip);
+    let label = if linked { "L" } else { "o" };
+    let fill = if linked {
+        theme.clip_linked_fill.gamma_multiply(0.85)
+    } else {
+        theme.pattern_block_fill.gamma_multiply(0.55)
+    };
+    let response = child
+        .add(
+            egui::Button::new(RichText::new(label).small().color(theme.pattern_block_label))
+                .fill(fill)
+                .sense(Sense::click()),
+        )
+        .on_hover_text(if linked {
+            "Unlink this pattern (make unique)"
+        } else {
+            "Link mode: further duplicates stay linked"
+        });
+
+    if response.clicked() {
+        let before = project.clone();
+        if linked {
+            if project.unlink_pattern_block(block_id) {
+                history.push_before(before);
+            }
+        } else if project.enable_pattern_block_link(block_id).is_some() {
+            history.push_before(before);
+        }
+    }
+
+    let popup_id = response.id.with("pattern_link_join_popup");
+    if response.secondary_clicked() {
+        ui.memory_mut(|m| m.toggle_popup(popup_id));
+    }
+
+    egui::popup::popup_below_widget(
+        ui,
+        popup_id,
+        &response,
+        egui::popup::PopupCloseBehavior::CloseOnClick,
+        |ui| {
+            ui.set_min_width(140.0);
+            ui.label(
+                RichText::new(format!("Join group ({block_name})"))
+                    .small()
+                    .color(theme.text_muted),
+            );
+            ui.separator();
+            if other_groups.is_empty() {
+                ui.label(RichText::new("No other pattern link groups").small());
+            } else {
+                for (group_id, name, extra) in &other_groups {
+                    let label = if *extra > 0 {
+                        format!("Group {group_id} · {name} (+{extra})")
+                    } else {
+                        format!("Group {group_id} · {name}")
+                    };
+                    if ui.button(label).clicked() {
+                        let before = project.clone();
+                        if project.join_pattern_block_link_group(block_id, *group_id) {
+                            history.push_before(before);
+                        }
+                    }
+                }
+            }
+        },
+    );
+}
+
+/// Bottom-right mute toggle for playlist clips (MIDI and audio).
+pub fn show_playlist_clip_mute_control(
+    ui: &mut Ui,
+    clip_rect: Rect,
+    clip_id: u64,
+    project: &mut Project,
+    history: &mut EditHistory,
+    engine: &mut dyn crate::engine::DawEngine,
+    theme: &ThemeColors,
+) {
+    let Some(clip) = project.clip(clip_id) else {
+        return;
+    };
+    let muted = clip.muted();
+
+    let btn_w = 16.0_f32.min(clip_rect.width() * 0.28);
+    let btn_h = 14.0_f32.min(clip_rect.height() * 0.4).max(10.0);
+    if btn_w < 12.0 || clip_rect.height() < 16.0 {
+        return;
+    }
+    let btn_rect = Rect::from_min_size(
+        egui::pos2(clip_rect.right() - btn_w - 3.0, clip_rect.bottom() - btn_h - 2.0),
+        Vec2::new(btn_w, btn_h),
+    );
+    let paint_clip = ui.clip_rect().intersect(clip_rect);
+    let btn_visible = btn_rect.intersect(paint_clip);
+    if btn_visible.width() < 1.0 || btn_visible.height() < 1.0 {
+        return;
+    }
+
+    let mut child = ui.new_child(
+        UiBuilder::new()
+            .id_salt(("clip_mute", clip_id))
+            .max_rect(btn_rect)
+            .layout(Layout::centered_and_justified(egui::Direction::TopDown)),
+    );
+    child.set_clip_rect(paint_clip);
+    let fill = if muted {
+        theme.accent
+    } else {
+        theme.widget_bg.gamma_multiply(0.88)
+    };
+    let stroke = if muted {
+        theme.accent
+    } else {
+        theme.separator
+    };
+    let response = child
+        .add(
+            egui::Button::new(
+                RichText::new("M")
+                    .small()
+                    .color(if muted {
+                        theme.panel_bg
+                    } else {
+                        theme.text_muted
+                    })
+                    .monospace(),
+            )
+            .fill(fill)
+            .stroke(egui::Stroke::new(1.0_f32, stroke))
+            .min_size(Vec2::new(btn_w, btn_h)),
+        )
+        .on_hover_text(if muted {
+            "Unmute clip"
+        } else {
+            "Mute clip"
+        });
+
+    if response.clicked() {
+        let before = project.clone();
+        if project.toggle_clip_muted(clip_id) {
+            history.push_before(before);
+            engine.all_notes_off();
+        }
+    }
 }

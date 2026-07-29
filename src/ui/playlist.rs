@@ -16,7 +16,11 @@ use crate::ui::instrument_menu::{
     choice_to_instrument, show_instrument_picker, track_name_for_choice, InstrumentChoice,
     MENU_LIST_MAX_HEIGHT,
 };
-use crate::ui::clip_variations::show_playlist_clip_variation_menu;
+use crate::ui::clip_variations::{
+    show_pattern_block_link_control, show_playlist_clip_link_control,
+    show_playlist_clip_mute_control, show_playlist_clip_variation_menu,
+};
+use crate::ui::pattern_strip::pattern_block_rect;
 use crate::ui::note_preview::{draw_note_preview, NotePreviewStyle};
 use crate::ui::pattern_strip::PatternStripUi;
 use crate::ui::theme::ThemeColors;
@@ -613,21 +617,37 @@ impl PlaylistUi {
                         );
                         if self.active_drag.is_none() {
                             for clip in &track.clips {
-                                if clip.as_midi().is_none() {
-                                    continue;
-                                }
                                 let clip_rect = clip_block_rect(body, lane_rect, clip, metrics);
                                 variation_menu_targets.push((clip.id(), clip_rect));
                             }
                         }
                     }
                     for (clip_id, clip_rect) in variation_menu_targets {
-                        let _ = show_playlist_clip_variation_menu(
+                        if project.clip(clip_id).and_then(|c| c.as_midi()).is_some() {
+                            show_playlist_clip_link_control(
+                                ui,
+                                clip_rect,
+                                clip_id,
+                                project,
+                                history,
+                                theme,
+                            );
+                            let _ = show_playlist_clip_variation_menu(
+                                ui,
+                                clip_rect,
+                                clip_id,
+                                project,
+                                history,
+                                theme,
+                            );
+                        }
+                        show_playlist_clip_mute_control(
                             ui,
                             clip_rect,
                             clip_id,
                             project,
                             history,
+                            engine,
                             theme,
                         );
                     }
@@ -641,6 +661,8 @@ impl PlaylistUi {
                         theme,
                     );
 
+                    let mut pattern_link_targets: Vec<(u64, Rect)> = Vec::new();
+                    let pattern_gesture = self.any_pattern_strip_gesture_active();
                     for (lane_index, lane) in project.pattern_lanes.iter().enumerate() {
                         let strip_rect =
                             PatternStripUi::strip_rect(body, track_area_height, lane_index);
@@ -657,6 +679,23 @@ impl PlaylistUi {
                                 theme,
                             );
                         }
+                        if !pattern_gesture {
+                            for block in &lane.blocks {
+                                let block_rect =
+                                    pattern_block_rect(body, strip_rect, block, metrics);
+                                pattern_link_targets.push((block.id, block_rect));
+                            }
+                        }
+                    }
+                    for (block_id, block_rect) in pattern_link_targets {
+                        show_pattern_block_link_control(
+                            ui,
+                            block_rect,
+                            block_id,
+                            project,
+                            history,
+                            theme,
+                        );
                     }
 
                     let add_lane_row = PatternStripUi::add_lane_row_rect(
@@ -1601,7 +1640,9 @@ pub(crate) fn draw_lane_timeline(
         let clip_rect = clip_block_rect(timeline, lane, clip, metrics);
         let is_selected = selected.contains(&clip.id());
         let is_audio = clip.as_audio().is_some();
+        let clip_muted = clip.muted();
         let ghosted = audible
+            && !clip_muted
             && !is_audio
             && override_windows.iter().any(|(win_start, win_end)| {
                 Project::beat_ranges_overlap(
@@ -1611,8 +1652,22 @@ pub(crate) fn draw_lane_timeline(
                     *win_end,
                 )
             });
-        let fill = if ghosted {
+        let is_linked = clip
+            .as_midi()
+            .map(|m| m.link_group_id.is_some())
+            .unwrap_or(false);
+        let fill = if clip_muted {
+            if is_selected {
+                theme.clip_fill_selected.gamma_multiply(0.35)
+            } else if is_audio {
+                theme.clip_fill.gamma_multiply(0.4)
+            } else {
+                theme.lane_bg.gamma_multiply(0.75)
+            }
+        } else if ghosted {
             theme.clip_ghosted.gamma_multiply(0.42)
+        } else if is_linked && !is_selected {
+            theme.clip_linked_fill.gamma_multiply(0.9)
         } else if is_selected {
             if is_audio {
                 theme.clip_fill_selected.gamma_multiply(0.85)
@@ -1626,18 +1681,18 @@ pub(crate) fn draw_lane_timeline(
                 theme.clip_fill
             }
         };
+        let stroke_color = if is_selected {
+            theme.clip_stroke_selected
+        } else if is_linked {
+            theme.clip_linked_stroke
+        } else {
+            theme.clip_stroke
+        };
         painter.rect(
             clip_rect,
             4.0,
             fill,
-            egui::Stroke::new(
-                1.5_f32,
-                if is_selected {
-                    theme.clip_stroke_selected
-                } else {
-                    theme.clip_stroke
-                },
-            ),
+            egui::Stroke::new(1.5_f32, stroke_color),
             egui::StrokeKind::Inside,
         );
 
@@ -1660,12 +1715,17 @@ pub(crate) fn draw_lane_timeline(
         } else {
             format!("[M] {}", clip.name())
         };
-        // Clip the label to the block so long filenames don't bleed into the
-        // next clip - the previous version drew unclipped, untruncated text.
+        // MIDI clips reserve the top-left for the link control.
+        let label_x = if is_audio {
+            clip_rect.left() + 6.0
+        } else {
+            clip_rect.left() + 24.0
+        };
+        let label_max_w = (clip_rect.right() - label_x - 8.0).max(0.0);
         painter.with_clip_rect(clip_rect).text(
-            Pos2::new(clip_rect.left() + 6.0, clip_rect.top() + 4.0),
+            Pos2::new(label_x, clip_rect.top() + 4.0),
             egui::Align2::LEFT_TOP,
-            truncate_label_for_width(&label, clip_rect.width() - 8.0),
+            truncate_label_for_width(&label, label_max_w),
             egui::FontId::proportional(11.0),
             theme.clip_label,
         );
@@ -1691,6 +1751,19 @@ pub(crate) fn draw_lane_timeline(
 /// belt-and-suspenders guard: even if the estimate is slightly off, the hard
 /// clip rect stops text from bleeding into a neighboring clip.
 const CLIP_LABEL_AVG_CHAR_WIDTH: f32 = 6.0;
+
+/// Top-left link control and top-right take menu own secondary clicks.
+fn clip_chrome_blocks_secondary(clip_rect: Rect, pointer: Pos2) -> bool {
+    let zone_h = 20.0_f32.min(clip_rect.height());
+    let top = Rect::from_min_max(
+        Pos2::new(clip_rect.left(), clip_rect.top()),
+        Pos2::new(clip_rect.right(), clip_rect.top() + zone_h),
+    );
+    if !top.contains(pointer) {
+        return false;
+    }
+    pointer.x < clip_rect.left() + 24.0 || pointer.x > clip_rect.right() - 34.0
+}
 
 fn truncate_label_for_width(text: &str, available_width: f32) -> String {
     if available_width <= 0.0 {
@@ -2155,8 +2228,8 @@ fn handle_clip_pointer(
             return;
         }
 
-        // Empty lane: marquee multi-select
-        if is_timeline_pointer(lane, press_pos) {
+        // Empty lane: Ctrl+drag marquee multi-select
+        if is_timeline_pointer(lane, press_pos) && ctrl_or_cmd {
             *active_drag = None;
             selected.clear();
             *marquee = Some(MarqueeDrag {
@@ -2182,6 +2255,11 @@ fn handle_clip_pointer(
             pointer,
             metrics,
         ) {
+            let clip_rect = clip_block_rect(body, lane, clip, metrics);
+            // Link / take chrome own secondary clicks (join menu / no-op).
+            if clip.as_midi().is_some() && clip_chrome_blocks_secondary(clip_rect, pointer) {
+                return;
+            }
             let clip_id = clip.id();
             let before = project.clone();
             project.remove_clip(clip_id);
@@ -2405,7 +2483,7 @@ pub(crate) fn handle_single_track_clip_pointer(
             return;
         }
 
-        if is_timeline_pointer(lane, press_pos) {
+        if is_timeline_pointer(lane, press_pos) && ctrl_or_cmd {
             *active_drag = None;
             selected.clear();
             *marquee = Some(MarqueeDrag {
@@ -2424,6 +2502,10 @@ pub(crate) fn handle_single_track_clip_pointer(
 
     if response.clicked_by(egui::PointerButton::Secondary) && !response.dragged() {
         if let Some(clip) = hit_test_clip(body, lane, clips, pointer, metrics) {
+            let clip_rect = clip_block_rect(body, lane, clip, metrics);
+            if clip.as_midi().is_some() && clip_chrome_blocks_secondary(clip_rect, pointer) {
+                return;
+            }
             let clip_id = clip.id();
             let before = project.clone();
             project.remove_clip(clip_id);

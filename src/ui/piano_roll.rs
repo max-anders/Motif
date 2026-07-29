@@ -98,10 +98,22 @@ impl MarqueeDrag {
     }
 }
 
+/// Right-drag eraser: delete every note the pointer crosses (one undo step).
+#[derive(Debug, Clone)]
+struct EraseStroke {
+    last_pos: Pos2,
+    erased_ids: HashSet<u64>,
+}
+
+/// Padding around the segment between successive erase samples so fast drags
+/// still hit notes between frames.
+const ERASE_STROKE_PAD: f32 = 6.0;
+
 pub struct PianoRollUi {
     selected_note_ids: HashSet<u64>,
     active_drag: Option<ActiveDrag>,
     marquee: Option<MarqueeDrag>,
+    erase_stroke: Option<EraseStroke>,
     dragging_playhead: bool,
     /// True if pointer moved enough during an active note drag to count as a drag.
     drag_moved: bool,
@@ -192,6 +204,7 @@ impl Default for PianoRollUi {
             selected_note_ids: HashSet::new(),
             active_drag: None,
             marquee: None,
+            erase_stroke: None,
             dragging_playhead: false,
             drag_moved: false,
             audition_pitch: None,
@@ -450,7 +463,9 @@ impl PianoRollUi {
 
         // In-flight note/marquee drags keep pointer ownership; keyboard and ruler
         // only win when idle.
-        let gesture_active = self.active_drag.is_some() || self.marquee.is_some();
+        let gesture_active = self.active_drag.is_some()
+            || self.marquee.is_some()
+            || self.erase_stroke.is_some();
         let keyboard_handled = !gesture_active
             && handle_keyboard_audition(
                 &keys_response,
@@ -466,7 +481,7 @@ impl PianoRollUi {
 
         // Ruler and grid are separate interact regions (side-by-side layout), so
         // playhead scrubbing must consult both. Playlist uses one shared response.
-        // Plain secondary clicks on the grid delete a note in handle_pointer;
+        // Secondary click/drag on the grid erases notes in handle_pointer;
         // Shift+secondary click/drag seeks via the shared helper.
         let playhead_handled = !gesture_active && !keyboard_handled && {
             if self.dragging_playhead {
@@ -520,6 +535,7 @@ impl PianoRollUi {
                 &mut self.selected_note_ids,
                 &mut self.active_drag,
                 &mut self.marquee,
+                &mut self.erase_stroke,
                 &mut self.drag_moved,
                 &mut self.default_duration_beats,
                 &mut self.audition_pitch,
@@ -667,6 +683,44 @@ pub(crate) fn select_notes_in_rect(
         .filter(|note| note_rect(grid, note, metrics).intersects(selection))
         .map(|note| note.id)
         .collect()
+}
+
+fn note_ids_along_erase_stroke(
+    grid: Rect,
+    notes: &[Note],
+    from: Pos2,
+    to: Pos2,
+    metrics: ViewMetrics,
+    already_erased: &HashSet<u64>,
+) -> Vec<u64> {
+    let stroke_rect = Rect::from_two_pos(from, to).expand(ERASE_STROKE_PAD);
+    notes
+        .iter()
+        .filter(|note| !already_erased.contains(&note.id))
+        .filter(|note| {
+            let rect = note_rect(grid, note, metrics);
+            rect.contains(from) || rect.contains(to) || rect.intersects(stroke_rect)
+        })
+        .map(|note| note.id)
+        .collect()
+}
+
+fn apply_erase_note_ids(
+    project: &mut Project,
+    clip_id: u64,
+    note_ids: &[u64],
+    selected_note_ids: &mut HashSet<u64>,
+) {
+    if note_ids.is_empty() {
+        return;
+    }
+    if let Some(clip) = project.midi_clip_mut(clip_id) {
+        for id in note_ids {
+            clip.remove_note(*id);
+            selected_note_ids.remove(id);
+        }
+    }
+    project.sync_link_group_from(clip_id);
 }
 
 pub(crate) fn is_black_key(pitch: u8) -> bool {
@@ -1291,6 +1345,8 @@ fn finish_active_drag(
     if drag_moved && matches!(drag.mode, DragMode::Move) {
         let moved_ids: Vec<u64> = drag.originals.iter().map(|note| note.id).collect();
         project.resolve_note_move_overlaps(clip_id, &moved_ids);
+    } else if drag_moved {
+        project.sync_link_group_from(clip_id);
     }
 
     history.commit(project);
@@ -1356,6 +1412,7 @@ fn handle_pointer(
     selected_note_ids: &mut HashSet<u64>,
     active_drag: &mut Option<ActiveDrag>,
     marquee: &mut Option<MarqueeDrag>,
+    erase_stroke: &mut Option<EraseStroke>,
     drag_moved: &mut bool,
     default_duration_beats: &mut f32,
     audition_pitch: &mut Option<u8>,
@@ -1365,9 +1422,13 @@ fn handle_pointer(
     let full = ruler.union(grid);
     let timeline = metrics.timeline();
     let now = response.ctx.input(|input| input.time);
-    let primary_down = response
-        .ctx
-        .input(|input| input.pointer.button_down(egui::PointerButton::Primary));
+    let (primary_down, secondary_down, ctrl_or_cmd) = response.ctx.input(|input| {
+        (
+            input.pointer.button_down(egui::PointerButton::Primary),
+            input.pointer.button_down(egui::PointerButton::Secondary),
+            input.modifiers.ctrl || input.modifiers.command || input.modifiers.mac_cmd,
+        )
+    });
 
     let clip_notes: Vec<Note> = project
         .midi_clip(clip_id)
@@ -1375,6 +1436,11 @@ fn handle_pointer(
         .unwrap_or_default();
 
     update_resize_hover_cursor(response, grid, &clip_notes, metrics);
+
+    if erase_stroke.is_some() && !secondary_down {
+        history.commit(project);
+        *erase_stroke = None;
+    }
 
     // End note/marquee drags even when the pointer left the grid or the sense
     // area (otherwise the marquee rect stays painted forever).
@@ -1417,6 +1483,7 @@ fn handle_pointer(
         && is_timeline_pointer(grid, press_pos)
         && active_drag.is_none()
         && marquee.is_none()
+        && erase_stroke.is_none()
     {
         if let Some(note) = hit_test_note(grid, &clip_notes, press_pos, metrics) {
             if !selected_note_ids.contains(&note.id) {
@@ -1497,24 +1564,50 @@ fn handle_pointer(
         return;
     }
 
+    if let Some(stroke) = erase_stroke.as_mut() {
+        if secondary_down {
+            let ids = note_ids_along_erase_stroke(
+                grid,
+                &clip_notes,
+                stroke.last_pos,
+                pointer,
+                metrics,
+                &stroke.erased_ids,
+            );
+            if !ids.is_empty() {
+                apply_erase_note_ids(project, clip_id, &ids, selected_note_ids);
+                stroke.erased_ids.extend(ids);
+            }
+            stroke.last_pos = pointer;
+        }
+        return;
+    }
+
     if !full.contains(pointer) && !full.contains(press_pos) {
         return;
     }
 
     let shift_held = response.ctx.input(|input| input.modifiers.shift);
 
-    if response.clicked_by(egui::PointerButton::Secondary) && !response.dragged() {
-        if grid.contains(pointer) {
-            if let Some(note) = hit_test_note(grid, &clip_notes, pointer, metrics) {
-                let note_id = note.id;
-                let before = project.clone();
-                if let Some(clip) = project.midi_clip_mut(clip_id) {
-                    clip.remove_note(note_id);
-                    history.push_before(before);
-                }
-                selected_note_ids.remove(&note_id);
-            }
-        }
+    if response.ctx.input(|input| input.pointer.button_pressed(egui::PointerButton::Secondary))
+        && grid.contains(press_pos)
+        && !shift_held
+    {
+        history.begin(project);
+        let ids = note_ids_along_erase_stroke(
+            grid,
+            &clip_notes,
+            press_pos,
+            press_pos,
+            metrics,
+            &HashSet::new(),
+        );
+        apply_erase_note_ids(project, clip_id, &ids, selected_note_ids);
+        *erase_stroke = Some(EraseStroke {
+            last_pos: press_pos,
+            erased_ids: ids.into_iter().collect(),
+        });
+        return;
     }
 
     if response.clicked_by(egui::PointerButton::Primary)
@@ -1638,7 +1731,7 @@ fn handle_pointer(
                     }
                 }
             }
-        } else if is_timeline_pointer(grid, press_pos) {
+        } else if is_timeline_pointer(grid, press_pos) && ctrl_or_cmd {
             *active_drag = None;
             selected_note_ids.clear();
             *marquee = Some(MarqueeDrag {

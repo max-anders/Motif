@@ -179,7 +179,7 @@ impl PatternStripUi {
         let hint = if patterns_override {
             "Patterns override playlist MIDI"
         } else {
-            "Playlist MIDI wins - pattern rows are draft until bake or solo"
+            "Playlist MIDI wins - pattern rows are draft until bake, lock, or solo"
         };
         painter.with_clip_rect(hint_rect).text(
             Pos2::new(hint_rect.left(), hint_rect.center().y),
@@ -253,7 +253,7 @@ impl PatternStripUi {
             let hover = if value {
                 "Pattern rows replace playlist MIDI in their windows"
             } else {
-                "Playlist clips play; pattern rows are draft until bake or block solo"
+                "Playlist clips play; pattern rows are draft until bake, lock (k), or block solo"
             };
             response.on_hover_text(hover);
         }
@@ -328,42 +328,116 @@ impl PatternStripUi {
             let block_rect = pattern_block_rect(body, strip, block, metrics);
             let selected = self.selected_block_ids.contains(&block.id);
             let ghosted = !project.pattern_overrides_playlist
+                && !block.locked
+                && !block.muted
                 && block.has_override_notes()
                 && !block.solo;
-            let fill = if ghosted {
+            let linked = block.link_group_id.is_some();
+            let fill = if block.muted {
+                if selected {
+                    theme.pattern_block_fill_selected.gamma_multiply(0.35)
+                } else {
+                    theme.lane_bg.gamma_multiply(0.75)
+                }
+            } else if ghosted {
                 if selected {
                     theme.pattern_block_fill_selected.gamma_multiply(0.42)
                 } else {
                     theme.clip_ghosted.gamma_multiply(0.42)
                 }
+            } else if linked && !selected {
+                theme.clip_linked_fill.gamma_multiply(0.9)
             } else if selected {
                 theme.pattern_block_fill_selected
             } else {
                 theme.pattern_block_fill
             };
+            let stroke = if selected {
+                theme.pattern_block_stroke_selected
+            } else if block.locked && !project.pattern_overrides_playlist {
+                theme.accent
+            } else if linked {
+                theme.clip_linked_stroke
+            } else {
+                theme.pattern_block_stroke
+            };
             painter.rect(
                 block_rect,
                 4.0,
                 fill,
-                egui::Stroke::new(
-                    1.5_f32,
-                    if selected {
-                        theme.pattern_block_stroke_selected
-                    } else {
-                        theme.pattern_block_stroke
-                    },
-                ),
+                egui::Stroke::new(1.5_f32, stroke),
                 egui::StrokeKind::Inside,
             );
 
             let label = format!("[P] {}", block.name);
             let label_clip = block_rect.shrink2(Vec2::new(4.0, 2.0));
+            // Reserve top-left for the link badge (same chrome as playlist MIDI clips).
             painter.with_clip_rect(label_clip).text(
-                Pos2::new(label_clip.left() + 4.0, label_clip.top() + 2.0),
+                Pos2::new(label_clip.left() + 22.0, label_clip.top() + 2.0),
                 egui::Align2::LEFT_TOP,
                 label,
                 egui::FontId::proportional(11.0),
                 theme.pattern_block_label,
+            );
+
+            let lock_rect = pattern_lock_button_rect(block_rect);
+            let lock_fill = if block.locked {
+                theme.accent.gamma_multiply(0.45)
+            } else {
+                theme.widget_bg.gamma_multiply(0.88)
+            };
+            let lock_stroke = if block.locked {
+                theme.accent
+            } else {
+                theme.separator
+            };
+            painter.rect(
+                lock_rect,
+                3.0,
+                lock_fill,
+                egui::Stroke::new(1.0_f32, lock_stroke),
+                egui::StrokeKind::Inside,
+            );
+            painter.text(
+                lock_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "k",
+                egui::FontId::proportional(10.0),
+                if block.locked {
+                    theme.text_primary
+                } else {
+                    theme.text_muted
+                },
+            );
+
+            let mute_rect = pattern_mute_button_rect(block_rect);
+            let mute_fill = if block.muted {
+                theme.accent
+            } else {
+                theme.widget_bg.gamma_multiply(0.88)
+            };
+            let mute_stroke = if block.muted {
+                theme.accent
+            } else {
+                theme.separator
+            };
+            painter.rect(
+                mute_rect,
+                3.0,
+                mute_fill,
+                egui::Stroke::new(1.0_f32, mute_stroke),
+                egui::StrokeKind::Inside,
+            );
+            painter.text(
+                mute_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "M",
+                egui::FontId::proportional(10.0),
+                if block.muted {
+                    theme.panel_bg
+                } else {
+                    theme.text_muted
+                },
             );
 
             let solo_rect = pattern_solo_button_rect(block_rect);
@@ -481,6 +555,39 @@ impl PatternStripUi {
             )
         });
 
+        if pattern_link_chrome_at(body, strip, lane_blocks(project, lane_id), press_pos, metrics) {
+            // Link badge owns this press (egui button drawn after paint).
+            return;
+        }
+
+        if let Some(lock_block) = {
+            let blocks = lane_blocks(project, lane_id);
+            hit_test_lock_button(body, strip, blocks, press_pos, metrics)
+        } {
+            if response.clicked_by(egui::PointerButton::Primary) && !response.dragged() {
+                let before = project.clone();
+                project.toggle_pattern_block_locked(lock_block);
+                history.push_before(before);
+                clip_selection.clear();
+                self.set_selection([lock_block]);
+            }
+            return;
+        }
+
+        if let Some(mute_block) = {
+            let blocks = lane_blocks(project, lane_id);
+            hit_test_mute_button(body, strip, blocks, press_pos, metrics)
+        } {
+            if response.clicked_by(egui::PointerButton::Primary) && !response.dragged() {
+                let before = project.clone();
+                project.toggle_pattern_block_muted(mute_block);
+                history.push_before(before);
+                clip_selection.clear();
+                self.set_selection([mute_block]);
+            }
+            return;
+        }
+
         if let Some(solo_block) = {
             let blocks = lane_blocks(project, lane_id);
             hit_test_solo_button(body, strip, blocks, press_pos, metrics)
@@ -531,7 +638,11 @@ impl PatternStripUi {
             && is_timeline_pointer(strip, press_pos)
         {
             let blocks = lane_blocks(project, lane_id);
-            if hit_test_solo_button(body, strip, blocks, press_pos, metrics).is_some() {
+            if hit_test_lock_button(body, strip, blocks, press_pos, metrics).is_some()
+                || hit_test_mute_button(body, strip, blocks, press_pos, metrics).is_some()
+                || hit_test_solo_button(body, strip, blocks, press_pos, metrics).is_some()
+                || pattern_link_chrome_at(body, strip, blocks, press_pos, metrics)
+            {
                 return;
             }
             let hit_block = hit_test_block(body, strip, blocks, press_pos, metrics).cloned();
@@ -675,7 +786,27 @@ fn lane_blocks<'a>(project: &'a Project, lane_id: u64) -> &'a [PatternBlock] {
         .unwrap_or(&[])
 }
 
-fn pattern_block_rect(
+fn pattern_link_chrome_at(
+    timeline: Rect,
+    strip: Rect,
+    blocks: &[PatternBlock],
+    pos: Pos2,
+    metrics: TimelineMetrics,
+) -> bool {
+    for block in blocks {
+        let block_rect = pattern_block_rect(timeline, strip, block, metrics);
+        let zone = Rect::from_min_size(
+            Pos2::new(block_rect.left(), block_rect.top()),
+            Vec2::new(24.0_f32.min(block_rect.width()), 20.0_f32.min(block_rect.height())),
+        );
+        if zone.contains(pos) {
+            return true;
+        }
+    }
+    false
+}
+
+pub(crate) fn pattern_block_rect(
     timeline: Rect,
     strip: Rect,
     block: &PatternBlock,
@@ -689,13 +820,67 @@ fn pattern_block_rect(
     )
 }
 
-/// Centered overlay; does not shrink the beat-mapped block rect (resize edges stay true).
+/// Bottom-center overlay; does not shrink the beat-mapped block rect.
 fn pattern_solo_button_rect(block_rect: Rect) -> Rect {
     let size = SOLO_BUTTON_SIZE
-        .min(block_rect.width() * 0.45)
-        .min(block_rect.height())
+        .min(block_rect.width() * 0.35)
+        .min(block_rect.height() * 0.45)
         .max(12.0);
-    Rect::from_center_size(block_rect.center(), Vec2::splat(size))
+    let y = block_rect.bottom() - 2.0 - size * 0.5;
+    Rect::from_center_size(
+        Pos2::new(block_rect.center().x, y),
+        Vec2::splat(size),
+    )
+}
+
+fn pattern_mute_button_rect(block_rect: Rect) -> Rect {
+    let btn_w = 16.0_f32.min(block_rect.width() * 0.28);
+    let btn_h = 14.0_f32.min(block_rect.height() * 0.4).max(10.0);
+    Rect::from_min_size(
+        Pos2::new(block_rect.left() + 3.0, block_rect.bottom() - btn_h - 2.0),
+        Vec2::new(btn_w, btn_h),
+    )
+}
+
+fn hit_test_mute_button(
+    timeline: Rect,
+    strip: Rect,
+    blocks: &[PatternBlock],
+    pos: Pos2,
+    metrics: TimelineMetrics,
+) -> Option<u64> {
+    blocks.iter().rev().find_map(|block| {
+        let block_rect = pattern_block_rect(timeline, strip, block, metrics);
+        let mute = pattern_mute_button_rect(block_rect);
+        mute.contains(pos).then_some(block.id)
+    })
+}
+
+fn pattern_lock_button_rect(block_rect: Rect) -> Rect {
+    let btn_w = 16.0_f32.min(block_rect.width() * 0.28);
+    let btn_h = 14.0_f32.min(block_rect.height() - 4.0).max(12.0);
+    Rect::from_min_size(
+        Pos2::new(block_rect.right() - btn_w - 3.0, block_rect.top() + 2.0),
+        Vec2::new(btn_w, btn_h),
+    )
+}
+
+fn hit_test_lock_button(
+    timeline: Rect,
+    strip: Rect,
+    blocks: &[PatternBlock],
+    pos: Pos2,
+    metrics: TimelineMetrics,
+) -> Option<u64> {
+    blocks.iter().rev().find_map(|block| {
+        let block_rect = pattern_block_rect(timeline, strip, block, metrics);
+        let lock = pattern_lock_button_rect(block_rect);
+        if lock.contains(pos) {
+            Some(block.id)
+        } else {
+            None
+        }
+    })
 }
 
 fn hit_test_block<'a>(

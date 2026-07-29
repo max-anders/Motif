@@ -27,6 +27,16 @@ pub struct PatternBlock {
     pub length_beats: f32,
     #[serde(default)]
     pub solo: bool,
+    /// When true, this block's rows play in the arrangement even when the project
+    /// is in playlist-priority mode (draft patterns stay muted unless locked).
+    #[serde(default)]
+    pub locked: bool,
+    /// When true, this block does not contribute pattern MIDI (still editable).
+    #[serde(default)]
+    pub muted: bool,
+    /// When set, blocks sharing this id sync all row notes + row_mode on edit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link_group_id: Option<u64>,
     pub tracks: Vec<PatternTrackContent>,
 }
 
@@ -79,6 +89,12 @@ impl PatternBlock {
         self.tracks.iter().any(|row| !row.notes.is_empty())
     }
 
+    /// Whether this block contributes pattern MIDI during playback (global Patterns
+    /// mode, or per-block lock in Playlist mode). Block solo is handled separately.
+    pub fn plays_in_song(&self, pattern_overrides_playlist: bool) -> bool {
+        pattern_overrides_playlist || self.locked
+    }
+
     pub fn end_beats(&self) -> f32 {
         self.start_beats + self.length_beats
     }
@@ -96,7 +112,7 @@ impl PatternBlock {
 pub fn solo_pattern_block<'a>(lanes: &'a [PatternLane]) -> Option<&'a PatternBlock> {
     for lane in lanes {
         for block in &lane.blocks {
-            if block.solo {
+            if block.solo && !block.muted {
                 return Some(block);
             }
         }
@@ -112,6 +128,9 @@ pub fn playlist_midi_for_track(project: &Project, track_id: u64) -> Vec<Resolved
 
     let mut notes = Vec::new();
     for clip in &track.clips {
+        if clip.muted() {
+            continue;
+        }
         let Some(clip) = clip.as_midi() else {
             continue;
         };
@@ -165,9 +184,6 @@ fn pattern_notes_for_track_in_block(block: &PatternBlock, track_id: u64) -> Vec<
 
 /// Beat ranges where playlist MIDI is visually overridden for one track (ghost dimming).
 pub fn override_windows_for_track(project: &Project, track_id: u64) -> Vec<(f32, f32)> {
-    if !project.pattern_overrides_playlist {
-        return Vec::new();
-    }
     if let Some(solo_block) = solo_pattern_block(&project.pattern_lanes) {
         if solo_block
             .track_content(track_id)
@@ -178,11 +194,25 @@ pub fn override_windows_for_track(project: &Project, track_id: u64) -> Vec<(f32,
         return Vec::new();
     }
 
+    let global_patterns = project.pattern_overrides_playlist;
+    collect_override_windows_for_track(project, track_id, |block| {
+        !block.muted && block.plays_in_song(global_patterns)
+    })
+}
+
+fn collect_override_windows_for_track(
+    project: &Project,
+    track_id: u64,
+    applies: impl Fn(&PatternBlock) -> bool,
+) -> Vec<(f32, f32)> {
     let mut windows = Vec::new();
     let mut claimed: Vec<(f32, f32)> = Vec::new();
 
     for lane in &project.pattern_lanes {
         for block in &lane.blocks {
+            if !applies(block) {
+                continue;
+            }
             let block_start = block.start_beats;
             let block_end = block.end_beats();
             let Some(content) = block.track_content(track_id) else {
@@ -209,15 +239,27 @@ pub fn resolve_midi_for_track(project: &Project, track_id: u64) -> Vec<ResolvedM
         return pattern_notes_for_track_in_block(solo_block, track_id);
     }
 
-    if !project.pattern_overrides_playlist {
-        return playlist_midi_for_track(project, track_id);
-    }
-
+    let global_patterns = project.pattern_overrides_playlist;
     let mut notes = playlist_midi_for_track(project, track_id);
+    apply_pattern_overrides_for_track(&mut notes, project, track_id, |block| {
+        !block.muted && block.plays_in_song(global_patterns)
+    });
+    notes
+}
+
+fn apply_pattern_overrides_for_track(
+    notes: &mut Vec<ResolvedMidiNote>,
+    project: &Project,
+    track_id: u64,
+    applies: impl Fn(&PatternBlock) -> bool,
+) {
     let mut claimed: Vec<(f32, f32)> = Vec::new();
 
     for lane in &project.pattern_lanes {
         for block in &lane.blocks {
+            if !applies(block) {
+                continue;
+            }
             let block_start = block.start_beats;
             let block_end = block.end_beats();
             let Some(content) = block.track_content(track_id) else {
@@ -233,7 +275,7 @@ pub fn resolve_midi_for_track(project: &Project, track_id: u64) -> Vec<ResolvedM
             }
 
             for (win_start, win_end) in &active_windows {
-                trim_notes_outside_window(&mut notes, *win_start, *win_end);
+                trim_notes_outside_window(notes, *win_start, *win_end);
 
                 for note in &content.notes {
                     let abs_start = block_start + note.start_beats;
@@ -265,7 +307,6 @@ pub fn resolve_midi_for_track(project: &Project, track_id: u64) -> Vec<ResolvedM
     }
 
     notes.sort_unstable_by(|a, b| a.start_beats.total_cmp(&b.start_beats));
-    notes
 }
 
 /// Keep only the portions of `notes` outside `[win_start, win_end)` (half-open).
@@ -486,6 +527,9 @@ mod tests {
                 start_beats: 4.0,
                 length_beats: 4.0,
                 solo: false,
+                locked: false,
+                muted: false,
+                link_group_id: None,
                 tracks: vec![PatternTrackContent {
                     track_id: 1,
                     notes: vec![note(10, 72, 0.0, 2.0)],
@@ -525,6 +569,9 @@ mod tests {
                 start_beats: 4.0,
                 length_beats: 4.0,
                 solo: false,
+                locked: false,
+                muted: false,
+                link_group_id: None,
                 tracks: vec![PatternTrackContent {
                     track_id: 1,
                     notes: vec![note(10, 72, 0.0, 2.0)],
@@ -547,6 +594,94 @@ mod tests {
     }
 
     #[test]
+    fn locked_block_plays_in_playlist_priority_mode() {
+        let project = empty_project_with_tracks(vec![track_with_clip(
+            1,
+            0.0,
+            16.0,
+            vec![note(1, 60, 0.0, 8.0)],
+        )]);
+        let mut project = project;
+        project.pattern_overrides_playlist = false;
+        project.pattern_lanes = vec![PatternLane {
+            id: 1,
+            name: String::from("Lane 1"),
+            blocks: vec![PatternBlock {
+                id: 1,
+                name: String::from("Drums"),
+                start_beats: 4.0,
+                length_beats: 4.0,
+                solo: false,
+                locked: true,
+                muted: false,
+                link_group_id: None,
+                tracks: vec![PatternTrackContent {
+                    track_id: 1,
+                    notes: vec![note(10, 72, 0.0, 2.0)],
+                    row_mode: None,
+                }],
+            }],
+        }];
+
+        let resolved = resolve_midi_for_track(&project, 1);
+        assert_eq!(resolved.len(), 2);
+        assert_eq!(resolved[0].pitch, 60);
+        assert_eq!(resolved[0].end_beats, 4.0);
+        assert_eq!(resolved[1].pitch, 72);
+
+        let windows = override_windows_for_track(&project, 1);
+        assert_eq!(windows, vec![(4.0, 8.0)]);
+    }
+
+    #[test]
+    fn muted_pattern_block_is_silent() {
+        let project = empty_project_with_tracks(vec![track_with_clip(
+            1,
+            0.0,
+            16.0,
+            vec![note(1, 60, 0.0, 8.0)],
+        )]);
+        let mut project = project;
+        project.pattern_lanes = vec![PatternLane {
+            id: 1,
+            name: String::from("Lane 1"),
+            blocks: vec![PatternBlock {
+                id: 1,
+                name: String::from("Muted"),
+                start_beats: 4.0,
+                length_beats: 4.0,
+                solo: false,
+                locked: true,
+                muted: true,
+                link_group_id: None,
+                tracks: vec![PatternTrackContent {
+                    track_id: 1,
+                    notes: vec![note(10, 72, 0.0, 2.0)],
+                    row_mode: None,
+                }],
+            }],
+        }];
+
+        let resolved = resolve_midi_for_track(&project, 1);
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].pitch, 60);
+        assert!(override_windows_for_track(&project, 1).is_empty());
+    }
+
+    #[test]
+    fn muted_playlist_clip_is_omitted_from_resolution() {
+        let mut project = empty_project_with_tracks(vec![track_with_clip(
+            1,
+            0.0,
+            8.0,
+            vec![note(1, 60, 0.0, 2.0)],
+        )]);
+        project.tracks[0].clips[0].set_muted(true);
+        let resolved = resolve_midi_for_track(&project, 1);
+        assert!(resolved.is_empty());
+    }
+
+    #[test]
     fn empty_pattern_row_does_not_claim() {
         let project = empty_project_with_tracks(vec![track_with_clip(
             1,
@@ -564,6 +699,9 @@ mod tests {
                 start_beats: 0.0,
                 length_beats: 8.0,
                 solo: false,
+                locked: false,
+                muted: false,
+                link_group_id: None,
                 tracks: vec![PatternTrackContent {
                     track_id: 1,
                     notes: Vec::new(),
@@ -596,6 +734,9 @@ mod tests {
                     start_beats: 0.0,
                     length_beats: 8.0,
                     solo: false,
+                    locked: false,
+                    muted: false,
+                    link_group_id: None,
                     tracks: vec![PatternTrackContent {
                         track_id: 1,
                         notes: vec![note(10, 72, 0.0, 8.0)],
@@ -612,6 +753,9 @@ mod tests {
                     start_beats: 4.0,
                     length_beats: 8.0,
                     solo: false,
+                    locked: false,
+                    muted: false,
+                    link_group_id: None,
                     tracks: vec![PatternTrackContent {
                         track_id: 1,
                         notes: vec![note(20, 48, 0.0, 8.0)],
@@ -648,6 +792,9 @@ mod tests {
                     start_beats: 0.0,
                     length_beats: 8.0,
                     solo: false,
+                    locked: false,
+                    muted: false,
+                    link_group_id: None,
                     tracks: vec![PatternTrackContent {
                         track_id: 1,
                         notes: vec![note(10, 80, 0.0, 4.0)],
@@ -660,6 +807,9 @@ mod tests {
                     start_beats: 4.0,
                     length_beats: 4.0,
                     solo: true,
+                    locked: false,
+                    muted: false,
+                    link_group_id: None,
                     tracks: vec![PatternTrackContent {
                         track_id: 1,
                         notes: vec![note(11, 72, 0.0, 2.0)],
@@ -752,6 +902,9 @@ mod tests {
                     start_beats: 0.0,
                     length_beats: 8.0,
                     solo: false,
+                    locked: false,
+                    muted: false,
+                    link_group_id: None,
                     tracks: vec![PatternTrackContent {
                         track_id: 1,
                         notes: vec![note(10, 72, 0.0, 8.0)],
@@ -768,6 +921,9 @@ mod tests {
                     start_beats: 4.0,
                     length_beats: 8.0,
                     solo: false,
+                    locked: false,
+                    muted: false,
+                    link_group_id: None,
                     tracks: vec![PatternTrackContent {
                         track_id: 1,
                         notes: vec![note(20, 48, 0.0, 8.0)],

@@ -15,6 +15,8 @@ Experimental music sketchpad: piano roll, playlist, soft-synth piano, and CLAP/V
 | Plugin editor GUI | Working on Linux (X11 / XWayland); not Wayland-native |
 | Piano roll (notes + key audition + copy/paste) | Working |
 | MIDI clip variations (save-and-swap takes) | Working (piano-roll panel + playlist clip menu) |
+| Linked MIDI clips (shared takes across placements) | Working (link badge on clip; opt-in; sync on edit) |
+| Linked pattern blocks (shared row content) | Working (same link badge on strip blocks; sync on edit) |
 | Mixer (bottom dock, gain / pan / M/S / meters) | Working (resizable; height in `settings.json`) |
 | Undo / redo (clips + notes) | Working (depth in Settings → Editing) |
 | Transport + loop + BPM + metronome | Working (includes live CPU / buffer / xrun strip) |
@@ -84,10 +86,11 @@ cargo run --release
 ### Playlist (default view)
 
 - **Left-click empty lane** - create a MIDI clip (4 beats)
-- **Drag empty lane** - marquee multi-select
+- **Ctrl/Cmd + drag empty lane** - marquee multi-select
 - **Left-click clip** - select clip
 - **Double-click clip** - open piano roll for that clip (zoomed out to fit the clip)
 - **MIDI clip `...` / take badge (top-right of clip)** - open variation menu (switch take, New empty, New from current); label shows active take name when more than one exists
+- **MIDI clip link badge (top-left, `o` / `L`)** - click to enter link mode or unlink (make unique); further duplicates of a linked clip stay in the same group and share all takes + active take; right-click the badge to join another link group
 - **Audio clips** - do not open piano roll (arrangement-only clips)
 - **Ctrl/Cmd + left-click clip** - toggle multi-select
 - **Drag clip body** - move selected clip(s) on timeline (overlapping clips shorten or are replaced on release)
@@ -118,6 +121,7 @@ cargo run --release
 - **Left-click / drag ruler** - move playhead (snapped to 1/16)
 - **Shift + left-click**, **Shift + right-click empty timeline**, or **Shift + right-click drag** on the timeline - move playhead
 - **Right-click clip** - delete clip
+- **M button (bottom-right on clip)** - mute/unmute this clip only (track M/S still apply)
 - **Wheel** - scroll; **Shift+Wheel** - horizontal scroll; **Ctrl/Cmd+Wheel** - zoom time (zoom-out floor fits the whole arrangement in view)
 - **Scrollbars** - always-visible solid bars (drag to scroll)
 - Track headers are a fixed left column beside the timeline (not an overlay); vertical scroll stays synced with the lanes. The beat ruler is a fixed top strip beside the scrolling grid
@@ -132,7 +136,7 @@ cargo run --release
 - **Ctrl/Cmd+A** - select all notes in the clip (remappable)
 - **Shift+Up / Shift+Down** - move selected note(s) up/down one semitone (remappable; blocked/clamped if same-pitch overlap)
 - **Ctrl/Cmd+Up / Down** - move selected note(s) up/down one octave (remappable)
-- **Drag empty grid** - marquee multi-select
+- **Ctrl/Cmd + drag empty grid** - marquee multi-select
 - **Drag note body** - move selected note(s) (pitch/start; overlapping same-pitch notes shorten or are replaced on release; adjacent OK; cannot leave the clip)
 - **Alt + drag note body or resize** - free horizontal placement (no 1/16 snap)
 - **Shift + drag note body** - duplicate selection, then move the copies
@@ -141,6 +145,7 @@ cargo run --release
 - **Left-click / drag ruler** - move playhead (mapped to arrangement time)
 - **Shift + left-click**, **Shift + right-click empty grid**, or **Shift + right-click drag** on the grid - move playhead
 - **Right-click note** - delete note
+- **Right-click drag on grid** - erase notes along the pointer path (one undo step)
 - **Delete / Backspace** - remove selected note(s)
 - **Ctrl/Cmd+C** - copy selected note(s)
 - **Ctrl/Cmd+X** - cut selected note(s)
@@ -157,7 +162,7 @@ cargo run --release
 
 The pattern strip sits under the playlist tracks for drafting section-scoped MIDI overrides (verse/chorus variations) without touching playlist clips. Stacked lanes share scroll/zoom; the top lane wins when two blocks claim the same track over the same time.
 
-- **Playlist / Patterns row** (between track lanes and pattern strip) - toggle playback priority: **Patterns** (default) replaces playlist MIDI where pattern rows have notes; **Playlist** plays arrangement clips and treats pattern rows as draft until bake or block solo. Persisted in the `.motif` project.
+- **Playlist / Patterns row** (between track lanes and pattern strip) - toggle playback priority: **Patterns** (default) replaces playlist MIDI where pattern rows have notes; **Playlist** plays arrangement clips and treats unlocked pattern rows as draft until bake, lock, or block solo. Persisted in the `.motif` project.
 - **Click a lane header** - select that pattern lane (accent outline)
 - **Double-click lane name** or **right-click header -> Rename** - rename the lane
 - **Right-click lane header** - duplicate or delete the lane (cannot delete the last lane)
@@ -167,6 +172,9 @@ The pattern strip sits under the playlist tracks for drafting section-scoped MID
 - **Drag block body** - move selected block(s); **Shift + drag** - duplicate selection, then move the copies
 - **Drag block edges** - resize block length
 - **Solo button on a block** - solo it (only this block's rows play; ignores playlist MIDI and other patterns) while playing
+- **Lock button (k, top-right on block)** - play this block in the song even when the row is set to **Playlist** priority (keep drums/patterns in the strip without baking to arranger clips)
+- **Mute button (M, bottom-left on block)** - silence this pattern block without deleting it (independent of lock / global priority)
+- **Pattern block link badge (top-left, `o` / `L`)** - same as MIDI clips: link mode so further duplicates share all track rows (notes + step/melody mode); unlink makes unique; right-click joins another pattern link group. Geometry / name / solo stay per placement
 - **Delete / Backspace, Ctrl/Cmd+C/X/V/D** - same clip chords as the playlist, applied to the selected block(s)
 - **Double-click a block** - open the **pattern rack** for it
 - **Rack: inline step grid** - click or drag across cells to toggle 1/16 steps on each row (playhead highlights the active step while playing). Empty rows are **off** (playlist MIDI unchanged); rows with notes are **active** (or **muted** when a higher lane wins that track)

@@ -466,6 +466,9 @@ fn handle_melody_pointer(
     let primary_down = response
         .ctx
         .input(|input| input.pointer.button_down(egui::PointerButton::Primary));
+    let ctrl_or_cmd = response.ctx.input(|input| {
+        input.modifiers.ctrl || input.modifiers.command || input.modifiers.mac_cmd
+    });
 
     let notes: Vec<Note> = project.pattern_track_notes(block_id, track_id);
 
@@ -744,7 +747,7 @@ fn handle_melody_pointer(
                     }
                 }
             }
-        } else if is_timeline_pointer(grid, press_pos) {
+        } else if is_timeline_pointer(grid, press_pos) && ctrl_or_cmd {
             *active_drag = None;
             selected_note_ids.clear();
             *marquee = Some(MarqueeDrag {
@@ -912,6 +915,8 @@ fn finish_melody_drag(
     if drag_moved && matches!(drag.mode, DragMode::Move) {
         let moved_ids: Vec<u64> = drag.originals.iter().map(|note| note.id).collect();
         project.resolve_pattern_note_move_overlaps(block_id, track_id, &moved_ids);
+    } else if drag_moved {
+        project.sync_pattern_link_group_from(block_id);
     }
 
     history.commit(project);
