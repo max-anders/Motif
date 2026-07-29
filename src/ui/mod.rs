@@ -38,5 +38,5 @@ pub use playlist::{AudioImportRequest, PlaylistUi, PluginEditorRequest};
 pub use project_browser::{ProjectBrowserAction, ProjectBrowserUi};
 pub use settings::{SettingsAction, SettingsUi};
 pub use shortcuts::{Action, Chord, PollFilter, SETTINGS_FILE};
-pub use track_rename::TrackRenameUi;
+pub use track_rename::{PatternLaneRenameUi, TrackRenameUi};
 pub use transport::TransportUi;

@@ -2249,6 +2249,58 @@ impl Project {
         id
     }
 
+    pub fn can_remove_pattern_lane(&self) -> bool {
+        self.pattern_lanes.len() > 1
+    }
+
+    pub fn remove_pattern_lane(&mut self, lane_id: u64) -> bool {
+        if !self.can_remove_pattern_lane() {
+            return false;
+        }
+        let before = self.pattern_lanes.len();
+        self.pattern_lanes.retain(|lane| lane.id != lane_id);
+        self.pattern_lanes.len() != before
+    }
+
+    /// Deep-copy a pattern lane (blocks + row notes) and insert it directly below
+    /// the source. Returns the new lane id.
+    pub fn duplicate_pattern_lane(&mut self, lane_id: u64) -> Option<u64> {
+        let index = self.pattern_lanes.iter().position(|lane| lane.id == lane_id)?;
+        let source = self.pattern_lanes[index].clone();
+
+        let new_lane_id = self.next_pattern_lane_id();
+        self.bump_pattern_lane_id();
+        let mut new_lane = super::pattern::PatternLane {
+            id: new_lane_id,
+            name: format!("{} copy", source.name.trim_end()),
+            blocks: Vec::with_capacity(source.blocks.len()),
+        };
+
+        for block in &source.blocks {
+            let block_id = self.next_pattern_block_id();
+            self.bump_pattern_block_id();
+            let mut tracks = block.tracks.clone();
+            for row in &mut tracks {
+                for note in &mut row.notes {
+                    let id = self.next_note_id();
+                    self.bump_note_id();
+                    note.id = id;
+                }
+            }
+            new_lane.blocks.push(super::pattern::PatternBlock {
+                id: block_id,
+                name: block.name.clone(),
+                start_beats: block.start_beats,
+                length_beats: block.length_beats,
+                solo: block.solo,
+                tracks,
+            });
+        }
+
+        self.pattern_lanes.insert(index + 1, new_lane);
+        Some(new_lane_id)
+    }
+
     /// Whether baking this block would split, trim, or delete existing MIDI clips.
     pub fn bake_would_modify_playlist(&self, block_id: u64) -> bool {
         let Some(block) = self.pattern_block(block_id) else {
@@ -4840,5 +4892,55 @@ mod tests {
         assert!(project.pattern_block(block_id).is_none());
         assert_eq!(project.tracks[0].clips.len(), 1);
         assert_eq!(project.tracks[0].clips[0].id(), clip_id);
+    }
+
+    #[test]
+    fn remove_pattern_lane_refuses_last_lane() {
+        let mut project = Project::default();
+        let lane_id = project.ensure_pattern_lane();
+        assert!(!project.can_remove_pattern_lane());
+        assert!(!project.remove_pattern_lane(lane_id));
+        assert_eq!(project.pattern_lanes.len(), 1);
+    }
+
+    #[test]
+    fn duplicate_pattern_lane_inserts_below_with_fresh_ids() {
+        let mut project = Project::default();
+        let track_id = project.tracks[0].id;
+        let lane_id = project.ensure_pattern_lane();
+        let block_id = project.add_pattern_block(lane_id, 0.0, 4.0).expect("block");
+        project
+            .add_note_to_pattern_track(block_id, track_id, 60, 0.0, 1.0)
+            .expect("note");
+
+        let second_lane = project.add_pattern_lane();
+        assert_ne!(lane_id, second_lane);
+
+        let new_lane_id = project.duplicate_pattern_lane(lane_id).expect("duplicate");
+        assert_eq!(project.pattern_lanes.len(), 3);
+        assert_eq!(project.pattern_lanes[0].id, lane_id);
+        assert_eq!(project.pattern_lanes[1].id, new_lane_id);
+        assert_eq!(project.pattern_lanes[2].id, second_lane);
+
+        let source_block = project.pattern_lane(lane_id).unwrap().blocks[0].id;
+        let copied_block = project.pattern_lane(new_lane_id).unwrap().blocks[0].id;
+        assert_ne!(source_block, copied_block);
+
+        let source_note = project
+            .pattern_block(source_block)
+            .unwrap()
+            .track_content(track_id)
+            .unwrap()
+            .notes[0]
+            .id;
+        let copied_note = project
+            .pattern_block(copied_block)
+            .unwrap()
+            .track_content(track_id)
+            .unwrap()
+            .notes[0]
+            .id;
+        assert_ne!(source_note, copied_note);
+        assert!(project.pattern_lane(new_lane_id).unwrap().name.ends_with("copy"));
     }
 }

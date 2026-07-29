@@ -117,6 +117,110 @@ pub fn normalize_track_name(draft: &str, fallback: &str) -> String {
     }
 }
 
+#[derive(Debug, Default)]
+pub struct PatternLaneRenameUi {
+    lane_id: Option<u64>,
+    draft: String,
+    original: String,
+}
+
+impl PatternLaneRenameUi {
+    pub fn begin(&mut self, lane_id: u64, current_name: &str) {
+        self.lane_id = Some(lane_id);
+        self.draft = current_name.to_string();
+        self.original = current_name.to_string();
+    }
+
+    pub fn cancel(&mut self) {
+        self.lane_id = None;
+        self.draft.clear();
+        self.original.clear();
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.lane_id.is_some()
+    }
+
+    pub fn active_lane_id(&self) -> Option<u64> {
+        self.lane_id
+    }
+
+    pub fn show_window(
+        &mut self,
+        ctx: &Context,
+        project: &mut Project,
+        history: &mut EditHistory,
+    ) {
+        let Some(lane_id) = self.lane_id else {
+            return;
+        };
+        if project.pattern_lane(lane_id).is_none() {
+            self.cancel();
+            return;
+        }
+
+        let mut open = true;
+        let mut commit = false;
+        let mut cancel_request = false;
+
+        egui::Window::new("Rename pattern lane")
+            .collapsible(false)
+            .resizable(false)
+            .auto_sized()
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.label("Pattern lane name");
+                let response = ui.add(
+                    egui::TextEdit::singleline(&mut self.draft)
+                        .desired_width(220.0)
+                        .hint_text("Name"),
+                );
+                response.request_focus();
+
+                let enter = ui.input(|i| i.key_pressed(Key::Enter));
+                let escape = ui.input(|i| i.key_pressed(Key::Escape));
+
+                ui.horizontal(|ui| {
+                    if ui.button("OK").clicked() {
+                        commit = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel_request = true;
+                    }
+                });
+
+                if enter {
+                    commit = true;
+                }
+                if escape {
+                    cancel_request = true;
+                }
+            });
+
+        if commit {
+            self.commit(project, history);
+        } else if cancel_request || !open {
+            self.cancel();
+        }
+    }
+
+    fn commit(&mut self, project: &mut Project, history: &mut EditHistory) {
+        let Some(lane_id) = self.lane_id.take() else {
+            return;
+        };
+        let original = std::mem::take(&mut self.original);
+        let new_name = normalize_track_name(&self.draft, &original);
+        self.draft.clear();
+        if new_name != original {
+            history.push_before(project.clone());
+            if let Some(lane) = project.pattern_lane_mut(lane_id) {
+                lane.name = new_name;
+            }
+        }
+    }
+}
+
 pub fn apply_track_name_if_changed(
     history: &mut EditHistory,
     project: &mut Project,

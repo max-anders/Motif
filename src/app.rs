@@ -18,7 +18,7 @@ use crate::model::{
 use crate::ui::{
     choice_to_instrument, show_inspector, track_name_for_choice, Action, AddBrowserAction,
     AddBrowserUi, AppSettings, AudioImportRequest, BrowserTab, Chord, DevicesUi, MixerPanelResize,
-    MixerUi, PatternRackAction, PatternRackUi, PatternRowEditorAction, PatternRowEditorUi,
+    MixerUi, PatternLaneRenameUi, PatternRackAction, PatternRackUi, PatternRowEditorAction, PatternRowEditorUi,
     PerformanceUi, PianoRollUi, PlaylistUi, PluginEditorRequest, PollFilter, ProjectBrowserAction,
     ProjectBrowserUi, SettingsAction, SettingsUi, TrackRenameUi, TransportUi, MIXER_PANEL_ID,
     MIXER_PANEL_MIN_HEIGHT, SETTINGS_FILE,
@@ -69,6 +69,8 @@ pub struct DawApp {
     device_errors: HashMap<(u64, u64), String>,
     /// Shared selection for Mixer + Inspector (playlist header / mixer strip).
     selected_track: Option<u64>,
+    /// Selected pattern lane in the playlist strip (header context menu / highlight).
+    selected_pattern_lane: Option<u64>,
     /// Toggleable bottom mixer panel (playlist / piano roll).
     show_mixer_panel: bool,
     /// Toggleable properties panel (same Track facets as Mixer).
@@ -97,6 +99,7 @@ pub struct DawApp {
     audio_decode_tx: Sender<AudioDecodeResult>,
     audio_decode_rx: Receiver<AudioDecodeResult>,
     track_rename: TrackRenameUi,
+    pattern_lane_rename: PatternLaneRenameUi,
 }
 
 impl DawApp {
@@ -153,6 +156,7 @@ impl DawApp {
             instrument_errors: HashMap::new(),
             device_errors: HashMap::new(),
             selected_track,
+            selected_pattern_lane: None,
             show_inspector: false,
             show_mixer_panel: false,
             show_devices_strip: false,
@@ -172,6 +176,7 @@ impl DawApp {
             audio_decode_tx,
             audio_decode_rx,
             track_rename: TrackRenameUi::default(),
+            pattern_lane_rename: PatternLaneRenameUi::default(),
         };
         app.sync_instruments();
         app.queue_missing_audio_decodes();
@@ -643,6 +648,7 @@ impl DawApp {
         self.settings_return = CenterView::Playlist;
         self.playlist.clear_selection();
         self.selected_track = self.project.tracks.first().map(|t| t.id);
+        self.selected_pattern_lane = self.project.pattern_lanes.first().map(|lane| lane.id);
         self.piano_roll.release_audition(&mut self.engine);
         self.piano_roll.clear_selection();
         self.settings_ui.clear_capture();
@@ -1022,6 +1028,11 @@ impl DawApp {
                 self.selected_track = self.project.tracks.first().map(|t| t.id);
             }
         }
+        if let Some(lane_id) = self.selected_pattern_lane {
+            if self.project.pattern_lane(lane_id).is_none() {
+                self.selected_pattern_lane = self.project.pattern_lanes.first().map(|lane| lane.id);
+            }
+        }
         if let CenterView::PianoRoll { clip_id } = self.center_view {
             if self.project.clip(clip_id).is_none() {
                 self.back_to_playlist();
@@ -1381,6 +1392,79 @@ impl DawApp {
             .map(|track| track.name.clone())
             .unwrap_or_default();
         self.status_message = format!("Duplicated track: {name}");
+    }
+
+    fn delete_pattern_lane(&mut self, lane_id: u64) {
+        if !self.project.can_remove_pattern_lane()
+            || self.project.pattern_lane(lane_id).is_none()
+        {
+            return;
+        }
+
+        let block_ids: Vec<u64> = self
+            .project
+            .pattern_lane(lane_id)
+            .map(|lane| lane.blocks.iter().map(|block| block.id).collect())
+            .unwrap_or_default();
+
+        self.history.push_before(self.project.clone());
+
+        for block_id in block_ids {
+            if matches!(self.center_view, CenterView::PatternRack { block_id: id } if id == block_id)
+            {
+                self.back_to_playlist();
+            }
+            if matches!(
+                self.center_view,
+                CenterView::PatternRow { block_id: id, .. } if id == block_id
+            ) {
+                self.back_to_playlist();
+            }
+            if matches!(
+                self.settings_return,
+                CenterView::PatternRack { block_id: id } if id == block_id
+            ) {
+                self.settings_return = CenterView::Playlist;
+            }
+            if matches!(
+                self.settings_return,
+                CenterView::PatternRow { block_id: id, .. } if id == block_id
+            ) {
+                self.settings_return = CenterView::Playlist;
+            }
+        }
+
+        let removed = self.project.remove_pattern_lane(lane_id);
+        debug_assert!(
+            removed,
+            "delete_pattern_lane preconditions should guarantee removal"
+        );
+        self.playlist.prune_selection(&self.project);
+        self.playlist.clear_pattern_selection();
+        if self.selected_pattern_lane == Some(lane_id) {
+            self.selected_pattern_lane = self.project.pattern_lanes.first().map(|lane| lane.id);
+        }
+        if self.pattern_lane_rename.active_lane_id() == Some(lane_id) {
+            self.pattern_lane_rename.cancel();
+        }
+        self.engine.sync_samples(&self.project, &self.decoded_audio);
+    }
+
+    fn duplicate_pattern_lane(&mut self, lane_id: u64) {
+        if self.project.pattern_lane(lane_id).is_none() {
+            return;
+        }
+        self.history.push_before(self.project.clone());
+        let Some(new_id) = self.project.duplicate_pattern_lane(lane_id) else {
+            return;
+        };
+        self.selected_pattern_lane = Some(new_id);
+        let name = self
+            .project
+            .pattern_lane(new_id)
+            .map(|lane| lane.name.clone())
+            .unwrap_or_default();
+        self.status_message = format!("Duplicated pattern lane: {name}");
     }
 
     fn duplicate_selected_notes(&mut self) {
@@ -2541,6 +2625,8 @@ impl eframe::App for DawApp {
                         editor_request,
                         delete_track,
                         duplicate_track,
+                        delete_pattern_lane,
+                        duplicate_pattern_lane,
                         import_audio,
                         hovered_header,
                         settings_dirty,
@@ -2553,8 +2639,10 @@ impl eframe::App for DawApp {
                             catalog,
                             history,
                             selected_track,
+                            selected_pattern_lane,
                             decoded_audio,
                             track_rename,
+                            pattern_lane_rename,
                             ..
                         } = self;
                         let theme = settings.themes.colors().clone();
@@ -2565,10 +2653,12 @@ impl eframe::App for DawApp {
                             catalog,
                             history,
                             selected_track,
+                            selected_pattern_lane,
                             decoded_audio,
                             settings,
                             &theme,
                             track_rename,
+                            pattern_lane_rename,
                         );
                         (
                             playlist.take_open_clip_request(),
@@ -2576,6 +2666,8 @@ impl eframe::App for DawApp {
                             playlist.take_plugin_editor_request(),
                             playlist.take_delete_track_request(),
                             playlist.take_duplicate_track_request(),
+                            playlist.take_delete_pattern_lane_request(),
+                            playlist.take_duplicate_pattern_lane_request(),
                             playlist.take_audio_import_request(),
                             playlist.hovered_track_header(),
                             settings_dirty,
@@ -2602,6 +2694,12 @@ impl eframe::App for DawApp {
                     }
                     if let Some(track_id) = duplicate_track {
                         self.duplicate_track(track_id);
+                    }
+                    if let Some(lane_id) = delete_pattern_lane {
+                        self.delete_pattern_lane(lane_id);
+                    }
+                    if let Some(lane_id) = duplicate_pattern_lane {
+                        self.duplicate_pattern_lane(lane_id);
                     }
                     if let Some(request) = import_audio {
                         self.import_audio_clip(request);
@@ -2842,6 +2940,8 @@ impl eframe::App for DawApp {
         }
 
         self.track_rename.show_window(ctx, &mut self.project, &mut self.history);
+        self.pattern_lane_rename
+            .show_window(ctx, &mut self.project, &mut self.history);
 
         ctx.request_repaint();
     }

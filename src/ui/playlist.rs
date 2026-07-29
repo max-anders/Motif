@@ -26,7 +26,7 @@ use crate::ui::timeline::{
     is_timeline_pointer, timeline_x, with_solid_scrollbars, x_to_beat, LoopEdge, TimelineMetrics,
     DEFAULT_BEAT_WIDTH, RULER_HEIGHT, TIMELINE_GUTTER_WIDTH,
 };
-use crate::ui::track_rename::TrackRenameUi;
+use crate::ui::track_rename::{PatternLaneRenameUi, TrackRenameUi};
 
 pub(crate) const TRACK_HEADER_WIDTH: f32 = TIMELINE_GUTTER_WIDTH;
 pub(crate) const LANE_HEIGHT: f32 = 72.0;
@@ -129,8 +129,14 @@ pub struct PlaylistUi {
     delete_track_request: Option<u64>,
     /// Duplicate track (consumed by app).
     duplicate_track_request: Option<u64>,
+    /// Delete pattern lane (consumed by app).
+    delete_pattern_lane_request: Option<u64>,
+    /// Duplicate pattern lane (consumed by app).
+    duplicate_pattern_lane_request: Option<u64>,
     /// Track header currently under the pointer (for Delete track shortcut).
     hovered_track_header: Option<u64>,
+    /// Pattern lane header currently under the pointer.
+    hovered_pattern_lane_header: Option<u64>,
     /// Import audio clip request (consumed by app).
     audio_import_request: Option<AudioImportRequest>,
     /// True if pointer moved enough during drag to count as a drag, not a click.
@@ -160,7 +166,10 @@ impl Default for PlaylistUi {
             plugin_editor_request: None,
             delete_track_request: None,
             duplicate_track_request: None,
+            delete_pattern_lane_request: None,
+            duplicate_pattern_lane_request: None,
             hovered_track_header: None,
+            hovered_pattern_lane_header: None,
             audio_import_request: None,
             drag_moved: false,
             add_track_search: String::new(),
@@ -247,6 +256,14 @@ impl PlaylistUi {
 
     pub fn take_duplicate_track_request(&mut self) -> Option<u64> {
         self.duplicate_track_request.take()
+    }
+
+    pub fn take_delete_pattern_lane_request(&mut self) -> Option<u64> {
+        self.delete_pattern_lane_request.take()
+    }
+
+    pub fn take_duplicate_pattern_lane_request(&mut self) -> Option<u64> {
+        self.duplicate_pattern_lane_request.take()
     }
 
     pub fn hovered_track_header(&self) -> Option<u64> {
@@ -341,14 +358,17 @@ impl PlaylistUi {
         catalog: &PluginCatalog,
         history: &mut EditHistory,
         selected_track: &mut Option<u64>,
+        selected_pattern_lane: &mut Option<u64>,
         decoded_audio: &HashMap<PathBuf, Arc<DecodedAudio>>,
         settings: &mut crate::ui::app_settings::AppSettings,
         theme: &ThemeColors,
         track_rename: &mut TrackRenameUi,
+        pattern_lane_rename: &mut PatternLaneRenameUi,
     ) -> bool {
         // CentralPanel uses Frame::NONE; paint the full panel so nothing shows through.
         ui.painter().rect_filled(ui.max_rect(), 0.0, theme.panel_bg);
         self.hovered_track_header = None;
+        self.hovered_pattern_lane_header = None;
         let mut settings_dirty = false;
 
         ui.horizontal(|ui| {
@@ -434,6 +454,12 @@ impl PlaylistUi {
         let layout = TrackLayout::from_project(project, &self.automation_expanded);
         project.ensure_pattern_lane();
         self.sync_pattern_strips(project);
+        if selected_pattern_lane
+            .filter(|id| project.pattern_lane(*id).is_some())
+            .is_none()
+        {
+            *selected_pattern_lane = project.pattern_lanes.first().map(|lane| lane.id);
+        }
         let track_area_height = layout.total_height();
         let pattern_lanes_height =
             PatternStripUi::pattern_lanes_area_height(project.pattern_lanes.len());
@@ -819,11 +845,29 @@ impl PlaylistUi {
                 Pos2::new(headers_area.left(), strip_rect.top()),
                 Pos2::new(headers_area.right(), strip_rect.bottom()),
             );
-            PatternStripUi::paint_lane_header(
-                &headers_painter,
+            let lane_snapshot = lane.clone();
+            let mut row_ui = ui.new_child(
+                UiBuilder::new()
+                    .id_salt(("playlist_pattern_lane_header", lane.id))
+                    .max_rect(header.intersect(headers_area))
+                    .layout(Layout::top_down(Align::Min)),
+            );
+            row_ui.set_clip_rect(headers_area);
+            pattern_lane_header_row(
+                &mut row_ui,
                 header,
-                lane.name.as_str(),
+                headers_area,
+                &lane_snapshot,
+                lane.id,
+                project,
+                history,
                 theme,
+                *selected_pattern_lane == Some(lane.id),
+                selected_pattern_lane,
+                &mut self.delete_pattern_lane_request,
+                &mut self.duplicate_pattern_lane_request,
+                &mut self.hovered_pattern_lane_header,
+                pattern_lane_rename,
             );
         }
 
@@ -861,7 +905,8 @@ impl PlaylistUi {
         );
         if add_lane_response.clicked() {
             history.push_before(project.clone());
-            project.add_pattern_lane();
+            let new_id = project.add_pattern_lane();
+            *selected_pattern_lane = Some(new_id);
         }
         add_lane_response.on_hover_text("Add pattern lane");
 
@@ -1342,6 +1387,83 @@ pub(crate) fn track_header_row(
             ui.close_menu();
         }
     });
+}
+
+#[allow(clippy::too_many_arguments)]
+fn pattern_lane_header_row(
+    ui: &mut Ui,
+    header: Rect,
+    paint_clip: Rect,
+    lane_snapshot: &crate::model::PatternLane,
+    lane_id: u64,
+    project: &Project,
+    _history: &mut EditHistory,
+    theme: &ThemeColors,
+    is_selected: bool,
+    select_pattern_lane_request: &mut Option<u64>,
+    delete_pattern_lane_request: &mut Option<u64>,
+    duplicate_pattern_lane_request: &mut Option<u64>,
+    hovered_pattern_lane_header: &mut Option<u64>,
+    pattern_lane_rename: &mut PatternLaneRenameUi,
+) {
+    PatternStripUi::paint_lane_header(
+        &ui.painter().with_clip_rect(paint_clip),
+        header,
+        lane_snapshot.name.as_str(),
+        theme,
+    );
+    if is_selected {
+        ui.painter().rect_stroke(
+            header.shrink(1.0),
+            0.0,
+            egui::Stroke::new(2.0_f32, theme.accent),
+            egui::StrokeKind::Inside,
+        );
+    }
+
+    let id = ui.id().with(("playlist", "pattern_lane_header", lane_id));
+    let header_response = ui.interact(header, id, Sense::click());
+    if ui.rect_contains_pointer(header) {
+        *hovered_pattern_lane_header = Some(lane_id);
+    }
+    if header_response.clicked() {
+        *select_pattern_lane_request = Some(lane_id);
+    }
+
+    let name_rect = pattern_lane_header_name_rect(header);
+    let name_id = ui.id().with(("playlist", "pattern_lane_name", lane_id));
+    let name_response = ui.interact(name_rect, name_id, Sense::click());
+    if name_response.double_clicked() {
+        pattern_lane_rename.begin(lane_id, &lane_snapshot.name);
+    }
+
+    header_response.context_menu(|ui| {
+        if ui.button("Rename pattern lane...").clicked() {
+            pattern_lane_rename.begin(lane_id, &lane_snapshot.name);
+            ui.close_menu();
+        }
+        if ui.button("Duplicate pattern lane").clicked() {
+            *duplicate_pattern_lane_request = Some(lane_id);
+            ui.close_menu();
+        }
+        ui.separator();
+        let can_delete = project.can_remove_pattern_lane();
+        if ui
+            .add_enabled(can_delete, egui::Button::new("Delete pattern lane"))
+            .on_disabled_hover_text("Cannot delete the last pattern lane")
+            .clicked()
+        {
+            *delete_pattern_lane_request = Some(lane_id);
+            ui.close_menu();
+        }
+    });
+}
+
+fn pattern_lane_header_name_rect(header: Rect) -> Rect {
+    Rect::from_min_max(
+        Pos2::new(header.left() + 4.0, header.top() + 4.0),
+        Pos2::new(header.right() - 4.0, header.bottom() - 4.0),
+    )
 }
 
 fn track_header_name_rect(header: Rect) -> Rect {

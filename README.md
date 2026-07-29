@@ -152,8 +152,12 @@ cargo run --release
 
 ### Pattern strip, rack, and row editor (section MIDI overrides)
 
-The pattern strip is one lane under the playlist for drafting section-scoped MIDI overrides (verse/chorus variations) without touching playlist clips.
+The pattern strip sits under the playlist tracks for drafting section-scoped MIDI overrides (verse/chorus variations) without touching playlist clips. Stacked lanes share scroll/zoom; the top lane wins when two blocks claim the same track over the same time.
 
+- **Click a lane header** - select that pattern lane (accent outline)
+- **Double-click lane name** or **right-click header -> Rename** - rename the lane
+- **Right-click lane header** - duplicate or delete the lane (cannot delete the last lane)
+- **+ row below lanes** - add another pattern lane
 - **Left-click empty strip** - create a pattern block (4 beats)
 - **Drag empty strip** - marquee multi-select blocks
 - **Drag block body** - move selected block(s); **Shift + drag** - duplicate selection, then move the copies
