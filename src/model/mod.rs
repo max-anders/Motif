@@ -20,9 +20,11 @@ pub use automation::{
 #[allow(unused_imports)] // public audio clip surface for engine / app
 pub use audio_clip::AudioClip;
 #[allow(unused_imports)] // public clip surfaces for app / tests
-pub use clip::{Clip, MidiClip, DEFAULT_CLIP_LENGTH_BEATS};
+pub use clip::{
+    variation_name_for_index, Clip, MidiClip, MidiVariation, DEFAULT_CLIP_LENGTH_BEATS,
+};
 #[allow(unused_imports)] // public clipboard surface for app / tests
-pub use clipboard::{ClipboardClip, ClipboardNote, EditClipboard};
+pub use clipboard::{ClipboardClip, ClipboardNote, ClipboardVariation, EditClipboard};
 pub use history::{
     clamp_undo_limit, EditHistory, DEFAULT_UNDO_LIMIT, MAX_UNDO_LIMIT, MIN_UNDO_LIMIT,
 };

@@ -14,6 +14,7 @@ Experimental music sketchpad: piano roll, playlist, soft-synth piano, and CLAP/V
 | Plugin manager (scan / cache) | Working (`plugin_cache.json` in CWD) |
 | Plugin editor GUI | Working on Linux (X11 / XWayland); not Wayland-native |
 | Piano roll (notes + key audition + copy/paste) | Working |
+| MIDI clip variations (save-and-swap takes) | Working (piano-roll panel + playlist clip menu) |
 | Mixer (bottom dock, gain / pan / M/S / meters) | Working (resizable; height in `settings.json`) |
 | Undo / redo (clips + notes) | Working (depth in Settings → Editing) |
 | Transport + loop + BPM + metronome | Working (includes live CPU / buffer / xrun strip) |
@@ -86,6 +87,7 @@ cargo run --release
 - **Drag empty lane** - marquee multi-select
 - **Left-click clip** - select clip
 - **Double-click clip** - open piano roll for that clip (zoomed out to fit the clip)
+- **MIDI clip `...` / take badge (top-right of clip)** - open variation menu (switch take, New empty, New from current); label shows active take name when more than one exists
 - **Audio clips** - do not open piano roll (arrangement-only clips)
 - **Ctrl/Cmd + left-click clip** - toggle multi-select
 - **Drag clip body** - move selected clip(s) on timeline (overlapping clips shorten or are replaced on release)
@@ -123,6 +125,7 @@ cargo run --release
 ### Piano roll (clip editor)
 
 - **Back to playlist** or **Escape** - return to arrangement
+- **Variations panel** (right column; dismiss with **x**, reopen via **Variations** on the ruler) - list takes for this MIDI clip; click to activate; **New** (empty take), **From current** (clone active notes), rename / delete active
 - **Open from playlist** - horizontal zoom starts at the zoom-out floor (whole clip in view); wheel zoom afterward as usual
 - **Left-click empty grid** - add a note (1 beat, snapped to 1/16; rejected if it would overlap another note on the same pitch)
 - **Left-click note** - select note

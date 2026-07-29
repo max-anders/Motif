@@ -11,6 +11,14 @@ pub struct ClipboardNote {
     pub velocity: u8,
 }
 
+/// One variation payload for a clipboard MIDI clip.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClipboardVariation {
+    pub name: String,
+    /// Note times stay clip-local (unchanged on paste).
+    pub notes: Vec<ClipboardNote>,
+}
+
 /// Clip payload relative to the selection's earliest arrangement start.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClipboardClip {
@@ -18,8 +26,9 @@ pub struct ClipboardClip {
     pub name: String,
     pub start_beats: f32,
     pub length_beats: f32,
-    /// Note times stay clip-local (unchanged on paste).
-    pub notes: Vec<ClipboardNote>,
+    /// All takes; paste remaps note/variation ids. Index of the active take.
+    pub variations: Vec<ClipboardVariation>,
+    pub active_variation_index: usize,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]

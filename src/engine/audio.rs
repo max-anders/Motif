@@ -3616,13 +3616,14 @@ mod tests {
             modulators: Vec::new(),
             instrument: TrackInstrument::BuiltInPiano,
             plugin_state: None,
-            clips: vec![Clip::Midi(MidiClip {
-                id: track_id * 100,
-                name: String::from("Clip"),
-                start_beats: 0.0,
-                length_beats: 16.0,
+            clips: vec![Clip::Midi(MidiClip::with_single_variation(
+                track_id * 100,
+                String::from("Clip"),
+                0.0,
+                16.0,
+                track_id * 1000 + 1,
                 notes,
-            })],
+            ))],
         }
     }
 

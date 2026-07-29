@@ -18,7 +18,7 @@ pub const PATTERN_STRIP_GAP: f32 = 4.0;
 pub const PATTERN_STRIP_LANE_GAP: f32 = 2.0;
 pub const PATTERN_PRIORITY_ROW_HEIGHT: f32 = 26.0;
 pub const ADD_PATTERN_LANE_ROW_HEIGHT: f32 = 28.0;
-const SOLO_BUTTON_WIDTH: f32 = 18.0;
+const SOLO_BUTTON_SIZE: f32 = 18.0;
 
 #[derive(Debug, Clone)]
 struct PatternBlockOriginal {
@@ -356,13 +356,34 @@ impl PatternStripUi {
                 egui::StrokeKind::Inside,
             );
 
+            let label = format!("[P] {}", block.name);
+            let label_clip = block_rect.shrink2(Vec2::new(4.0, 2.0));
+            painter.with_clip_rect(label_clip).text(
+                Pos2::new(label_clip.left() + 4.0, label_clip.top() + 2.0),
+                egui::Align2::LEFT_TOP,
+                label,
+                egui::FontId::proportional(11.0),
+                theme.pattern_block_label,
+            );
+
             let solo_rect = pattern_solo_button_rect(block_rect);
             let solo_fill = if block.solo {
                 theme.pattern_block_solo
             } else {
-                theme.widget_bg
+                theme.widget_bg.gamma_multiply(0.88)
             };
-            painter.rect_filled(solo_rect, 2.0, solo_fill);
+            let solo_stroke = if block.solo {
+                theme.pattern_block_solo
+            } else {
+                theme.separator
+            };
+            painter.rect(
+                solo_rect,
+                3.0,
+                solo_fill,
+                egui::Stroke::new(1.0_f32, solo_stroke),
+                egui::StrokeKind::Inside,
+            );
             painter.text(
                 solo_rect.center(),
                 egui::Align2::CENTER_CENTER,
@@ -373,16 +394,6 @@ impl PatternStripUi {
                 } else {
                     theme.text_muted
                 },
-            );
-
-            let label = format!("[P] {}", block.name);
-            let label_clip = block_rect.shrink2(Vec2::new(4.0, 2.0));
-            painter.with_clip_rect(label_clip).text(
-                Pos2::new(label_clip.left() + 4.0, label_clip.top() + 2.0),
-                egui::Align2::LEFT_TOP,
-                label,
-                egui::FontId::proportional(11.0),
-                theme.pattern_block_label,
             );
         }
 
@@ -474,7 +485,7 @@ impl PatternStripUi {
             let blocks = lane_blocks(project, lane_id);
             hit_test_solo_button(body, strip, blocks, press_pos, metrics)
         } {
-            if response.clicked_by(egui::PointerButton::Primary) {
+            if response.clicked_by(egui::PointerButton::Primary) && !response.dragged() {
                 let before = project.clone();
                 project.toggle_pattern_block_solo(solo_block);
                 history.push_before(before);
@@ -519,10 +530,11 @@ impl PatternStripUi {
         if response.drag_started_by(egui::PointerButton::Primary)
             && is_timeline_pointer(strip, press_pos)
         {
-            let hit_block = {
-                let blocks = lane_blocks(project, lane_id);
-                hit_test_block(body, strip, blocks, press_pos, metrics).cloned()
-            };
+            let blocks = lane_blocks(project, lane_id);
+            if hit_test_solo_button(body, strip, blocks, press_pos, metrics).is_some() {
+                return;
+            }
+            let hit_block = hit_test_block(body, strip, blocks, press_pos, metrics).cloned();
             if let Some(block) = hit_block {
                 self.marquee = None;
                 clip_selection.clear();
@@ -673,15 +685,17 @@ fn pattern_block_rect(
     let right = timeline_x(timeline, block.end_beats(), metrics);
     Rect::from_min_max(
         Pos2::new(left + 1.0, strip.top() + 4.0),
-        Pos2::new(right - SOLO_BUTTON_WIDTH - 2.0, strip.bottom() - 4.0),
+        Pos2::new(right - 1.0, strip.bottom() - 4.0),
     )
 }
 
+/// Centered overlay; does not shrink the beat-mapped block rect (resize edges stay true).
 fn pattern_solo_button_rect(block_rect: Rect) -> Rect {
-    Rect::from_min_max(
-        Pos2::new(block_rect.right() + 1.0, block_rect.top()),
-        Pos2::new(block_rect.right() + SOLO_BUTTON_WIDTH, block_rect.bottom()),
-    )
+    let size = SOLO_BUTTON_SIZE
+        .min(block_rect.width() * 0.45)
+        .min(block_rect.height())
+        .max(12.0);
+    Rect::from_center_size(block_rect.center(), Vec2::splat(size))
 }
 
 fn hit_test_block<'a>(
@@ -692,8 +706,7 @@ fn hit_test_block<'a>(
     metrics: TimelineMetrics,
 ) -> Option<&'a PatternBlock> {
     blocks.iter().rev().find(|block| {
-        let block_rect = pattern_block_rect(timeline, strip, block, metrics);
-        block_rect.contains(pos) || pattern_solo_button_rect(block_rect).contains(pos)
+        pattern_block_rect(timeline, strip, block, metrics).contains(pos)
     })
 }
 

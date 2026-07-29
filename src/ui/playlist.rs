@@ -16,6 +16,7 @@ use crate::ui::instrument_menu::{
     choice_to_instrument, show_instrument_picker, track_name_for_choice, InstrumentChoice,
     MENU_LIST_MAX_HEIGHT,
 };
+use crate::ui::clip_variations::show_playlist_clip_variation_menu;
 use crate::ui::note_preview::{draw_note_preview, NotePreviewStyle};
 use crate::ui::pattern_strip::PatternStripUi;
 use crate::ui::theme::ThemeColors;
@@ -586,6 +587,7 @@ impl PlaylistUi {
                         .as_ref()
                         .map(|drag| drag.moving_clip_ids().collect())
                         .unwrap_or_default();
+                    let mut variation_menu_targets: Vec<(u64, Rect)> = Vec::new();
                     for (index, track) in project.tracks.iter().enumerate() {
                         let Some(lane_rect) = layout.clip_lane_rect(body, index) else {
                             continue;
@@ -607,6 +609,25 @@ impl PlaylistUi {
                             project.bpm,
                             decoded_audio,
                             &override_windows,
+                            theme,
+                        );
+                        if self.active_drag.is_none() {
+                            for clip in &track.clips {
+                                if clip.as_midi().is_none() {
+                                    continue;
+                                }
+                                let clip_rect = clip_block_rect(body, lane_rect, clip, metrics);
+                                variation_menu_targets.push((clip.id(), clip_rect));
+                            }
+                        }
+                    }
+                    for (clip_id, clip_rect) in variation_menu_targets {
+                        let _ = show_playlist_clip_variation_menu(
+                            ui,
+                            clip_rect,
+                            clip_id,
+                            project,
+                            history,
                             theme,
                         );
                     }
@@ -1626,6 +1647,16 @@ pub(crate) fn draw_lane_timeline(
             } else {
                 format!("[A] {}", clip.name())
             }
+        } else if let Some(midi) = clip.as_midi() {
+            if midi.variations.len() > 1 {
+                let take = midi
+                    .active_variation()
+                    .map(|v| v.name.as_str())
+                    .unwrap_or("?");
+                format!("[M] {} · {}", clip.name(), take)
+            } else {
+                format!("[M] {}", clip.name())
+            }
         } else {
             format!("[M] {}", clip.name())
         };
@@ -1785,7 +1816,7 @@ fn draw_clip_note_preview(
     draw_note_preview(
         painter,
         clip_rect,
-        &clip.notes,
+        clip.active_notes(),
         clip.length_beats,
         theme,
         &NotePreviewStyle::clip_thumbnail(),

@@ -202,8 +202,8 @@ mod tests {
         assert_eq!(restored.clips.len(), 1);
         let clip = project.midi_clip(clip_id).expect("restored clip");
         assert_eq!(clip.start_beats, 4.0);
-        assert_eq!(clip.notes.len(), 1);
-        assert_eq!(clip.notes[0].pitch, 67);
+        assert_eq!(clip.active_notes().len(), 1);
+        assert_eq!(clip.active_notes()[0].pitch, 67);
 
         assert!(history.redo(&mut project));
         assert_eq!(project.tracks.len(), 1);

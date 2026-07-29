@@ -116,7 +116,7 @@ pub fn playlist_midi_for_track(project: &Project, track_id: u64) -> Vec<Resolved
             continue;
         };
         let clip_end = clip.end_beats();
-        for note in &clip.notes {
+        for note in clip.active_notes() {
             let start_beats = clip.start_beats + note.start_beats;
             let end_beats = (clip.start_beats + note.end_beats()).min(clip_end);
             if end_beats <= start_beats {
@@ -434,13 +434,14 @@ mod tests {
             modulators: Vec::new(),
             instrument: TrackInstrument::BuiltInPiano,
             plugin_state: None,
-            clips: vec![Clip::Midi(crate::model::MidiClip {
-                id: track_id * 100,
-                name: String::from("Clip"),
-                start_beats: clip_start,
-                length_beats: clip_len,
+            clips: vec![Clip::Midi(crate::model::MidiClip::with_single_variation(
+                track_id * 100,
+                String::from("Clip"),
+                clip_start,
+                clip_len,
+                track_id * 1000 + 1,
                 notes,
-            })],
+            ))],
         }
     }
 

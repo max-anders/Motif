@@ -6,6 +6,9 @@ use crate::engine::DawEngine;
 use crate::model::{
     EditHistory, Note, Project, DEFAULT_NOTE_DURATION_BEATS, MAX_PITCH, MIN_PITCH, SNAP_BEATS,
 };
+use crate::ui::clip_variations::{
+    show_variations_panel, show_variations_panel_toggle, VARIATIONS_PANEL_WIDTH,
+};
 use crate::ui::theme::ThemeColors;
 use crate::ui::timeline::{
     apply_piano_roll_wheel_controls, daw_editor_scroll_area, draw_playhead, draw_playback_anchor,
@@ -120,6 +123,8 @@ pub struct PianoRollUi {
     /// When set, the next `show` applies the zoom-out floor (whole clip in view
     /// with breathing room) and resets horizontal scroll. Cleared after apply.
     pending_fit_horizontal: bool,
+    /// Dismissable right-side clip variations list.
+    variations_panel_open: bool,
 }
 
 impl PianoRollUi {
@@ -145,7 +150,7 @@ impl PianoRollUi {
         self.selected_note_ids.clear();
         if let Some(clip) = project.midi_clip(clip_id) {
             self.selected_note_ids
-                .extend(clip.notes.iter().map(|note| note.id));
+                .extend(clip.active_notes().iter().map(|note| note.id));
         }
     }
 
@@ -154,9 +159,9 @@ impl PianoRollUi {
         let Some(clip) = project.midi_clip(clip_id) else {
             return false;
         };
-        !clip.notes.is_empty()
+        !clip.active_notes().is_empty()
             && clip
-                .notes
+                .active_notes()
                 .iter()
                 .all(|note| self.selected_note_ids.contains(&note.id))
     }
@@ -199,6 +204,7 @@ impl Default for PianoRollUi {
             scroll_offset: Vec2::new(0.0, initial_scroll_y),
             grid_view_w: 0.0,
             pending_fit_horizontal: false,
+            variations_panel_open: true,
         }
     }
 }
@@ -226,17 +232,24 @@ impl PianoRollUi {
         self.audition_track_id = project.track_id_for_clip(clip_id).unwrap_or(0);
         let track_id = self.audition_track_id;
         let full = ui.available_rect_before_wrap();
+        let panel_w = if self.variations_panel_open {
+            VARIATIONS_PANEL_WIDTH.min(full.width() * 0.35)
+        } else {
+            0.0
+        };
+        let editor_right = full.right() - panel_w;
         // Side-by-side layout: a fixed key column + corner on the left, the ruler
         // across the top-right, and the scrolling note grid filling the rest. The
         // keyboard/ruler are separate widgets beside the grid, not overlays baked
         // into the scroll content, so beat 0 can never slide under the keyboard.
+        // Variations panel (when open) sits as an inner column on the right.
         let corner = Rect::from_min_max(
             full.min,
             Pos2::new(full.left() + KEY_COLUMN_WIDTH, full.top() + RULER_HEIGHT),
         );
         let ruler_area = Rect::from_min_max(
             Pos2::new(full.left() + KEY_COLUMN_WIDTH, full.top()),
-            Pos2::new(full.right(), full.top() + RULER_HEIGHT),
+            Pos2::new(editor_right, full.top() + RULER_HEIGHT),
         );
         let keys_area = Rect::from_min_max(
             Pos2::new(full.left(), full.top() + RULER_HEIGHT),
@@ -244,6 +257,10 @@ impl PianoRollUi {
         );
         let grid_area = Rect::from_min_max(
             Pos2::new(full.left() + KEY_COLUMN_WIDTH, full.top() + RULER_HEIGHT),
+            Pos2::new(editor_right, full.bottom()),
+        );
+        let variations_panel = Rect::from_min_max(
+            Pos2::new(editor_right, full.top()),
             full.max,
         );
 
@@ -341,7 +358,7 @@ impl PianoRollUi {
 
         let clip_notes: Vec<Note> = project
             .midi_clip(clip_id)
-            .map(|clip| clip.notes.clone())
+            .map(|clip| clip.active_notes().to_vec())
             .unwrap_or_default();
 
         let scroll = self.scroll_offset;
@@ -539,8 +556,9 @@ impl PianoRollUi {
             egui::Stroke::new(1.5_f32, theme.key_divider),
         );
         // Playhead spans ruler + grid, clipped to the right of the key column so
-        // it never draws over the keyboard or corner.
-        let playhead_clip = Rect::from_min_max(Pos2::new(grid_area.left(), full.top()), full.max);
+        // it never draws over the keyboard, corner, or variations panel.
+        let playhead_clip =
+            Rect::from_min_max(Pos2::new(grid_area.left(), full.top()), grid_area.max);
         let clip_painter = ui.painter().with_clip_rect(playhead_clip);
         draw_playback_anchor(
             &clip_painter,
@@ -561,6 +579,32 @@ impl PianoRollUi {
             playhead_visible,
             theme,
         );
+
+        if self.variations_panel_open && panel_w > 0.0 {
+            let switched = show_variations_panel(
+                ui,
+                variations_panel,
+                clip_id,
+                project,
+                history,
+                theme,
+                &mut self.variations_panel_open,
+            );
+            if switched {
+                self.selected_note_ids.clear();
+            }
+        } else {
+            let toggle_rect = Rect::from_min_size(
+                Pos2::new(editor_right - 88.0, full.top() + 2.0),
+                Vec2::new(84.0, RULER_HEIGHT - 4.0),
+            );
+            show_variations_panel_toggle(
+                ui,
+                toggle_rect,
+                &mut self.variations_panel_open,
+                theme,
+            );
+        }
     }
 }
 
@@ -1327,7 +1371,7 @@ fn handle_pointer(
 
     let clip_notes: Vec<Note> = project
         .midi_clip(clip_id)
-        .map(|clip| clip.notes.clone())
+        .map(|clip| clip.active_notes().to_vec())
         .unwrap_or_default();
 
     update_resize_hover_cursor(response, grid, &clip_notes, metrics);
@@ -1543,7 +1587,7 @@ fn handle_pointer(
             let originals = project
                 .midi_clip(clip_id)
                 .map(|clip| {
-                    clip.notes
+                    clip.active_notes()
                         .iter()
                         .filter(|n| selected_note_ids.contains(&n.id))
                         .cloned()

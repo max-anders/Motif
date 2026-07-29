@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 
 use super::audio_clip::AudioClip;
 use super::automation::{AutomationLane, AutomationTarget};
-use super::clip::{Clip, MidiClip};
-use super::clipboard::{ClipboardClip, ClipboardNote};
+use super::clip::{Clip, MidiClip, MidiVariation};
+use super::clipboard::{ClipboardClip, ClipboardNote, ClipboardVariation};
 use super::instrument::{PluginFormat, TrackInstrument};
 use super::mixer::{Device, Macro, MacroMapping, MacroTarget};
 use super::modulator::{LfoModulator, LfoRate};
@@ -60,6 +60,9 @@ pub struct Project {
     next_note_id: u64,
     next_clip_id: u64,
     next_track_id: u64,
+    /// Missing on projects saved before clip variations; starts at 1.
+    #[serde(default = "default_next_variation_id")]
+    next_variation_id: u64,
     /// Missing on projects saved before insert FX (Phase 2); starts at 1.
     #[serde(default = "default_next_device_id")]
     next_device_id: u64,
@@ -104,6 +107,10 @@ fn default_next_pattern_block_id() -> u64 {
     1
 }
 
+fn default_next_variation_id() -> u64 {
+    1
+}
+
 fn default_pattern_overrides_playlist() -> bool {
     true
 }
@@ -133,6 +140,7 @@ impl Default for Project {
             next_note_id: 1,
             next_clip_id: 2,
             next_track_id: 2,
+            next_variation_id: 1,
             next_device_id: 1,
             next_automation_lane_id: 1,
             next_modulator_id: 1,
@@ -336,7 +344,7 @@ impl Project {
         let movers: Vec<(u8, f32, f32)> = self
             .midi_clip(clip_id)
             .map(|clip| {
-                clip.notes
+                clip.active_notes()
                     .iter()
                     .filter(|note| moving.contains(&note.id))
                     .map(|note| (note.pitch, note.start_beats, note.end_beats()))
@@ -348,7 +356,7 @@ impl Project {
             let victims: Vec<(u64, f32, f32, u8)> = self
                 .midi_clip(clip_id)
                 .map(|clip| {
-                    clip.notes
+                    clip.active_notes()
                         .iter()
                         .filter(|note| {
                             note.pitch == m_pitch
@@ -455,7 +463,7 @@ impl Project {
         let Some(clip) = self.midi_clip(clip_id) else {
             return 0.0;
         };
-        clip.notes
+        clip.active_notes()
             .iter()
             .filter(|note| {
                 note.id != note_id
@@ -481,7 +489,7 @@ impl Project {
             return 0.0;
         };
         let neighbor = clip
-            .notes
+            .active_notes()
             .iter()
             .filter(|note| {
                 note.id != note_id
@@ -707,35 +715,62 @@ impl Project {
         match victim {
             Clip::Midi(midi) => {
                 let tail_local_start = tail_start - midi.start_beats;
-                let mut notes = Vec::new();
-                for note in &midi.notes {
-                    let n_start = note.start_beats;
-                    let n_end = note.end_beats();
-                    if n_end <= tail_local_start || n_start >= midi.length_beats {
-                        continue;
+                let mut variations = Vec::with_capacity(midi.variations.len());
+                let mut active_variation_id = 0u64;
+                for source_var in &midi.variations {
+                    let mut notes = Vec::new();
+                    for note in &source_var.notes {
+                        let n_start = note.start_beats;
+                        let n_end = note.end_beats();
+                        if n_end <= tail_local_start || n_start >= midi.length_beats {
+                            continue;
+                        }
+                        let local_start = n_start.max(tail_local_start);
+                        let local_end = n_end.min(midi.length_beats);
+                        let duration = local_end - local_start;
+                        if duration < SNAP_BEATS {
+                            continue;
+                        }
+                        let id = self.next_note_id();
+                        self.bump_note_id();
+                        notes.push(Note {
+                            id,
+                            pitch: note.pitch,
+                            start_beats: Self::snap_beats(local_start - tail_local_start),
+                            duration_beats: Self::snap_beats(duration),
+                            velocity: note.velocity,
+                        });
                     }
-                    let local_start = n_start.max(tail_local_start);
-                    let local_end = n_end.min(midi.length_beats);
-                    let duration = local_end - local_start;
-                    if duration < SNAP_BEATS {
-                        continue;
+                    let variation_id = self.next_variation_id();
+                    self.bump_variation_id();
+                    if source_var.id == midi.active_variation_id {
+                        active_variation_id = variation_id;
                     }
-                    let id = self.next_note_id();
-                    self.bump_note_id();
-                    notes.push(Note {
-                        id,
-                        pitch: note.pitch,
-                        start_beats: Self::snap_beats(local_start - tail_local_start),
-                        duration_beats: Self::snap_beats(duration),
-                        velocity: note.velocity,
+                    variations.push(MidiVariation {
+                        id: variation_id,
+                        name: source_var.name.clone(),
+                        notes,
                     });
+                }
+                if variations.is_empty() {
+                    let variation_id = self.next_variation_id();
+                    self.bump_variation_id();
+                    active_variation_id = variation_id;
+                    variations.push(MidiVariation {
+                        id: variation_id,
+                        name: String::from("A"),
+                        notes: Vec::new(),
+                    });
+                } else if active_variation_id == 0 {
+                    active_variation_id = variations[0].id;
                 }
                 let clip = MidiClip {
                     id: clip_id,
                     name: format!("{} tail", midi.name),
                     start_beats: tail_start,
                     length_beats: tail_length,
-                    notes,
+                    variations,
+                    active_variation_id,
                 };
                 if let Some(track) = self.track_mut(track_id) {
                     track.clips.push(Clip::Midi(clip));
@@ -812,6 +847,14 @@ impl Project {
 
     pub fn bump_clip_id(&mut self) {
         self.next_clip_id += 1;
+    }
+
+    pub fn next_variation_id(&self) -> u64 {
+        self.next_variation_id
+    }
+
+    pub fn bump_variation_id(&mut self) {
+        self.next_variation_id += 1;
     }
 
     pub fn next_track_id(&self) -> u64 {
@@ -1023,6 +1066,166 @@ impl Project {
         self.next_macro_id = next;
     }
 
+    /// Ensure every MIDI clip has >=1 variation, unique project-global variation ids,
+    /// and a valid `active_variation_id`. Advances `next_variation_id`.
+    pub fn ensure_clip_variations(&mut self) {
+        let mut next = self.next_variation_id.max(1);
+        let mut seen = std::collections::HashSet::new();
+        for track in &mut self.tracks {
+            for clip in &mut track.clips {
+                let Some(midi) = clip.as_midi_mut() else {
+                    continue;
+                };
+                if midi.variations.is_empty() {
+                    midi.variations.push(MidiVariation {
+                        id: next,
+                        name: String::from("A"),
+                        notes: Vec::new(),
+                    });
+                    midi.active_variation_id = next;
+                    seen.insert(next);
+                    next += 1;
+                    continue;
+                }
+                let active_index = midi
+                    .variations
+                    .iter()
+                    .position(|v| v.id == midi.active_variation_id)
+                    .unwrap_or(0);
+                for variation in &mut midi.variations {
+                    if variation.id == 0 || seen.contains(&variation.id) {
+                        variation.id = next;
+                        next += 1;
+                    } else if variation.id >= next {
+                        next = variation.id + 1;
+                    }
+                    seen.insert(variation.id);
+                }
+                midi.active_variation_id = midi.variations[active_index].id;
+            }
+        }
+        self.next_variation_id = next;
+    }
+
+    /// Remap variation + note ids on a cloned MIDI clip (duplicate / duplicate-track).
+    fn remap_midi_clip_ids(&mut self, midi: &mut MidiClip) {
+        let old_active = midi.active_variation_id;
+        let mut new_active = 0u64;
+        for variation in &mut midi.variations {
+            let new_var_id = self.next_variation_id();
+            self.bump_variation_id();
+            if variation.id == old_active {
+                new_active = new_var_id;
+            }
+            variation.id = new_var_id;
+            for note in &mut variation.notes {
+                let id = self.next_note_id();
+                self.bump_note_id();
+                note.id = id;
+            }
+        }
+        if new_active == 0 {
+            new_active = midi.variations.first().map(|v| v.id).unwrap_or(0);
+        }
+        midi.active_variation_id = new_active;
+    }
+
+    /// Add an empty variation and activate it. Returns the new variation id.
+    pub fn add_clip_variation_empty(&mut self, clip_id: u64) -> Option<u64> {
+        let name = self.midi_clip(clip_id)?.next_variation_name();
+        let variation_id = self.next_variation_id();
+        self.bump_variation_id();
+        let clip = self.midi_clip_mut(clip_id)?;
+        clip.variations.push(MidiVariation {
+            id: variation_id,
+            name,
+            notes: Vec::new(),
+        });
+        clip.active_variation_id = variation_id;
+        Some(variation_id)
+    }
+
+    /// Clone the active variation's notes into a new take and activate it.
+    pub fn add_clip_variation_from_active(&mut self, clip_id: u64) -> Option<u64> {
+        let name = self.midi_clip(clip_id)?.next_variation_name();
+        let notes = self.midi_clip(clip_id)?.active_notes().to_vec();
+        let mut remapped = Vec::with_capacity(notes.len());
+        for note in notes {
+            let id = self.next_note_id();
+            self.bump_note_id();
+            remapped.push(Note {
+                id,
+                pitch: note.pitch,
+                start_beats: note.start_beats,
+                duration_beats: note.duration_beats,
+                velocity: note.velocity,
+            });
+        }
+        let variation_id = self.next_variation_id();
+        self.bump_variation_id();
+        let clip = self.midi_clip_mut(clip_id)?;
+        clip.variations.push(MidiVariation {
+            id: variation_id,
+            name,
+            notes: remapped,
+        });
+        clip.active_variation_id = variation_id;
+        Some(variation_id)
+    }
+
+    /// Switch the active variation. Returns false if the id is unknown.
+    pub fn set_active_clip_variation(&mut self, clip_id: u64, variation_id: u64) -> bool {
+        let Some(clip) = self.midi_clip_mut(clip_id) else {
+            return false;
+        };
+        if !clip.variations.iter().any(|v| v.id == variation_id) {
+            return false;
+        }
+        clip.active_variation_id = variation_id;
+        true
+    }
+
+    pub fn rename_clip_variation(
+        &mut self,
+        clip_id: u64,
+        variation_id: u64,
+        name: String,
+    ) -> bool {
+        let Some(variation) = self
+            .midi_clip_mut(clip_id)
+            .and_then(|clip| clip.variation_mut(variation_id))
+        else {
+            return false;
+        };
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            return false;
+        }
+        variation.name = trimmed.to_string();
+        true
+    }
+
+    /// Remove a variation. Refuses when it is the last take. If the active take is
+    /// removed, activates another (prefer previous index).
+    pub fn remove_clip_variation(&mut self, clip_id: u64, variation_id: u64) -> bool {
+        let Some(clip) = self.midi_clip_mut(clip_id) else {
+            return false;
+        };
+        if clip.variations.len() <= 1 {
+            return false;
+        }
+        let Some(index) = clip.variations.iter().position(|v| v.id == variation_id) else {
+            return false;
+        };
+        let was_active = clip.active_variation_id == variation_id;
+        clip.variations.remove(index);
+        if was_active {
+            let new_index = index.saturating_sub(1).min(clip.variations.len() - 1);
+            clip.active_variation_id = clip.variations[new_index].id;
+        }
+        true
+    }
+
     /// Apply host-control mappings (modulator rate/depth) for every macro on a track.
     pub fn apply_macro_host_destinations(&mut self, track_id: u64) {
         let Some(track) = self.track(track_id) else {
@@ -1163,13 +1366,16 @@ impl Project {
         let clip_number = self.track(track_id)?.clips.len() + 1;
         let clip_id = self.next_clip_id();
         self.bump_clip_id();
-        let clip = MidiClip {
-            id: clip_id,
-            name: format!("Clip {clip_number}"),
-            start_beats: start,
-            length_beats: length,
-            notes: Vec::new(),
-        };
+        let variation_id = self.next_variation_id();
+        self.bump_variation_id();
+        let clip = MidiClip::with_single_variation(
+            clip_id,
+            format!("Clip {clip_number}"),
+            start,
+            length,
+            variation_id,
+            Vec::new(),
+        );
         self.track_mut(track_id)?.clips.push(Clip::Midi(clip));
         Some(clip_id)
     }
@@ -1308,11 +1514,7 @@ impl Project {
             match clip {
                 Clip::Midi(midi) => {
                     midi.id = clip_id;
-                    for note in &mut midi.notes {
-                        let id = self.next_note_id();
-                        self.bump_note_id();
-                        note.id = id;
-                    }
+                    self.remap_midi_clip_ids(midi);
                 }
                 Clip::Audio(audio) => {
                     audio.id = clip_id;
@@ -1576,7 +1778,7 @@ impl Project {
         let Some(clip) = self.midi_clip_mut(clip_id) else {
             return false;
         };
-        for note in &mut clip.notes {
+        for note in clip.active_notes_mut() {
             if ids.contains(&note.id) {
                 note.pitch = Self::clamp_pitch(note.pitch as i32 + delta);
             }
@@ -1646,21 +1848,34 @@ impl Project {
             let Some(clip) = self.midi_clip(*clip_id) else {
                 continue;
             };
+            let active_variation_index = clip
+                .variations
+                .iter()
+                .position(|v| v.id == clip.active_variation_id)
+                .unwrap_or(0);
             templates.push(ClipboardClip {
                 track_id,
                 name: clip.name.clone(),
                 start_beats: clip.start_beats,
                 length_beats: clip.length_beats,
-                notes: clip
-                    .notes
+                variations: clip
+                    .variations
                     .iter()
-                    .map(|note| ClipboardNote {
-                        pitch: note.pitch,
-                        start_beats: note.start_beats,
-                        duration_beats: note.duration_beats,
-                        velocity: note.velocity,
+                    .map(|variation| ClipboardVariation {
+                        name: variation.name.clone(),
+                        notes: variation
+                            .notes
+                            .iter()
+                            .map(|note| ClipboardNote {
+                                pitch: note.pitch,
+                                start_beats: note.start_beats,
+                                duration_beats: note.duration_beats,
+                                velocity: note.velocity,
+                            })
+                            .collect(),
                     })
                     .collect(),
+                active_variation_index,
             });
         }
         if templates.is_empty() {
@@ -1703,16 +1918,41 @@ impl Project {
             }
             let clip_id = self.next_clip_id();
             self.bump_clip_id();
-            let mut notes = Vec::with_capacity(template.notes.len());
-            for note in &template.notes {
-                let id = self.next_note_id();
-                self.bump_note_id();
-                notes.push(Note {
-                    id,
-                    pitch: note.pitch,
-                    start_beats: Self::snap_beats(note.start_beats.max(0.0)),
-                    duration_beats: Self::snap_beats(note.duration_beats.max(SNAP_BEATS)),
-                    velocity: note.velocity,
+            let mut variations = Vec::with_capacity(template.variations.len().max(1));
+            let mut active_variation_id = 0u64;
+            let templates = if template.variations.is_empty() {
+                vec![ClipboardVariation {
+                    name: String::from("A"),
+                    notes: Vec::new(),
+                }]
+            } else {
+                template.variations.clone()
+            };
+            let active_index = template
+                .active_variation_index
+                .min(templates.len().saturating_sub(1));
+            for (i, source_var) in templates.iter().enumerate() {
+                let mut notes = Vec::with_capacity(source_var.notes.len());
+                for note in &source_var.notes {
+                    let id = self.next_note_id();
+                    self.bump_note_id();
+                    notes.push(Note {
+                        id,
+                        pitch: note.pitch,
+                        start_beats: Self::snap_beats(note.start_beats.max(0.0)),
+                        duration_beats: Self::snap_beats(note.duration_beats.max(SNAP_BEATS)),
+                        velocity: note.velocity,
+                    });
+                }
+                let variation_id = self.next_variation_id();
+                self.bump_variation_id();
+                if i == active_index {
+                    active_variation_id = variation_id;
+                }
+                variations.push(MidiVariation {
+                    id: variation_id,
+                    name: source_var.name.clone(),
+                    notes,
                 });
             }
             let clip = Clip::Midi(MidiClip {
@@ -1720,7 +1960,8 @@ impl Project {
                 name: format!("{} copy", template.name),
                 start_beats: start,
                 length_beats: length,
-                notes,
+                variations,
+                active_variation_id,
             });
             if let Some(track) = self.track_mut(template.track_id) {
                 track.clips.push(clip);
@@ -1800,11 +2041,7 @@ impl Project {
                 Clip::Midi(midi) => {
                     midi.id = clip_id;
                     midi.name = format!("{} copy", template.name);
-                    for note in &mut midi.notes {
-                        let id = self.next_note_id();
-                        self.bump_note_id();
-                        note.id = id;
-                    }
+                    self.remap_midi_clip_ids(midi);
                 }
                 Clip::Audio(audio) => {
                     audio.id = clip_id;
@@ -1946,7 +2183,8 @@ impl Project {
         match (left, right) {
             (Clip::Midi(l), Clip::Midi(r)) => {
                 let offset = l.length_beats;
-                let right_notes = r.notes.clone();
+                // Merge only active takes into the left clip's active variation.
+                let right_notes = r.active_notes().to_vec();
                 let mut notes_to_add = Vec::with_capacity(right_notes.len());
                 for note in right_notes {
                     let id = self.next_note_id();
@@ -2051,6 +2289,7 @@ impl Project {
                 Self::migrate_clip_kinds(project_json);
                 if let Ok(mut project) = serde_json::from_value::<Self>(project_json.clone()) {
                     project.ensure_macro_ids();
+                    project.ensure_clip_variations();
                     return Ok(project);
                 }
             }
@@ -2061,6 +2300,7 @@ impl Project {
             Self::migrate_clip_kinds(&mut project_json);
             if let Ok(mut project) = serde_json::from_value::<Self>(project_json) {
                 project.ensure_macro_ids();
+                project.ensure_clip_variations();
                 return Ok(project);
             }
         }
@@ -2085,7 +2325,7 @@ impl Project {
             clips: vec![Clip::Midi(clip)],
         };
 
-        Ok(Self {
+        let mut project = Self {
             bpm: legacy.bpm,
             beats_per_bar: legacy.beats_per_bar,
             loop_end_beats: legacy.loop_end_beats,
@@ -2098,13 +2338,16 @@ impl Project {
             next_note_id: legacy.next_note_id,
             next_clip_id: 2,
             next_track_id: 2,
+            next_variation_id: 1,
             next_device_id: 1,
             next_automation_lane_id: 1,
             next_modulator_id: 1,
             next_macro_id: 1,
             next_pattern_lane_id: 1,
             next_pattern_block_id: 1,
-        })
+        };
+        project.ensure_clip_variations();
+        Ok(project)
     }
 
     /// MIDI for one track after pattern-lane overrides (playlist + top-lane-wins + solo).
@@ -2499,13 +2742,16 @@ impl Project {
         let length = Self::snap_beats(length_beats.max(SNAP_BEATS));
         let clip_id = self.next_clip_id();
         self.bump_clip_id();
-        let clip = MidiClip {
-            id: clip_id,
+        let variation_id = self.next_variation_id();
+        self.bump_variation_id();
+        let clip = MidiClip::with_single_variation(
+            clip_id,
             name,
-            start_beats: start,
-            length_beats: length,
+            start,
+            length,
+            variation_id,
             notes,
-        };
+        );
         self.track_mut(track_id)?.clips.push(Clip::Midi(clip));
         Some(clip_id)
     }
@@ -3368,7 +3614,7 @@ mod tests {
         assert_eq!(n1.pitch, 64);
         assert_eq!(n1.start_beats, 1.5);
         assert_eq!(n1.velocity, 77);
-        assert_eq!(project.midi_clip(src).map(|c| c.notes.len()), Some(2));
+        assert_eq!(project.midi_clip(src).map(|c| c.active_notes().len()), Some(2));
     }
 
     #[test]
@@ -3395,7 +3641,7 @@ mod tests {
 
         let existing: Vec<u64> = project
             .midi_clip(dst)
-            .map(|clip| clip.notes.iter().map(|note| note.id).collect())
+            .map(|clip| clip.active_notes().iter().map(|note| note.id).collect())
             .unwrap_or_default();
         for id in existing {
             project
@@ -3406,9 +3652,9 @@ mod tests {
         let new_ids = project.paste_notes_into_clip(dst, &entries, 0.0);
         assert_eq!(new_ids.len(), 1);
         let dst_clip = project.midi_clip(dst).expect("dst");
-        assert_eq!(dst_clip.notes.len(), 1);
-        assert_eq!(dst_clip.notes[0].pitch, 60);
-        assert_eq!(dst_clip.notes[0].start_beats, 0.0);
+        assert_eq!(dst_clip.active_notes().len(), 1);
+        assert_eq!(dst_clip.active_notes()[0].pitch, 60);
+        assert_eq!(dst_clip.active_notes()[0].start_beats, 0.0);
     }
 
     #[test]
@@ -3426,8 +3672,8 @@ mod tests {
         assert_eq!(new_ids.len(), 1);
         let pasted = project.midi_clip(new_ids[0]).expect("pasted");
         assert_eq!(pasted.start_beats, 8.0);
-        assert_eq!(pasted.notes.len(), 1);
-        assert_eq!(pasted.notes[0].pitch, 60);
+        assert_eq!(pasted.active_notes().len(), 1);
+        assert_eq!(pasted.active_notes()[0].pitch, 60);
         assert_eq!(project.track(track_id).map(|t| t.clips.len()), Some(2));
     }
 
@@ -3548,10 +3794,10 @@ mod tests {
         assert_eq!(project.tracks[1].clips.len(), 1);
         assert_ne!(project.tracks[1].clips[0].id(), clip_id);
         let dup_clip = project.tracks[1].clips[0].as_midi().expect("midi");
-        assert_eq!(dup_clip.notes.len(), 1);
+        assert_eq!(dup_clip.active_notes().len(), 1);
         assert_ne!(
-            dup_clip.notes[0].id,
-            project.tracks[0].clips[0].as_midi().unwrap().notes[0].id
+            dup_clip.active_notes()[0].id,
+            project.tracks[0].clips[0].as_midi().unwrap().active_notes()[0].id
         );
     }
 
@@ -4063,8 +4309,8 @@ mod tests {
         let clip = project.clip(left_id).expect("survivor");
         assert_eq!(clip.length_beats(), 8.0);
         let midi = clip.as_midi().expect("midi");
-        assert_eq!(midi.notes.len(), 2);
-        assert!(midi.notes.iter().any(|note| {
+        assert_eq!(midi.active_notes().len(), 2);
+        assert!(midi.active_notes().iter().any(|note| {
             note.pitch == 64 && (note.start_beats - 4.0).abs() < 1e-5
         }));
     }
@@ -4807,8 +5053,8 @@ mod tests {
         let clip = project.tracks[0].clips[0].as_midi().expect("midi");
         assert!((clip.start_beats - 4.0).abs() < 1e-5);
         assert!((clip.length_beats - 8.0).abs() < 1e-5);
-        assert_eq!(clip.notes.len(), 1);
-        assert_eq!(clip.notes[0].pitch, 60);
+        assert_eq!(clip.active_notes().len(), 1);
+        assert_eq!(clip.active_notes()[0].pitch, 60);
     }
 
     #[test]
@@ -4830,7 +5076,7 @@ mod tests {
         assert!(project.clip(old_id).is_none());
         assert_eq!(project.tracks[0].clips.len(), 1);
         let clip = project.tracks[0].clips[0].as_midi().expect("midi");
-        assert_eq!(clip.notes[0].pitch, 72);
+        assert_eq!(clip.active_notes()[0].pitch, 72);
     }
 
     #[test]
@@ -4953,5 +5199,97 @@ mod tests {
             .id;
         assert_ne!(source_note, copied_note);
         assert!(project.pattern_lane(new_lane_id).unwrap().name.ends_with("copy"));
+    }
+
+    #[test]
+    fn clip_variations_add_switch_remove_and_legacy_load() {
+        let mut project = Project::default();
+        let clip_id = project.tracks[0].clips[0].id();
+        project
+            .add_note_to_clip(clip_id, 60, 0.0, 1.0)
+            .expect("note");
+
+        let a_id = project.midi_clip(clip_id).unwrap().active_variation_id;
+        let b_id = project
+            .add_clip_variation_from_active(clip_id)
+            .expect("clone take");
+        assert_ne!(a_id, b_id);
+        assert_eq!(project.midi_clip(clip_id).unwrap().variations.len(), 2);
+        assert_eq!(project.midi_clip(clip_id).unwrap().active_variation_id, b_id);
+        assert_eq!(project.midi_clip(clip_id).unwrap().active_notes().len(), 1);
+
+        let empty_id = project
+            .add_clip_variation_empty(clip_id)
+            .expect("empty take");
+        assert_eq!(
+            project.midi_clip(clip_id).unwrap().active_variation_id,
+            empty_id
+        );
+        assert!(project.midi_clip(clip_id).unwrap().active_notes().is_empty());
+
+        assert!(project.set_active_clip_variation(clip_id, a_id));
+        assert_eq!(project.midi_clip(clip_id).unwrap().active_notes().len(), 1);
+        assert!(project.rename_clip_variation(clip_id, a_id, "Verse".into()));
+        assert_eq!(
+            project.midi_clip(clip_id).unwrap().variation(a_id).unwrap().name,
+            "Verse"
+        );
+
+        assert!(project.remove_clip_variation(clip_id, empty_id));
+        assert!(project.remove_clip_variation(clip_id, b_id));
+        assert!(!project.remove_clip_variation(clip_id, a_id));
+        assert_eq!(project.midi_clip(clip_id).unwrap().variations.len(), 1);
+
+        let json = r#"{
+            "bpm": 120.0,
+            "beats_per_bar": 4.0,
+            "loop_end_beats": 16.0,
+            "tracks": [{
+                "id": 1,
+                "name": "Track 1",
+                "muted": false,
+                "solo": false,
+                "instrument": { "type": "built_in_piano" },
+                "clips": [{
+                    "id": 1,
+                    "name": "Clip 1",
+                    "start_beats": 0.0,
+                    "length_beats": 4.0,
+                    "notes": [
+                        {"id": 1, "pitch": 64, "start_beats": 0.0, "duration_beats": 1.0, "velocity": 100}
+                    ]
+                }]
+            }],
+            "next_note_id": 2,
+            "next_clip_id": 2,
+            "next_track_id": 2
+        }"#;
+        let loaded = Project::from_json(json).expect("legacy notes");
+        let clip = loaded.midi_clip(1).expect("clip");
+        assert_eq!(clip.variations.len(), 1);
+        assert_eq!(clip.active_notes().len(), 1);
+        assert_eq!(clip.active_notes()[0].pitch, 64);
+    }
+
+    #[test]
+    fn duplicate_clip_copies_all_variations() {
+        let mut project = Project::default();
+        let clip_id = project.tracks[0].clips[0].id();
+        project
+            .add_note_to_clip(clip_id, 60, 0.0, 1.0)
+            .expect("note");
+        project
+            .add_clip_variation_empty(clip_id)
+            .expect("empty B");
+        assert_eq!(project.midi_clip(clip_id).unwrap().variations.len(), 2);
+
+        let created = project.duplicate_clips(&[clip_id], 4.0, false);
+        assert_eq!(created.len(), 1);
+        let new_id = created[0].1;
+        let src = project.midi_clip(clip_id).unwrap();
+        let dup = project.midi_clip(new_id).unwrap();
+        assert_eq!(dup.variations.len(), 2);
+        assert_ne!(dup.variations[0].id, src.variations[0].id);
+        assert_ne!(dup.active_variation_id, src.active_variation_id);
     }
 }

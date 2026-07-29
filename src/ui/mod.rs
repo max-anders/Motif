@@ -14,6 +14,7 @@ mod pattern_rack;
 mod pattern_row_editor;
 mod pattern_strip;
 mod performance;
+mod clip_variations;
 mod piano_roll;
 mod playlist;
 mod project_browser;

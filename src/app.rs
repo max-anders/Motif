@@ -1673,7 +1673,7 @@ impl DawApp {
             let existing: Vec<u64> = self
                 .project
                 .midi_clip(clip_id)
-                .map(|clip| clip.notes.iter().map(|note| note.id).collect())
+                .map(|clip| clip.active_notes().iter().map(|note| note.id).collect())
                 .unwrap_or_default();
             self.remove_notes_from_clip(clip_id, &existing);
         }
