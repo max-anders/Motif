@@ -12,21 +12,24 @@ use crate::engine::{
 use crate::model::{
     clear_recovery, ensure_motif_extension, format_unix_time, legacy_project_path,
     load_project_from, load_recovery_meta, load_recovery_project, project_display_name,
-    projects_dir, push_recent, save_project_to, write_recovery, EditClipboard, EditHistory,
+    projects_dir, push_recent, save_project_to, write_recovery, BakeError, EditClipboard, EditHistory,
     Project, RecoveryMeta, TrackInstrument, PROJECT_EXTENSION,
 };
 use crate::ui::{
     choice_to_instrument, show_inspector, track_name_for_choice, Action, AddBrowserAction,
     AddBrowserUi, AppSettings, AudioImportRequest, BrowserTab, Chord, DevicesUi, MixerPanelResize,
-    MixerUi, PerformanceUi, PianoRollUi, PlaylistUi, PluginEditorRequest, PollFilter,
-    ProjectBrowserAction, ProjectBrowserUi, SettingsAction, SettingsUi, TransportUi,
-    MIXER_PANEL_ID, MIXER_PANEL_MIN_HEIGHT, SETTINGS_FILE,
+    MixerUi, PatternRackAction, PatternRackUi, PatternRowEditorAction, PatternRowEditorUi,
+    PerformanceUi, PianoRollUi, PlaylistUi, PluginEditorRequest, PollFilter, ProjectBrowserAction,
+    ProjectBrowserUi, SettingsAction, SettingsUi, TrackRenameUi, TransportUi, MIXER_PANEL_ID,
+    MIXER_PANEL_MIN_HEIGHT, SETTINGS_FILE,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CenterView {
     Playlist,
     PianoRoll { clip_id: u64 },
+    PatternRack { block_id: u64 },
+    PatternRow { block_id: u64, track_id: u64 },
     Devices,
     Performance,
     Settings,
@@ -46,6 +49,8 @@ pub struct DawApp {
     engine: AudioEngine,
     playlist: PlaylistUi,
     piano_roll: PianoRollUi,
+    pattern_rack: PatternRackUi,
+    pattern_row_editor: PatternRowEditorUi,
     mixer: MixerUi,
     mixer_panel_resize: MixerPanelResize,
     performance: PerformanceUi,
@@ -82,6 +87,8 @@ pub struct DawApp {
     show_add_browser: Option<BrowserTab>,
     /// Confirm discard when New is requested while dirty.
     confirm_new_discard: bool,
+    /// Confirm bake when playlist MIDI in the section would be replaced.
+    pending_bake_confirm: Option<u64>,
     /// Force dirty (e.g. after restoring a recovery backup that has no clean disk match).
     dirty_forced: bool,
     decoded_audio: HashMap<PathBuf, Arc<DecodedAudio>>,
@@ -89,6 +96,7 @@ pub struct DawApp {
     audio_decode_errors: HashMap<PathBuf, String>,
     audio_decode_tx: Sender<AudioDecodeResult>,
     audio_decode_rx: Receiver<AudioDecodeResult>,
+    track_rename: TrackRenameUi,
 }
 
 impl DawApp {
@@ -129,6 +137,8 @@ impl DawApp {
             engine,
             playlist: PlaylistUi::default(),
             piano_roll: PianoRollUi::default(),
+            pattern_rack: PatternRackUi::default(),
+            pattern_row_editor: PatternRowEditorUi::default(),
             mixer: MixerUi::default(),
             mixer_panel_resize: MixerPanelResize::default(),
             performance: PerformanceUi::default(),
@@ -154,12 +164,14 @@ impl DawApp {
             show_project_browser: show_browser,
             show_add_browser: None,
             confirm_new_discard: false,
+            pending_bake_confirm: None,
             dirty_forced: false,
             decoded_audio: HashMap::new(),
             pending_audio_decodes: HashSet::new(),
             audio_decode_errors: HashMap::new(),
             audio_decode_tx,
             audio_decode_rx,
+            track_rename: TrackRenameUi::default(),
         };
         app.sync_instruments();
         app.queue_missing_audio_decodes();
@@ -850,6 +862,72 @@ impl DawApp {
         }
     }
 
+    fn show_bake_confirm_modal(&mut self, ctx: &egui::Context) {
+        let Some(block_id) = self.pending_bake_confirm else {
+            return;
+        };
+        let mut confirm = false;
+        let mut cancel = false;
+        egui::Window::new("Replace playlist MIDI in this section?")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.label(
+                    "Baking commits pattern notes to the playlist for this time span. Existing MIDI clips in that window will be trimmed, split, or removed.",
+                );
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Bake").clicked() {
+                        confirm = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        if confirm {
+            self.pending_bake_confirm = None;
+            self.execute_bake_pattern_block(block_id);
+        } else if cancel {
+            self.pending_bake_confirm = None;
+        }
+    }
+
+    fn request_bake_pattern_block(&mut self, block_id: u64) {
+        if self.project.pattern_block(block_id).is_none() {
+            return;
+        }
+        if self.project.bake_would_modify_playlist(block_id) {
+            self.pending_bake_confirm = Some(block_id);
+        } else {
+            self.execute_bake_pattern_block(block_id);
+        }
+    }
+
+    fn execute_bake_pattern_block(&mut self, block_id: u64) {
+        if self.project.pattern_block(block_id).is_none() {
+            return;
+        }
+        self.history.push_before(self.project.clone());
+        match self.project.bake_pattern_block(block_id) {
+            Ok(()) => {
+                self.status_message = String::from("Pattern baked to playlist.");
+                if matches!(
+                    self.center_view,
+                    CenterView::PatternRack { block_id: id } | CenterView::PatternRow { block_id: id, .. }
+                    if id == block_id
+                ) {
+                    self.back_to_playlist();
+                }
+                self.playlist.clear_pattern_selection();
+            }
+            Err(BakeError::BlockNotFound) => {
+                self.history.discard();
+            }
+        }
+    }
+
     fn show_new_discard_modal(&mut self, ctx: &egui::Context) {
         if !self.confirm_new_discard {
             return;
@@ -951,8 +1029,42 @@ impl DawApp {
                 self.piano_roll.prune_selection(clip_id, &self.project);
             }
         }
-        if matches!(self.settings_return, CenterView::PianoRoll { clip_id } if self.project.clip(clip_id).is_none())
-        {
+        if let CenterView::PatternRack { block_id } = self.center_view {
+            if self.project.pattern_block(block_id).is_none() {
+                self.back_to_playlist();
+            }
+        }
+        if let CenterView::PatternRow { block_id, track_id } = self.center_view {
+            if self.project.pattern_block(block_id).is_none() {
+                self.back_to_playlist();
+            } else if self.project.track(track_id).is_none() {
+                // Track (and its row) was removed by the undo/redo edit; the
+                // block itself may still have other rows.
+                self.pattern_rack.clear_selection();
+                self.center_view = CenterView::PatternRack { block_id };
+            } else {
+                self.pattern_row_editor
+                    .prune_selection(block_id, track_id, &self.project);
+            }
+        }
+        if matches!(
+            self.settings_return,
+            CenterView::PianoRoll { clip_id } if self.project.clip(clip_id).is_none()
+        ) {
+            self.settings_return = CenterView::Playlist;
+        }
+        if matches!(
+            self.settings_return,
+            CenterView::PatternRack { block_id } if self.project.pattern_block(block_id).is_none()
+        ) {
+            self.settings_return = CenterView::Playlist;
+        }
+        if matches!(
+            self.settings_return,
+            CenterView::PatternRow { block_id, track_id }
+                if self.project.pattern_block(block_id).is_none()
+                    || self.project.track(track_id).is_none()
+        ) {
             self.settings_return = CenterView::Playlist;
         }
         self.sync_instruments();
@@ -1013,6 +1125,132 @@ impl DawApp {
         }
     }
 
+    // ---- Pattern row editor note editing (Phase D2) ----
+    // Mirrors the piano-roll note editing above so Delete / Copy / Cut / Paste /
+    // Duplicate behave identically on pattern-row notes (`playlist-piano-roll-parity`).
+
+    fn delete_selected_pattern_notes(&mut self, block_id: u64, track_id: u64) {
+        let ids: Vec<u64> = self
+            .pattern_row_editor
+            .selected_note_ids()
+            .iter()
+            .copied()
+            .collect();
+        if ids.is_empty() {
+            return;
+        }
+        self.history.push_before(self.project.clone());
+        for id in ids {
+            self.project
+                .remove_note_from_pattern_track(block_id, track_id, id);
+        }
+        self.pattern_row_editor.clear_selection();
+    }
+
+    fn copy_selected_pattern_notes(&mut self, block_id: u64, track_id: u64) {
+        let ids: Vec<u64> = self
+            .pattern_row_editor
+            .selected_note_ids()
+            .iter()
+            .copied()
+            .collect();
+        if ids.is_empty() {
+            return;
+        }
+        let notes = self
+            .project
+            .pattern_notes_for_clipboard(block_id, track_id, &ids);
+        self.clipboard = EditClipboard::from_notes(&notes);
+        if !self.clipboard.is_empty() {
+            self.status_message = format!("Copied {} note(s)", notes.len());
+        }
+    }
+
+    fn cut_selected_pattern_notes(&mut self, block_id: u64, track_id: u64) {
+        let ids: Vec<u64> = self
+            .pattern_row_editor
+            .selected_note_ids()
+            .iter()
+            .copied()
+            .collect();
+        if ids.is_empty() {
+            return;
+        }
+        let notes = self
+            .project
+            .pattern_notes_for_clipboard(block_id, track_id, &ids);
+        let count = notes.len();
+        if count == 0 {
+            return;
+        }
+        self.history.push_before(self.project.clone());
+        self.clipboard = EditClipboard::from_notes(&notes);
+        for id in &ids {
+            self.project
+                .remove_note_from_pattern_track(block_id, track_id, *id);
+        }
+        self.pattern_row_editor.clear_selection();
+        self.status_message = format!("Cut {count} note(s)");
+    }
+
+    fn paste_pattern_notes_at_playhead(&mut self, block_id: u64, track_id: u64) {
+        let EditClipboard::Notes(notes) = &self.clipboard else {
+            if self.clipboard.is_empty() {
+                self.status_message = String::from("Clipboard empty");
+            } else {
+                self.status_message = String::from("Clipboard has clips - paste in playlist");
+            }
+            return;
+        };
+        let notes = notes.clone();
+        let block_start = self
+            .project
+            .pattern_block(block_id)
+            .map(|block| block.start_beats)
+            .unwrap_or(0.0);
+        let origin = (self.engine.current_beats() - block_start).max(0.0);
+        let before = self.project.clone();
+        let new_ids =
+            self.project
+                .paste_notes_into_pattern_track(block_id, track_id, &notes, origin);
+        if new_ids.is_empty() {
+            self.project = before;
+            self.status_message = String::from("Paste failed (overlap or out of range)");
+            return;
+        }
+        self.history.push_before(before);
+        self.pattern_row_editor.set_selection(new_ids);
+        self.status_message = format!("Pasted {} note(s)", notes.len());
+    }
+
+    fn duplicate_selected_pattern_notes(&mut self, block_id: u64, track_id: u64) {
+        let ids: Vec<u64> = self
+            .pattern_row_editor
+            .selected_note_ids()
+            .iter()
+            .copied()
+            .collect();
+        if ids.is_empty() {
+            return;
+        }
+        let span = {
+            let notes = self.project.pattern_track_notes(block_id, track_id);
+            Project::selection_span_beats(ids.iter().filter_map(|id| {
+                notes
+                    .iter()
+                    .find(|note| note.id == *id)
+                    .map(|note| (note.start_beats, note.end_beats()))
+            }))
+        };
+        self.history.push_before(self.project.clone());
+        let new_ids = self.project.duplicate_notes_in_pattern_track(
+            block_id, track_id, &ids, span, 0, false,
+        );
+        if !new_ids.is_empty() {
+            self.pattern_row_editor.set_selection(new_ids);
+        }
+    }
+
     fn delete_selected_clips(&mut self) {
         let ids: Vec<u64> = self.playlist.selected_clip_ids().iter().copied().collect();
         if ids.is_empty() {
@@ -1021,6 +1259,54 @@ impl DawApp {
         self.history.push_before(self.project.clone());
         self.remove_clips(&ids);
         self.playlist.clear_selection();
+    }
+
+    fn delete_pattern_block(&mut self, block_id: u64) {
+        if self.project.pattern_block(block_id).is_none() {
+            return;
+        }
+        self.history.push_before(self.project.clone());
+        self.project.remove_pattern_block(block_id);
+        self.playlist.clear_pattern_selection();
+        if matches!(
+            self.center_view,
+            CenterView::PatternRack { block_id: id } | CenterView::PatternRow { block_id: id, .. }
+                if id == block_id
+        ) {
+            self.back_to_playlist();
+        }
+    }
+
+    fn delete_selected_pattern_blocks(&mut self) {
+        let ids = self.playlist.selected_pattern_block_ids();
+        if ids.is_empty() {
+            return;
+        }
+        self.history.push_before(self.project.clone());
+        for id in ids {
+            self.project.remove_pattern_block(id);
+        }
+        self.playlist.clear_pattern_selection();
+    }
+
+    fn delete_playlist_selection(&mut self) {
+        if self.playlist.selected_pattern_block_ids().is_empty() {
+            self.delete_selected_clips();
+        } else {
+            self.delete_selected_pattern_blocks();
+        }
+    }
+
+    /// Playlist cut: clips use the session clipboard; pattern blocks remove for now
+    /// (block clipboard/paste is not wired yet). Mirrors `delete_playlist_selection`
+    /// so Ctrl/Cmd+X (system Cut) works on pattern strip selections too.
+    fn cut_playlist_selection(&mut self) {
+        if self.playlist.selected_pattern_block_ids().is_empty() {
+            self.cut_selected_clips();
+        } else {
+            self.delete_selected_pattern_blocks();
+            self.status_message = String::from("Removed pattern block(s)");
+        }
     }
 
     fn remove_clips(&mut self, ids: &[u64]) {
@@ -1066,6 +1352,9 @@ impl DawApp {
         self.playlist.prune_selection(&self.project);
         if self.selected_track == Some(track_id) {
             self.selected_track = self.project.tracks.first().map(|t| t.id);
+        }
+        if self.track_rename.active_track_id() == Some(track_id) {
+            self.track_rename.cancel();
         }
         self.engine
             .close_plugin_editor(PluginRef::instrument(track_id));
@@ -1174,6 +1463,37 @@ impl DawApp {
             .collect();
         if !new_ids.is_empty() {
             self.playlist.set_selection(new_ids);
+        }
+    }
+
+    fn duplicate_selected_pattern_blocks(&mut self) {
+        let ids = self.playlist.selected_pattern_block_ids();
+        if ids.is_empty() {
+            return;
+        }
+        let span = Project::selection_span_beats(ids.iter().filter_map(|id| {
+            self.project
+                .pattern_block(*id)
+                .map(|block| (block.start_beats, block.end_beats()))
+        }));
+        self.history.push_before(self.project.clone());
+        let new_ids: Vec<u64> = self
+            .project
+            .duplicate_pattern_blocks(&ids, span, false)
+            .into_iter()
+            .map(|(_, id)| id)
+            .collect();
+        if !new_ids.is_empty() {
+            self.playlist.clear_selection();
+            self.playlist.set_pattern_selection(&self.project, new_ids);
+        }
+    }
+
+    fn duplicate_playlist_selection(&mut self) {
+        if self.playlist.selected_pattern_block_ids().is_empty() {
+            self.duplicate_selected_clips();
+        } else {
+            self.duplicate_selected_pattern_blocks();
         }
     }
 
@@ -1358,6 +1678,39 @@ impl DawApp {
             self.piano_roll.clear_selection();
             self.piano_roll.request_fit_horizontal();
             self.center_view = CenterView::PianoRoll { clip_id };
+        }
+    }
+
+    fn open_pattern_block(&mut self, block_id: u64) {
+        if self.project.pattern_block(block_id).is_some() {
+            self.pattern_rack.clear_selection();
+            self.center_view = CenterView::PatternRack { block_id };
+        }
+    }
+
+    fn open_pattern_row_melody(&mut self, block_id: u64, track_id: u64) {
+        if self.project.pattern_block(block_id).is_some() && self.project.track(track_id).is_some()
+        {
+            self.project
+                .set_pattern_row_mode(block_id, track_id, Some(crate::model::PatternRowMode::Melody));
+            self.center_view = CenterView::PatternRow { block_id, track_id };
+        }
+    }
+
+    /// Back from the row editor to the pattern rack it was opened from.
+    fn back_to_pattern_rack(&mut self, block_id: u64) {
+        self.release_pattern_row_audition();
+        if self.project.pattern_block(block_id).is_some() {
+            self.center_view = CenterView::PatternRack { block_id };
+        } else {
+            self.center_view = CenterView::Playlist;
+        }
+    }
+
+    fn release_pattern_row_audition(&mut self) {
+        if let CenterView::PatternRow { track_id, .. } = self.center_view {
+            self.pattern_row_editor
+                .release_audition(&mut self.engine, track_id);
         }
     }
 
@@ -1547,6 +1900,8 @@ impl DawApp {
     fn back_to_playlist(&mut self) {
         self.piano_roll.release_audition(&mut self.engine);
         self.piano_roll.clear_selection();
+        self.pattern_rack.clear_selection();
+        self.release_pattern_row_audition();
         self.center_view = CenterView::Playlist;
     }
 
@@ -1565,7 +1920,7 @@ impl DawApp {
         self.show_mixer_panel
             && matches!(
                 self.center_view,
-                CenterView::Playlist | CenterView::PianoRoll { .. }
+                CenterView::Playlist | CenterView::PianoRoll { .. } | CenterView::PatternRack { .. }
             )
     }
 
@@ -1582,6 +1937,7 @@ impl DawApp {
         if matches!(self.center_view, CenterView::PianoRoll { .. }) {
             self.piano_roll.release_audition(&mut self.engine);
         }
+        self.release_pattern_row_audition();
         self.center_view = CenterView::Performance;
     }
 
@@ -1592,6 +1948,7 @@ impl DawApp {
         if matches!(self.center_view, CenterView::PianoRoll { .. }) {
             self.piano_roll.release_audition(&mut self.engine);
         }
+        self.release_pattern_row_audition();
         if self.selected_track.is_none() {
             self.selected_track = self.project.tracks.first().map(|t| t.id);
         }
@@ -1609,7 +1966,7 @@ impl DawApp {
         self.show_devices_strip
             && matches!(
                 self.center_view,
-                CenterView::Playlist | CenterView::PianoRoll { .. }
+                CenterView::Playlist | CenterView::PianoRoll { .. } | CenterView::PatternRack { .. }
             )
     }
 
@@ -1633,7 +1990,7 @@ impl DawApp {
 
     fn dispatch_action(&mut self, action: Action) {
         // Block project shortcuts while recovery / discard modals are up.
-        if self.pending_recovery.is_some() || self.confirm_new_discard {
+        if self.pending_recovery.is_some() || self.confirm_new_discard || self.pending_bake_confirm.is_some() {
             if matches!(action, Action::BackToPlaylist) {
                 // Escape does not dismiss recovery (must choose Restore/Discard).
             }
@@ -1652,29 +2009,55 @@ impl DawApp {
                 self.project.loop_enabled = !self.project.loop_enabled;
             }
             Action::DeleteSelection => match self.center_view {
-                CenterView::Playlist => self.delete_selected_clips(),
+                CenterView::Playlist => self.delete_playlist_selection(),
                 CenterView::PianoRoll { .. } => self.delete_selected_notes(),
+                CenterView::PatternRack { block_id } => self.delete_pattern_block(block_id),
+                CenterView::PatternRow { block_id, track_id } => {
+                    self.delete_selected_pattern_notes(block_id, track_id)
+                }
                 CenterView::Devices | CenterView::Performance | CenterView::Settings => {}
             },
             Action::CopySelection => match self.center_view {
                 CenterView::Playlist => self.copy_selected_clips(),
                 CenterView::PianoRoll { .. } => self.copy_selected_notes(),
-                CenterView::Devices | CenterView::Performance | CenterView::Settings => {}
+                CenterView::PatternRow { block_id, track_id } => {
+                    self.copy_selected_pattern_notes(block_id, track_id)
+                }
+                CenterView::Devices
+                | CenterView::Performance
+                | CenterView::Settings
+                | CenterView::PatternRack { .. } => {}
             },
             Action::CutSelection => match self.center_view {
-                CenterView::Playlist => self.cut_selected_clips(),
+                CenterView::Playlist => self.cut_playlist_selection(),
                 CenterView::PianoRoll { .. } => self.cut_selected_notes(),
+                CenterView::PatternRack { block_id } => self.delete_pattern_block(block_id),
+                CenterView::PatternRow { block_id, track_id } => {
+                    self.cut_selected_pattern_notes(block_id, track_id)
+                }
                 CenterView::Devices | CenterView::Performance | CenterView::Settings => {}
             },
             Action::PasteSelection => match self.center_view {
                 CenterView::Playlist => self.paste_clips_at_playhead(),
                 CenterView::PianoRoll { clip_id } => self.paste_notes_at_playhead(clip_id),
-                CenterView::Devices | CenterView::Performance | CenterView::Settings => {}
+                CenterView::PatternRow { block_id, track_id } => {
+                    self.paste_pattern_notes_at_playhead(block_id, track_id)
+                }
+                CenterView::Devices
+                | CenterView::Performance
+                | CenterView::Settings
+                | CenterView::PatternRack { .. } => {}
             },
             Action::DuplicateSelection => match self.center_view {
-                CenterView::Playlist => self.duplicate_selected_clips(),
+                CenterView::Playlist => self.duplicate_playlist_selection(),
                 CenterView::PianoRoll { .. } => self.duplicate_selected_notes(),
-                CenterView::Devices | CenterView::Performance | CenterView::Settings => {}
+                CenterView::PatternRow { block_id, track_id } => {
+                    self.duplicate_selected_pattern_notes(block_id, track_id)
+                }
+                CenterView::Devices
+                | CenterView::Performance
+                | CenterView::Settings
+                | CenterView::PatternRack { .. } => {}
             },
             Action::MergeClips => {
                 if matches!(self.center_view, CenterView::Playlist) {
@@ -1704,7 +2087,9 @@ impl DawApp {
                 }
                 match self.center_view {
                     CenterView::Settings => self.close_settings(),
+                    CenterView::PatternRow { block_id, .. } => self.back_to_pattern_rack(block_id),
                     CenterView::PianoRoll { .. }
+                    | CenterView::PatternRack { .. }
                     | CenterView::Devices
                     | CenterView::Performance => self.back_to_playlist(),
                     CenterView::Playlist => {}
@@ -1734,6 +2119,9 @@ impl DawApp {
             }
             Action::SelectAll => match self.center_view {
                 CenterView::PianoRoll { .. } => self.select_all_notes(),
+                CenterView::PatternRow { block_id, track_id } => self
+                    .pattern_row_editor
+                    .select_all(block_id, track_id, &self.project),
                 _ => {}
             },
             Action::TransposeUpSemitone => match self.center_view {
@@ -1754,6 +2142,7 @@ impl DawApp {
             },
             Action::ExclusiveSolo => self.exclusive_solo_selected_track(),
             Action::ExclusiveMute => self.exclusive_mute_selected_track(),
+            Action::RenameTrack => self.begin_rename_selected_track(),
         }
     }
 
@@ -1779,6 +2168,17 @@ impl DawApp {
         self.history.push_before(self.project.clone());
         self.project.exclusive_mute(track_id);
         self.engine.all_notes_off();
+    }
+
+    fn begin_rename_selected_track(&mut self) {
+        let Some(track_id) = self.selected_track else {
+            return;
+        };
+        let Some(track) = self.project.track(track_id) else {
+            return;
+        };
+        let name = track.name.clone();
+        self.track_rename.begin(track_id, &name);
     }
 }
 
@@ -1822,11 +2222,18 @@ impl eframe::App for DawApp {
             self.dispatch_action(Action::TogglePlayback);
         }
 
-        if self.pending_recovery.is_none() && !self.confirm_new_discard {
+        if self.pending_recovery.is_none()
+            && !self.confirm_new_discard
+            && self.pending_bake_confirm.is_none()
+        {
             self.tick_autosave(delta_seconds);
         }
 
-        let poll_filter = if self.pending_recovery.is_some() || self.confirm_new_discard {
+        let poll_filter = if self.pending_recovery.is_some()
+            || self.confirm_new_discard
+            || self.pending_bake_confirm.is_some()
+            || self.track_rename.is_active()
+        {
             PollFilter::None
         } else if self.settings_ui.is_capturing() {
             PollFilter::None
@@ -1869,7 +2276,14 @@ impl eframe::App for DawApp {
                         }
                         ui.separator();
                     }
+                    CenterView::PatternRow { block_id, .. } => {
+                        if ui.button("Back to rack").clicked() {
+                            self.back_to_pattern_rack(block_id);
+                        }
+                        ui.separator();
+                    }
                     CenterView::PianoRoll { .. }
+                    | CenterView::PatternRack { .. }
                     | CenterView::Devices
                     | CenterView::Performance => {
                         if ui.button("Back to playlist").clicked() {
@@ -1885,7 +2299,9 @@ impl eframe::App for DawApp {
                 if !matches!(self.center_view, CenterView::Settings)
                     && matches!(
                         self.center_view,
-                        CenterView::Playlist | CenterView::PianoRoll { .. }
+                        CenterView::Playlist
+                            | CenterView::PianoRoll { .. }
+                            | CenterView::PatternRack { .. }
                     )
                     && ui
                         .button(if self.show_mixer_panel {
@@ -1922,7 +2338,9 @@ impl eframe::App for DawApp {
 
                 if matches!(
                     self.center_view,
-                    CenterView::Playlist | CenterView::PianoRoll { .. }
+                    CenterView::Playlist
+                        | CenterView::PianoRoll { .. }
+                        | CenterView::PatternRack { .. }
                 ) && ui
                     .button(if self.show_inspector {
                         "Hide inspector"
@@ -1951,6 +2369,11 @@ impl eframe::App for DawApp {
                         ui.label(format!("Editing: {}", clip.name()));
                     }
                 }
+                if let CenterView::PatternRow { track_id, .. } = self.center_view {
+                    if let Some(track) = self.project.track(track_id) {
+                        ui.label(format!("Editing row: {}", track.name));
+                    }
+                }
                 if matches!(self.center_view, CenterView::Devices) {
                     ui.label("Devices");
                 }
@@ -1966,7 +2389,9 @@ impl eframe::App for DawApp {
         if self.show_inspector
             && matches!(
                 self.center_view,
-                CenterView::Playlist | CenterView::PianoRoll { .. }
+                CenterView::Playlist
+                    | CenterView::PianoRoll { .. }
+                    | CenterView::PatternRack { .. }
             )
         {
             egui::SidePanel::right("track_inspector")
@@ -2082,9 +2507,10 @@ impl eframe::App for DawApp {
                         engine,
                         history,
                         selected_track,
+                        track_rename,
                         ..
                     } = self;
-                    mixer.show(ui, project, engine, history, selected_track, &theme);
+                    mixer.show(ui, project, engine, history, selected_track, &theme, track_rename);
                 });
             if hide_mixer {
                 self.show_mixer_panel = false;
@@ -2102,12 +2528,16 @@ impl eframe::App for DawApp {
             }
         }
 
+        let mut open_pattern_row: Option<(u64, u64)> = None;
+        let mut close_pattern_row: Option<u64> = None;
+        let mut bake_pattern_block: Option<u64> = None;
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show(ctx, |ui| match self.center_view {
                 CenterView::Playlist => {
                     let (
                         open_clip,
+                        open_pattern,
                         editor_request,
                         delete_track,
                         duplicate_track,
@@ -2124,6 +2554,7 @@ impl eframe::App for DawApp {
                             history,
                             selected_track,
                             decoded_audio,
+                            track_rename,
                             ..
                         } = self;
                         let theme = settings.themes.colors().clone();
@@ -2137,9 +2568,11 @@ impl eframe::App for DawApp {
                             decoded_audio,
                             settings,
                             &theme,
+                            track_rename,
                         );
                         (
                             playlist.take_open_clip_request(),
+                            playlist.take_open_pattern_block_request(),
                             playlist.take_plugin_editor_request(),
                             playlist.take_delete_track_request(),
                             playlist.take_duplicate_track_request(),
@@ -2153,6 +2586,9 @@ impl eframe::App for DawApp {
                     }
                     if let Some(clip_id) = open_clip {
                         self.open_clip(clip_id);
+                    }
+                    if let Some(block_id) = open_pattern {
+                        self.open_pattern_block(block_id);
                     }
                     if let Some(request) = editor_request {
                         self.handle_plugin_editor_request(ctx, frame, request);
@@ -2190,6 +2626,7 @@ impl eframe::App for DawApp {
                             settings,
                             selected_track,
                             decoded_audio,
+                            track_rename,
                             ..
                         } = self;
                         let theme = settings.themes.colors().clone();
@@ -2204,6 +2641,7 @@ impl eframe::App for DawApp {
                             decoded_audio,
                             settings,
                             &theme,
+                            track_rename,
                         );
                         (
                             devices.take_plugin_editor_request(),
@@ -2252,6 +2690,67 @@ impl eframe::App for DawApp {
                             history,
                             settings.themes.colors(),
                         );
+                    } else {
+                        self.back_to_playlist();
+                    }
+                }
+                CenterView::PatternRack { block_id } => {
+                    if self.project.pattern_block(block_id).is_some() {
+                        let DawApp {
+                            pattern_rack,
+                            project,
+                            engine,
+                            history,
+                            settings,
+                            selected_track,
+                            ..
+                        } = self;
+                        let theme = settings.themes.colors().clone();
+                        match pattern_rack.show(
+                            ui,
+                            block_id,
+                            project,
+                            engine,
+                            history,
+                            selected_track,
+                            &theme,
+                        ) {
+                            PatternRackAction::None => {}
+                            PatternRackAction::Status(message) => {
+                                self.status_message = message;
+                            }
+                            PatternRackAction::OpenMelody(track_id) => {
+                                open_pattern_row = Some((block_id, track_id));
+                            }
+                            PatternRackAction::Bake => {
+                                bake_pattern_block = Some(block_id);
+                            }
+                        }
+                    } else {
+                        self.back_to_playlist();
+                    }
+                }
+                CenterView::PatternRow { block_id, track_id } => {
+                    if self.project.pattern_block(block_id).is_some()
+                        && self.project.track(track_id).is_some()
+                    {
+                        let DawApp {
+                            pattern_row_editor,
+                            project,
+                            engine,
+                            history,
+                            settings,
+                            ..
+                        } = self;
+                        let theme = settings.themes.colors().clone();
+                        match pattern_row_editor.show(
+                            ui, block_id, track_id, project, engine, history, &theme,
+                        ) {
+                            PatternRowEditorAction::None => {}
+                            PatternRowEditorAction::Close => {
+                                close_pattern_row = Some(block_id);
+                            }
+                        }
                     } else {
                         self.back_to_playlist();
                     }
@@ -2306,9 +2805,20 @@ impl eframe::App for DawApp {
                 }
             });
 
+        if let Some((block_id, track_id)) = open_pattern_row {
+            self.open_pattern_row_melody(block_id, track_id);
+        }
+        if let Some(block_id) = close_pattern_row {
+            self.back_to_pattern_rack(block_id);
+        }
+        if let Some(block_id) = bake_pattern_block {
+            self.request_bake_pattern_block(block_id);
+        }
+
         if self.pending_recovery.is_some() {
             self.show_recovery_modal(ctx);
         } else {
+            self.show_bake_confirm_modal(ctx);
             self.show_new_discard_modal(ctx);
             if let Some(action) = self.project_browser.show(
                 ctx,
@@ -2330,6 +2840,8 @@ impl eframe::App for DawApp {
                 self.handle_add_browser_action(action);
             }
         }
+
+        self.track_rename.show_window(ctx, &mut self.project, &mut self.history);
 
         ctx.request_repaint();
     }

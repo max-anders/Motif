@@ -26,6 +26,7 @@ use crate::ui::playlist::{
     track_header_row, ClipDrag, LANE_HEIGHT, MarqueeDrag, PluginEditorRequest, TRACK_HEADER_WIDTH,
 };
 use crate::ui::theme::ThemeColors;
+use crate::ui::track_rename::TrackRenameUi;
 use crate::ui::timeline::{
     apply_horizontal_wheel_controls, arrangement_beat_width_bounds, draw_loop_region, draw_playhead,
     draw_playback_anchor, draw_ruler, handle_loop_region_pointer, handle_timeline_playhead_pointer,
@@ -392,6 +393,7 @@ impl DevicesUi {
         decoded_audio: &HashMap<PathBuf, Arc<DecodedAudio>>,
         settings: &mut AppSettings,
         theme: &ThemeColors,
+        track_rename: &mut TrackRenameUi,
     ) -> bool {
         ui.painter().rect_filled(ui.max_rect(), 0.0, theme.panel_bg);
         let mut settings_dirty = false;
@@ -463,6 +465,7 @@ impl DevicesUi {
                                             &mut self.hovered_track_header,
                                             None,
                                             "devices",
+                                            track_rename,
                                         );
                                         if let Some(id) = select_request {
                                             *selected_track = Some(id);
@@ -629,6 +632,7 @@ impl DevicesUi {
             &mut self.mini_scroll_offset.x,
             min_beat_width,
             max_beat_width,
+            0.0,
         );
 
         let metrics = TimelineMetrics {
@@ -691,7 +695,6 @@ impl DevicesUi {
                             engine,
                             &mut self.mini_dragging_playhead,
                             0.0,
-                            true,
                         )
                     {
                         // Playhead scrub; skip clip picks while dragging.
@@ -732,6 +735,7 @@ impl DevicesUi {
                         project.track_audible(track),
                         project.bpm,
                         decoded_audio,
+                        &project.pattern_override_windows_for_track(track.id),
                         theme,
                     );
                     draw_ruler(

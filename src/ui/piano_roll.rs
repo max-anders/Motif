@@ -16,10 +16,11 @@ use crate::ui::timeline::{
 };
 
 /// Fixed width of the pinned piano-key column (left of the scrolling grid).
-const KEY_COLUMN_WIDTH: f32 = TIMELINE_GUTTER_WIDTH;
+/// `pub(crate)`: shared with `pattern_row_editor` (slim melody-row piano roll).
+pub(crate) const KEY_COLUMN_WIDTH: f32 = TIMELINE_GUTTER_WIDTH;
 
-const BLACK_KEY_WIDTH_RATIO: f32 = 0.62;
-const RESIZE_HANDLE_PX: f32 = 12.0;
+pub(crate) const BLACK_KEY_WIDTH_RATIO: f32 = 0.62;
+pub(crate) const RESIZE_HANDLE_PX: f32 = 12.0;
 
 /// Fraction of the viewport width the clip fills at maximum zoom-out. The rest
 /// becomes symmetric empty "outside" margin on both sides of the clip.
@@ -36,24 +37,26 @@ const HARD_MAX_BEAT_WIDTH: f32 = 1600.0;
 /// otherwise leaves a small residual offset when the pointer is near an edge,
 /// which reads as the scrollbar "detaching" from the end.
 const EDGE_SNAP_PX: f32 = 24.0;
-const DEFAULT_KEY_HEIGHT: f32 = 18.0;
-const MIN_KEY_HEIGHT: f32 = 8.0;
-const MAX_KEY_HEIGHT: f32 = 48.0;
+pub(crate) const DEFAULT_KEY_HEIGHT: f32 = 18.0;
+pub(crate) const MIN_KEY_HEIGHT: f32 = 8.0;
+pub(crate) const MAX_KEY_HEIGHT: f32 = 48.0;
 
 /// Short preview when clicking to create a note (seconds).
-const NOTE_CREATE_PREVIEW_SECS: f64 = 0.18;
+pub(crate) const NOTE_CREATE_PREVIEW_SECS: f64 = 0.18;
 
 /// Pitch shown near the top of the viewport on first open (C6).
 const DEFAULT_TOP_PITCH: u8 = 84;
 
+/// `pub(crate)`: shared with `pattern_row_editor` (slim melody-row piano roll)
+/// so both editors size notes/keys identically.
 #[derive(Debug, Clone, Copy)]
-struct ViewMetrics {
-    beat_width: f32,
-    key_height: f32,
+pub(crate) struct ViewMetrics {
+    pub(crate) beat_width: f32,
+    pub(crate) key_height: f32,
 }
 
 impl ViewMetrics {
-    fn timeline(&self) -> TimelineMetrics {
+    pub(crate) fn timeline(&self) -> TimelineMetrics {
         TimelineMetrics {
             beat_width: self.beat_width,
         }
@@ -61,31 +64,33 @@ impl ViewMetrics {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DragMode {
+pub(crate) enum DragMode {
     Move,
     ResizeStart,
     ResizeEnd,
 }
 
+/// `pub(crate)`: generic over any note list (no clip reference), shared with
+/// `pattern_row_editor`'s melody mode.
 #[derive(Debug, Clone)]
-struct ActiveDrag {
-    note_id: u64,
-    mode: DragMode,
-    pointer_start_beats: f32,
-    pointer_start_pitch: i32,
-    originals: Vec<Note>,
+pub(crate) struct ActiveDrag {
+    pub(crate) note_id: u64,
+    pub(crate) mode: DragMode,
+    pub(crate) pointer_start_beats: f32,
+    pub(crate) pointer_start_pitch: i32,
+    pub(crate) originals: Vec<Note>,
     /// Notes movers may overlap during this drag (Shift+drag duplicate sources).
-    ignore_ids: Vec<u64>,
+    pub(crate) ignore_ids: Vec<u64>,
 }
 
 #[derive(Debug, Clone)]
-struct MarqueeDrag {
-    start: Pos2,
-    current: Pos2,
+pub(crate) struct MarqueeDrag {
+    pub(crate) start: Pos2,
+    pub(crate) current: Pos2,
 }
 
 impl MarqueeDrag {
-    fn rect(&self) -> Rect {
+    pub(crate) fn rect(&self) -> Rect {
         Rect::from_two_pos(self.start, self.current)
     }
 }
@@ -444,8 +449,8 @@ impl PianoRollUi {
 
         // Ruler and grid are separate interact regions (side-by-side layout), so
         // playhead scrubbing must consult both. Playlist uses one shared response.
-        // seek_on_body_secondary=false: empty-grid secondary *click* seeks in
-        // handle_pointer (and deletes a note if hit); secondary *drag* still scrubs.
+        // Plain secondary clicks on the grid delete a note in handle_pointer;
+        // Shift+secondary click/drag seeks via the shared helper.
         let playhead_handled = !gesture_active && !keyboard_handled && {
             if self.dragging_playhead {
                 // Continue on whichever region still owns the pointer.
@@ -462,7 +467,6 @@ impl PianoRollUi {
                     engine,
                     &mut self.dragging_playhead,
                     clip_start,
-                    false,
                 )
             } else {
                 handle_timeline_playhead_pointer(
@@ -473,7 +477,6 @@ impl PianoRollUi {
                     engine,
                     &mut self.dragging_playhead,
                     clip_start,
-                    false,
                 ) || handle_timeline_playhead_pointer(
                     &response,
                     ruler_ref,
@@ -482,7 +485,6 @@ impl PianoRollUi {
                     engine,
                     &mut self.dragging_playhead,
                     clip_start,
-                    false,
                 )
             }
         };
@@ -497,7 +499,6 @@ impl PianoRollUi {
                 project,
                 history,
                 engine,
-                clip_start,
                 track_id,
                 &mut self.selected_note_ids,
                 &mut self.active_drag,
@@ -567,25 +568,25 @@ impl PianoRollUi {
 /// `x_to_beat` helpers add `TIMELINE_GUTTER_WIDTH` to `rect.left()`, so shifting
 /// left by the key column makes beat 0 resolve to `content.left() + lead_px`
 /// (the lead-in margin) while keeping the vertical origin at `content.top()`.
-fn beat_grid_rect(content: Rect, lead_px: f32) -> Rect {
+pub(crate) fn beat_grid_rect(content: Rect, lead_px: f32) -> Rect {
     Rect::from_min_max(
         Pos2::new(content.left() + lead_px - KEY_COLUMN_WIDTH, content.top()),
         content.max,
     )
 }
 
-fn pitch_to_y(grid: Rect, pitch: u8, metrics: ViewMetrics) -> f32 {
+pub(crate) fn pitch_to_y(grid: Rect, pitch: u8, metrics: ViewMetrics) -> f32 {
     let row = (MAX_PITCH as i32 - pitch as i32) as f32;
     grid.top() + row * metrics.key_height
 }
 
-fn y_to_pitch(grid: Rect, y: f32, metrics: ViewMetrics) -> u8 {
+pub(crate) fn y_to_pitch(grid: Rect, y: f32, metrics: ViewMetrics) -> u8 {
     let row = ((y - grid.top()) / metrics.key_height).floor() as i32;
     let pitch = MAX_PITCH as i32 - row;
     Project::clamp_pitch(pitch)
 }
 
-fn note_rect(grid: Rect, note: &Note, metrics: ViewMetrics) -> Rect {
+pub(crate) fn note_rect(grid: Rect, note: &Note, metrics: ViewMetrics) -> Rect {
     let top = pitch_to_y(grid, note.pitch, metrics);
     Rect::from_min_max(
         Pos2::new(
@@ -599,7 +600,7 @@ fn note_rect(grid: Rect, note: &Note, metrics: ViewMetrics) -> Rect {
     )
 }
 
-fn hit_test_note<'a>(
+pub(crate) fn hit_test_note<'a>(
     grid: Rect,
     notes: &'a [Note],
     pos: Pos2,
@@ -611,7 +612,7 @@ fn hit_test_note<'a>(
         .find(|note| note_rect(grid, note, metrics).contains(pos))
 }
 
-fn select_notes_in_rect(
+pub(crate) fn select_notes_in_rect(
     grid: Rect,
     notes: &[Note],
     selection: Rect,
@@ -624,11 +625,11 @@ fn select_notes_in_rect(
         .collect()
 }
 
-fn is_black_key(pitch: u8) -> bool {
+pub(crate) fn is_black_key(pitch: u8) -> bool {
     matches!(pitch % 12, 1 | 3 | 6 | 8 | 10)
 }
 
-fn draw_grid(
+pub(crate) fn draw_grid(
     painter: &egui::Painter,
     grid: Rect,
     lead_px: f32,
@@ -718,7 +719,7 @@ fn draw_grid(
     }
 }
 
-fn draw_keyboard(
+pub(crate) fn draw_keyboard(
     painter: &egui::Painter,
     grid: Rect,
     metrics: ViewMetrics,
@@ -814,7 +815,7 @@ fn draw_keyboard(
     );
 }
 
-fn set_audition_pitch(
+pub(crate) fn set_audition_pitch(
     engine: &mut dyn DawEngine,
     track_id: u64,
     audition_pitch: &mut Option<u8>,
@@ -834,7 +835,7 @@ fn set_audition_pitch(
     }
 }
 
-fn clear_audition(
+pub(crate) fn clear_audition(
     engine: &mut dyn DawEngine,
     track_id: u64,
     audition_pitch: &mut Option<u8>,
@@ -848,7 +849,7 @@ fn clear_audition(
     *audition_until = None;
 }
 
-fn tick_timed_audition(
+pub(crate) fn tick_timed_audition(
     engine: &mut dyn DawEngine,
     track_id: u64,
     audition_pitch: &mut Option<u8>,
@@ -872,7 +873,7 @@ fn tick_timed_audition(
     }
 }
 
-fn preview_pitch_briefly(
+pub(crate) fn preview_pitch_briefly(
     engine: &mut dyn DawEngine,
     track_id: u64,
     audition_pitch: &mut Option<u8>,
@@ -886,7 +887,7 @@ fn preview_pitch_briefly(
     *audition_until = Some(now + NOTE_CREATE_PREVIEW_SECS);
 }
 
-fn hold_audition_pitch(
+pub(crate) fn hold_audition_pitch(
     engine: &mut dyn DawEngine,
     track_id: u64,
     audition_pitch: &mut Option<u8>,
@@ -900,7 +901,7 @@ fn hold_audition_pitch(
 }
 
 /// Hit-test and audition piano keys. Returns true when the interaction is owned by the keyboard.
-fn handle_keyboard_audition(
+pub(crate) fn handle_keyboard_audition(
     response: &Response,
     keys: Rect,
     grid: Rect,
@@ -963,7 +964,7 @@ fn handle_keyboard_audition(
     true
 }
 
-fn hit_test_key(keys: Rect, grid: Rect, pointer: Pos2, metrics: ViewMetrics) -> Option<u8> {
+pub(crate) fn hit_test_key(keys: Rect, grid: Rect, pointer: Pos2, metrics: ViewMetrics) -> Option<u8> {
     let black_width = TIMELINE_GUTTER_WIDTH * BLACK_KEY_WIDTH_RATIO;
 
     // Black keys first so narrow keys win over the white key underneath.
@@ -988,7 +989,7 @@ fn hit_test_key(keys: Rect, grid: Rect, pointer: Pos2, metrics: ViewMetrics) -> 
     Some(y_to_pitch(grid, pointer.y, metrics))
 }
 
-fn draw_notes(
+pub(crate) fn draw_notes(
     painter: &egui::Painter,
     rect: Rect,
     metrics: ViewMetrics,
@@ -1040,7 +1041,7 @@ fn draw_notes(
     }
 }
 
-fn draw_marquee(painter: &egui::Painter, selection: Rect, theme: &ThemeColors) {
+pub(crate) fn draw_marquee(painter: &egui::Painter, selection: Rect, theme: &ThemeColors) {
     painter.rect(
         selection,
         0.0,
@@ -1050,7 +1051,7 @@ fn draw_marquee(painter: &egui::Painter, selection: Rect, theme: &ThemeColors) {
     );
 }
 
-fn set_single_selection(selected_note_ids: &mut HashSet<u64>, note_id: u64) {
+pub(crate) fn set_single_selection(selected_note_ids: &mut HashSet<u64>, note_id: u64) {
     selected_note_ids.clear();
     selected_note_ids.insert(note_id);
 }
@@ -1095,7 +1096,7 @@ fn apply_move_drag(
     }
 }
 
-fn resize_drag_mode(note_bounds: Rect, pointer_x: f32) -> Option<DragMode> {
+pub(crate) fn resize_drag_mode(note_bounds: Rect, pointer_x: f32) -> Option<DragMode> {
     let local_x = pointer_x - note_bounds.left();
     let width = note_bounds.width();
     let handle = RESIZE_HANDLE_PX.min(width * 0.35);
@@ -1108,7 +1109,7 @@ fn resize_drag_mode(note_bounds: Rect, pointer_x: f32) -> Option<DragMode> {
     }
 }
 
-fn update_resize_hover_cursor(
+pub(crate) fn update_resize_hover_cursor(
     response: &Response,
     grid: Rect,
     notes: &[Note],
@@ -1307,7 +1308,6 @@ fn handle_pointer(
     project: &mut Project,
     history: &mut EditHistory,
     engine: &mut dyn DawEngine,
-    clip_start_beats: f32,
     track_id: u64,
     selected_note_ids: &mut HashSet<u64>,
     active_drag: &mut Option<ActiveDrag>,
@@ -1469,14 +1469,6 @@ fn handle_pointer(
                     history.push_before(before);
                 }
                 selected_note_ids.remove(&note_id);
-            } else if is_timeline_pointer(grid, pointer) {
-                crate::ui::timeline::seek_from_pointer(
-                    grid,
-                    pointer,
-                    timeline,
-                    engine,
-                    clip_start_beats,
-                );
             }
         }
     }
@@ -1615,7 +1607,7 @@ fn handle_pointer(
     }
 }
 
-fn pitch_name(pitch: u8) -> String {
+pub(crate) fn pitch_name(pitch: u8) -> String {
     const NAMES: [&str; 12] = [
         "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
     ];

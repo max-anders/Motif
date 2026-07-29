@@ -34,6 +34,7 @@ use crate::engine::DawEngine;
 use crate::model::{EditHistory, Project, MAX_GAIN_DB, MIN_GAIN_DB};
 use crate::ui::playlist::ms_toggle_button;
 use crate::ui::theme::ThemeColors;
+use crate::ui::track_rename::TrackRenameUi;
 
 /// Compact strip width (FL-style narrow channel).
 const STRIP_WIDTH: f32 = 58.0;
@@ -191,6 +192,7 @@ impl MixerUi {
         history: &mut EditHistory,
         selected_track: &mut Option<u64>,
         theme: &ThemeColors,
+        track_rename: &mut TrackRenameUi,
     ) {
         ui.painter().rect_filled(ui.max_rect(), 0.0, theme.panel_bg);
         ui.horizontal(|ui| {
@@ -254,6 +256,7 @@ impl MixerUi {
                                 strip_height,
                                 fader_height,
                                 theme,
+                                track_rename,
                             );
                         }
                     });
@@ -305,13 +308,15 @@ impl MixerUi {
         strip_height: f32,
         fader_height: f32,
         theme: &ThemeColors,
+        track_rename: &mut TrackRenameUi,
     ) {
         let Some(track) = project.tracks.iter().find(|t| t.id == track_id).cloned() else {
             return;
         };
 
         let mut clicked = false;
-        strip_container(
+        let mut rename_track = false;
+        let strip_response = strip_container(
             ui,
             Id::new(("mixer_strip", track_id)),
             strip_height,
@@ -327,6 +332,9 @@ impl MixerUi {
                     theme.text_muted,
                 );
                 clicked = header.clicked();
+                if header.double_clicked() {
+                    rename_track = true;
+                }
 
                 fixed_height_row(ui, CONTROL_ROW_HEIGHT, |ui| {
                     ui.horizontal_centered(|ui| {
@@ -393,6 +401,17 @@ impl MixerUi {
                 });
             },
         );
+
+        strip_response.context_menu(|ui| {
+            if ui.button("Rename track...").clicked() {
+                rename_track = true;
+                ui.close_menu();
+            }
+        });
+
+        if rename_track {
+            track_rename.begin(track_id, &track.name);
+        }
 
         if clicked {
             *selected_track = Some(track_id);
@@ -464,8 +483,8 @@ fn strip_container(
     selected: bool,
     theme: &ThemeColors,
     add_contents: impl FnOnce(&mut Ui),
-) {
-    let (rect, _response) =
+) -> egui::Response {
+    let (rect, response) =
         ui.allocate_exact_size(Vec2::new(STRIP_WIDTH, strip_height), Sense::hover());
 
     let fill = if selected {
@@ -508,6 +527,7 @@ fn strip_container(
     );
     content_ui.set_clip_rect(content_rect);
     add_contents(&mut content_ui);
+    response
 }
 
 /// Vertical track name + tiny subtitle, FL-style compact header.

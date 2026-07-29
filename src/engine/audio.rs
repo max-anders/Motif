@@ -3196,33 +3196,7 @@ impl DawEngine for AudioEngine {
         let mut notes = std::mem::take(&mut self.note_scratch);
         for track in &project.tracks {
             notes.clear();
-            // A muted track keeps its notes in the project but must not sound,
-            // so it syncs as empty; unmuting re-sends them and the sequencer
-            // re-seeds mid-note.
-            if project.track_audible(track) {
-                for clip in &track.clips {
-                    let Some(clip) = clip.as_midi() else {
-                        continue;
-                    };
-                    let clip_end = clip.end_beats();
-                    for note in &clip.notes {
-                        let start_beats = clip.start_beats + note.start_beats;
-                        let end_beats = (clip.start_beats + note.end_beats()).min(clip_end);
-                        if end_beats <= start_beats {
-                            continue;
-                        }
-                        notes.push(RtNote {
-                            start_beats,
-                            end_beats,
-                            pitch: note.pitch,
-                            velocity: note.velocity,
-                        });
-                    }
-                }
-                // The sequencer binary-searches this on seek and walks it with
-                // a cursor per block, both of which assume start order.
-                notes.sort_unstable_by(|a, b| a.start_beats.total_cmp(&b.start_beats));
-            }
+            notes.extend(track_rt_notes(project, track));
 
             let changed = self
                 .synced_notes
@@ -3405,6 +3379,42 @@ impl DawEngine for AudioEngine {
     }
 }
 
+/// Resolve the `RtNote` list `schedule_project` should push for one track.
+///
+/// Pulled out as a pure function (no audio device needed) so pattern-lane
+/// override + solo wiring is unit-testable directly: this is exactly what
+/// `schedule_project` sends as `SetTrackNotes`, not a re-derivation of it.
+///
+/// A muted track (respecting solo-overrides-mute) keeps its notes in the
+/// project but must not sound, so it resolves to empty; unmuting re-sends
+/// them and the sequencer re-seeds mid-note. An audible track's notes come
+/// from `Project::resolved_midi_for_track`, which applies pattern-lane
+/// overrides (including solo) on top of the flattened playlist MIDI - see
+/// `model/pattern.rs::resolve_midi_for_track`. The RT sequencer / `RtNote`
+/// shape is unchanged; this only changes which notes get sent.
+fn track_rt_notes(project: &Project, track: &crate::model::Track) -> Vec<RtNote> {
+    if !project.track_audible(track) {
+        return Vec::new();
+    }
+
+    let mut notes: Vec<RtNote> = project
+        .resolved_midi_for_track(track.id)
+        .into_iter()
+        .map(|resolved| RtNote {
+            start_beats: resolved.start_beats,
+            end_beats: resolved.end_beats,
+            pitch: resolved.pitch,
+            velocity: resolved.velocity,
+        })
+        .collect();
+    // Already sorted by `resolve_midi_for_track`, but the sequencer
+    // binary-searches this on seek and walks it with a cursor per track,
+    // both of which assume start order - keep the guarantee explicit here
+    // rather than relying on the model helper's internals.
+    notes.sort_unstable_by(|a, b| a.start_beats.total_cmp(&b.start_beats));
+    notes
+}
+
 /// Pick the output config to build the stream with.
 ///
 /// Keeps whatever channel layout and sample format the device prefers, and only
@@ -3572,4 +3582,154 @@ fn start_stream(
     }
 
     Err(last_error)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{
+        Clip, MidiClip, Note, PatternBlock, PatternLane, PatternTrackContent, Track, TrackInstrument,
+    };
+
+    fn note(id: u64, pitch: u8, start: f32, dur: f32) -> Note {
+        Note {
+            id,
+            pitch,
+            start_beats: start,
+            duration_beats: dur,
+            velocity: 100,
+        }
+    }
+
+    fn track_with_clip(track_id: u64, notes: Vec<Note>) -> Track {
+        Track {
+            id: track_id,
+            name: format!("Track {track_id}"),
+            muted: false,
+            solo: false,
+            gain_db: 0.0,
+            pan: 0.0,
+            sends: Vec::new(),
+            devices: Vec::new(),
+            macros: Vec::new(),
+            automation_lanes: Vec::new(),
+            modulators: Vec::new(),
+            instrument: TrackInstrument::BuiltInPiano,
+            plugin_state: None,
+            clips: vec![Clip::Midi(MidiClip {
+                id: track_id * 100,
+                name: String::from("Clip"),
+                start_beats: 0.0,
+                length_beats: 16.0,
+                notes,
+            })],
+        }
+    }
+
+    /// This is the exact helper `schedule_project` calls per track - covering it
+    /// covers the wiring, not just the pure model resolve in `model::pattern`.
+    #[test]
+    fn playback_uses_playlist_midi_when_no_pattern_lanes() {
+        let mut project = Project::default();
+        project.tracks = vec![track_with_clip(1, vec![note(1, 60, 0.0, 1.0)])];
+
+        let rt_notes = track_rt_notes(&project, &project.tracks[0]);
+        assert_eq!(rt_notes.len(), 1);
+        assert_eq!(rt_notes[0].pitch, 60);
+        assert_eq!(rt_notes[0].start_beats, 0.0);
+    }
+
+    #[test]
+    fn playback_uses_pattern_override_inside_block_window() {
+        let mut project = Project::default();
+        project.tracks = vec![track_with_clip(1, vec![note(1, 60, 0.0, 8.0)])];
+        project.pattern_lanes = vec![PatternLane {
+            id: 1,
+            name: String::from("Lane 1"),
+            blocks: vec![PatternBlock {
+                id: 1,
+                name: String::from("Override"),
+                start_beats: 4.0,
+                length_beats: 4.0,
+                solo: false,
+                tracks: vec![PatternTrackContent {
+                    track_id: 1,
+                    notes: vec![note(10, 72, 0.0, 2.0)],
+                    row_mode: None,
+                }],
+            }],
+        }];
+
+        let rt_notes = track_rt_notes(&project, &project.tracks[0]);
+        // Playlist note trimmed at the block boundary, then the pattern note
+        // takes over inside the window - same replace-not-merge contract as
+        // `model::pattern::resolve_midi_for_track`.
+        assert_eq!(rt_notes.len(), 2);
+        assert_eq!(rt_notes[0].pitch, 60);
+        assert_eq!(rt_notes[0].end_beats, 4.0);
+        assert_eq!(rt_notes[1].pitch, 72);
+        assert_eq!(rt_notes[1].start_beats, 4.0);
+        assert_eq!(rt_notes[1].end_beats, 6.0);
+    }
+
+    #[test]
+    fn playback_solo_block_silences_tracks_it_does_not_claim() {
+        let mut project = Project::default();
+        project.tracks = vec![
+            track_with_clip(1, vec![note(1, 60, 0.0, 16.0)]),
+            track_with_clip(2, vec![note(2, 50, 0.0, 16.0)]),
+        ];
+        project.pattern_lanes = vec![PatternLane {
+            id: 1,
+            name: String::from("Lane 1"),
+            blocks: vec![PatternBlock {
+                id: 1,
+                name: String::from("Solo"),
+                start_beats: 0.0,
+                length_beats: 4.0,
+                solo: true,
+                tracks: vec![PatternTrackContent {
+                    track_id: 1,
+                    notes: vec![note(10, 72, 0.0, 2.0)],
+                    row_mode: None,
+                }],
+            }],
+        }];
+
+        let track1_notes = track_rt_notes(&project, &project.tracks[0]);
+        assert_eq!(track1_notes.len(), 1);
+        assert_eq!(track1_notes[0].pitch, 72);
+
+        // Track 2 has no content in the soloed block, so it must be silent -
+        // playlist MIDI is ignored while any block is soloed.
+        let track2_notes = track_rt_notes(&project, &project.tracks[1]);
+        assert!(track2_notes.is_empty());
+    }
+
+    #[test]
+    fn playback_respects_mute_regardless_of_pattern_override() {
+        let mut project = Project::default();
+        let mut track = track_with_clip(1, vec![note(1, 60, 0.0, 4.0)]);
+        track.muted = true;
+        project.tracks = vec![track];
+        project.pattern_lanes = vec![PatternLane {
+            id: 1,
+            name: String::from("Lane 1"),
+            blocks: vec![PatternBlock {
+                id: 1,
+                name: String::from("Override"),
+                start_beats: 0.0,
+                length_beats: 4.0,
+                solo: false,
+                tracks: vec![PatternTrackContent {
+                    track_id: 1,
+                    notes: vec![note(10, 72, 0.0, 2.0)],
+                    row_mode: None,
+                }],
+            }],
+        }];
+
+        let rt_notes = track_rt_notes(&project, &project.tracks[0]);
+        assert!(rt_notes.is_empty());
+    }
 }

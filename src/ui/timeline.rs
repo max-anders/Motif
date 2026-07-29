@@ -124,7 +124,12 @@ pub fn is_ruler_timeline_pointer(ruler: Rect, pointer: Pos2) -> bool {
     ruler.contains(pointer) && pointer.x > ruler.left() + TIMELINE_GUTTER_WIDTH
 }
 
-/// Horizontal zoom via Ctrl/Cmd+Wheel and Shift+Wheel scroll when pointer is over viewport.
+/// Horizontal zoom via Ctrl/Cmd+Wheel when pointer is over viewport.
+///
+/// `gutter_width` is the left inset baked into scroll content before beat 0
+/// (playlist/devices legacy overlay used `TIMELINE_GUTTER_WIDTH`). Side-by-side
+/// layouts (piano-roll-style) pass `0.0` because the header column is outside
+/// the scroll viewport.
 pub fn apply_horizontal_wheel_controls(
     ui: &Ui,
     viewport: Rect,
@@ -132,6 +137,7 @@ pub fn apply_horizontal_wheel_controls(
     scroll_offset_x: &mut f32,
     min_beat_width: f32,
     max_beat_width: f32,
+    gutter_width: f32,
 ) {
     if !ui.rect_contains_pointer(viewport) {
         return;
@@ -149,8 +155,8 @@ pub fn apply_horizontal_wheel_controls(
         let old = *beat_width;
         let new = (old * zoom_delta).clamp(min_beat_width, max_beat_width);
         let actual = new / old;
-        if (actual - 1.0).abs() > f32::EPSILON && content_pos.x > TIMELINE_GUTTER_WIDTH {
-            let timeline_x_pos = content_pos.x - TIMELINE_GUTTER_WIDTH;
+        if (actual - 1.0).abs() > f32::EPSILON && content_pos.x > gutter_width {
+            let timeline_x_pos = content_pos.x - gutter_width;
             *scroll_offset_x += timeline_x_pos * (actual - 1.0);
         }
         *beat_width = new;
@@ -600,12 +606,11 @@ pub fn draw_timeline_grid_lines(
     let _ = timeline_left;
 }
 
-/// Shared playhead scrubbing: ruler click/drag (primary or secondary), body
-/// right-click drag, shift+click, optional body right-click seek.
+/// Shared playhead scrubbing: ruler primary click/drag, body Shift+click,
+/// Shift+secondary click/drag on ruler and body.
 ///
-/// Body secondary *drag* always scrubs (playlist + piano roll). When
-/// `seek_on_body_secondary` is false, body secondary *clicks* are left for the
-/// caller (e.g. piano roll: delete note under cursor, else seek).
+/// Plain secondary clicks on the body are left to the caller (e.g. delete note
+/// or clip under the cursor).
 pub fn handle_timeline_playhead_pointer(
     response: &Response,
     ruler: Rect,
@@ -614,7 +619,6 @@ pub fn handle_timeline_playhead_pointer(
     engine: &mut dyn DawEngine,
     dragging_playhead: &mut bool,
     beat_offset: f32,
-    seek_on_body_secondary: bool,
 ) -> bool {
     let full = ruler.union(body);
 
@@ -654,12 +658,15 @@ pub fn handle_timeline_playhead_pointer(
     }
 
     let shift_held = response.ctx.input(|input| input.modifiers.shift);
-    let primary_or_secondary_drag = response.drag_started_by(egui::PointerButton::Primary)
-        || response.drag_started_by(egui::PointerButton::Secondary);
-    let ruler_drag_started =
-        primary_or_secondary_drag && is_ruler_timeline_pointer(ruler, press_pos);
-    // Right-click drag on the arrangement / note grid scrubs like the ruler.
-    let body_secondary_drag_started = response.drag_started_by(egui::PointerButton::Secondary)
+    let primary_ruler_drag = response.drag_started_by(egui::PointerButton::Primary)
+        && is_ruler_timeline_pointer(ruler, press_pos);
+    let shift_secondary_ruler_drag = shift_held
+        && response.drag_started_by(egui::PointerButton::Secondary)
+        && is_ruler_timeline_pointer(ruler, press_pos);
+    let ruler_drag_started = primary_ruler_drag || shift_secondary_ruler_drag;
+    // Shift+right-click drag on the arrangement / note grid scrubs like the ruler.
+    let body_shift_secondary_drag_started = shift_held
+        && response.drag_started_by(egui::PointerButton::Secondary)
         && is_timeline_pointer(body, press_pos);
 
     if is_ruler_timeline_pointer(ruler, press_pos) || is_ruler_timeline_pointer(ruler, pointer) {
@@ -672,13 +679,16 @@ pub fn handle_timeline_playhead_pointer(
             seek_from_pointer(body, pointer, metrics, engine, beat_offset);
             return true;
         }
-        if response.clicked_by(egui::PointerButton::Secondary) && !response.dragged() {
+        if shift_held
+            && response.clicked_by(egui::PointerButton::Secondary)
+            && !response.dragged()
+        {
             seek_from_pointer(body, pointer, metrics, engine, beat_offset);
             return true;
         }
     }
 
-    if body_secondary_drag_started {
+    if body_shift_secondary_drag_started {
         *dragging_playhead = true;
         seek_from_pointer(body, pointer, metrics, engine, beat_offset);
         return true;
@@ -693,7 +703,7 @@ pub fn handle_timeline_playhead_pointer(
         return true;
     }
 
-    if seek_on_body_secondary
+    if shift_held
         && response.clicked_by(egui::PointerButton::Secondary)
         && !response.dragged()
         && is_timeline_pointer(body, pointer)

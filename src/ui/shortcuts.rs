@@ -20,6 +20,8 @@ pub enum Action {
     DeleteSelection,
     /// Delete the track under the pointer (track header hover).
     DeleteTrack,
+    /// Rename the selected track.
+    RenameTrack,
     CopySelection,
     CutSelection,
     PasteSelection,
@@ -83,6 +85,7 @@ impl<'de> Deserialize<'de> for Action {
             "toggle_loop" => Ok(Self::ToggleLoop),
             "delete_selection" => Ok(Self::DeleteSelection),
             "delete_track" => Ok(Self::DeleteTrack),
+            "rename_track" => Ok(Self::RenameTrack),
             "copy_selection" => Ok(Self::CopySelection),
             "cut_selection" => Ok(Self::CutSelection),
             "paste_selection" => Ok(Self::PasteSelection),
@@ -119,6 +122,7 @@ impl<'de> Deserialize<'de> for Action {
                     "toggle_loop",
                     "delete_selection",
                     "delete_track",
+                    "rename_track",
                     "copy_selection",
                     "cut_selection",
                     "paste_selection",
@@ -155,12 +159,13 @@ impl<'de> Deserialize<'de> for Action {
 
 impl Action {
     /// All actions in Settings / docs order (includes actions with no factory binding).
-    pub const ALL: [Self; 33] = [
+    pub const ALL: [Self; 34] = [
         Self::TogglePlayback,
         Self::PauseInPlace,
         Self::ToggleLoop,
         Self::DeleteSelection,
         Self::DeleteTrack,
+        Self::RenameTrack,
         Self::CopySelection,
         Self::CutSelection,
         Self::PasteSelection,
@@ -198,6 +203,7 @@ impl Action {
             Self::ToggleLoop => "Loop",
             Self::DeleteSelection => "Delete selection",
             Self::DeleteTrack => "Delete track",
+            Self::RenameTrack => "Rename track",
             Self::CopySelection => "Copy selection",
             Self::CutSelection => "Cut selection",
             Self::PasteSelection => "Paste",
@@ -427,6 +433,7 @@ impl ShortcutRegistry {
                     Binding::Key(Chord::new(Key::Backspace)),
                 ),
                 (Action::DeleteTrack, Binding::Key(Chord::new(Key::X))),
+                (Action::RenameTrack, Binding::Key(Chord::new(Key::F2))),
                 (Action::CopySelection, Binding::CopyEvent),
                 (Action::CutSelection, Binding::CutEvent),
                 (Action::PasteSelection, Binding::PasteEvent),

@@ -8,7 +8,8 @@ Experimental music sketchpad: piano roll, playlist, soft-synth piano, and CLAP/V
 
 | Area | State |
 |---|---|
-| Playlist (tracks / MIDI + audio clips) | Working |
+| Playlist (tracks / MIDI + audio clips) | Working (side-by-side track headers + ruler, like piano roll) |
+| Pattern strip + rack + row editor (section MIDI overrides) | Working (multi-lane strip + bake; rack inline step grid + Melody button; melody row editor) |
 | Per-track instruments (piano / CLAP / VST3) | Working (load off UI thread) |
 | Plugin manager (scan / cache) | Working (`plugin_cache.json` in CWD) |
 | Plugin editor GUI | Working on Linux (X11 / XWayland); not Wayland-native |
@@ -104,16 +105,20 @@ cargo run --release
 - **Shift+S** - exclusive solo the selected track (clears other solos; press again to clear; remappable). Same with **Shift+click S** on a track header / mixer strip, or right-click **Solo exclusive**
 - **Shift+M** - exclusive mute the selected track (clears solos and other mutes; only this track silent; press again to clear; remappable). Same with **Shift+click M** or right-click **Mute exclusive**
 - **Right-click track header → Duplicate track** - copy the track (clips, notes, FX, automation, plugin state) directly below; the duplicate is selected and undoable (Ctrl/Cmd+Z)
+- **Right-click track header → Rename track...** or **double-click the track name** on the header - rename the track (undoable with Ctrl/Cmd+Z)
+- **F2** - rename the selected track (remappable; same dialog as the header menu)
+- **Inspector** (optional right panel) - edit the selected track name in the Name field
 - **Right-click track header → Delete track** - remove the track and its clips (last track cannot be deleted; Ctrl/Cmd+Z restores a deleted track)
 - **X** (while pointer is over a track header) - delete that track (remappable; same rules as context-menu delete)
 - **Right-click track header** - open/close plugin editor (plugin tracks) or change instrument (searchable list)
 - **Ctrl/Cmd+Shift+E** - open/close plugin editor for the selected track (remappable)
 - **Shift+Q** - close a focused plugin editor window (remappable; default)
 - **Left-click / drag ruler** - move playhead (snapped to 1/16)
-- **Shift + left-click**, **right-click empty timeline**, or **right-click drag** on the timeline - move playhead
+- **Shift + left-click**, **Shift + right-click empty timeline**, or **Shift + right-click drag** on the timeline - move playhead
+- **Right-click clip** - delete clip
 - **Wheel** - scroll; **Shift+Wheel** - horizontal scroll; **Ctrl/Cmd+Wheel** - zoom time (zoom-out floor fits the whole arrangement in view)
 - **Scrollbars** - always-visible solid bars (drag to scroll)
-- Track headers stay pinned on the left while the timeline scrolls horizontally (vertical scroll stays synced); the beat ruler stays pinned to the top
+- Track headers are a fixed left column beside the timeline (not an overlay); vertical scroll stays synced with the lanes. The beat ruler is a fixed top strip beside the scrolling grid
 
 ### Piano roll (clip editor)
 
@@ -131,7 +136,8 @@ cargo run --release
 - **Drag left/right edge** - resize selected note(s) (same delta; stops at same-pitch neighbors and clip end)
 - **Press / drag piano keys** - audition pitches (active track instrument)
 - **Left-click / drag ruler** - move playhead (mapped to arrangement time)
-- **Shift + left-click**, **right-click empty grid**, or **right-click drag** on the grid - move playhead (right-click on a note still deletes)
+- **Shift + left-click**, **Shift + right-click empty grid**, or **Shift + right-click drag** on the grid - move playhead
+- **Right-click note** - delete note
 - **Delete / Backspace** - remove selected note(s)
 - **Ctrl/Cmd+C** - copy selected note(s)
 - **Ctrl/Cmd+X** - cut selected note(s)
@@ -143,6 +149,25 @@ cargo run --release
 - **Wheel** - scroll vertical; **Shift+Wheel** - horizontal; **Ctrl/Cmd+Wheel** - zoom time; **Alt+Wheel** - zoom keys
 - **Scrollbars** - always-visible solid bars (drag to scroll)
 - Piano keys stay pinned on the left while the grid scrolls horizontally (vertical scroll stays synced); the beat ruler stays pinned to the top
+
+### Pattern strip, rack, and row editor (section MIDI overrides)
+
+The pattern strip is one lane under the playlist for drafting section-scoped MIDI overrides (verse/chorus variations) without touching playlist clips.
+
+- **Left-click empty strip** - create a pattern block (4 beats)
+- **Drag empty strip** - marquee multi-select blocks
+- **Drag block body** - move selected block(s); **Shift + drag** - duplicate selection, then move the copies
+- **Drag block edges** - resize block length
+- **Solo button on a block** - solo it (only this block's rows play; ignores playlist MIDI and other patterns) while playing
+- **Delete / Backspace, Ctrl/Cmd+C/X/V/D** - same clip chords as the playlist, applied to the selected block(s)
+- **Double-click a block** - open the **pattern rack** for it
+- **Rack: inline step grid** - click or drag across cells to toggle 1/16 steps on each row (playhead highlights the active step while playing). Empty rows are **off** (playlist MIDI unchanged); rows with notes are **active** (or **muted** when a higher lane wins that track)
+- **Rack: Melody** - open the slim piano-roll editor for that row (melodic drafting, full playlist-piano-roll-parity gestures)
+- **Melody editor: Steps** - return to the rack with inline steps for that row
+- **Melody editor** - create / move / resize / delete / duplicate / marquee / Ctrl/Cmd+A / copy-paste / Ctrl/Cmd+Z undo on a slim piano roll scoped to the block length
+- **< Rack** button or **Escape** - back to the rack from melody; **Escape** from the rack goes back to the playlist
+- Deleting a playlist track drops that track's row from every pattern block
+- **Bake to playlist** - commits pattern MIDI inside the block window (replace overlapping playlist MIDI), then removes the pattern block
 
 ### Transport
 

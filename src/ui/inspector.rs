@@ -5,6 +5,7 @@ use egui::Ui;
 use crate::model::{EditHistory, Project, MAX_GAIN_DB, MIN_GAIN_DB};
 use crate::ui::macro_panel::macro_target_label;
 use crate::ui::theme::ThemeColors;
+use crate::ui::track_rename::apply_track_name_if_changed;
 
 /// Draw the inspector contents for `selected_track` into an already-opened side panel.
 pub fn show_inspector(
@@ -38,7 +39,15 @@ pub fn show_inspector(
         return;
     };
 
-    ui.label(egui::RichText::new(&track.name).strong().color(theme.text_primary));
+    ui.label(egui::RichText::new("Name").strong());
+    let mut name = track.name.clone();
+    let name_response = ui.add(
+        egui::TextEdit::singleline(&mut name).desired_width(ui.available_width()),
+    );
+    if name_response.lost_focus() && name != track.name {
+        apply_track_name_if_changed(history, project, track_id, &track.name, &name);
+    }
+
     ui.label(
         egui::RichText::new(format!("Id {}", track.id))
             .color(theme.text_muted)
@@ -55,17 +64,6 @@ pub fn show_inspector(
 
     ui.add_space(8.0);
     ui.label(egui::RichText::new("Mixer").strong());
-
-    let mut name = track.name.clone();
-    let name_response = ui.add(
-        egui::TextEdit::singleline(&mut name).desired_width(ui.available_width()),
-    );
-    if name_response.lost_focus() && name != track.name {
-        history.push_before(project.clone());
-        if let Some(t) = project.track_mut(track_id) {
-            t.name = name;
-        }
-    }
 
     let mut gain = track.gain_db;
     let gain_response = ui.add(egui::Slider::new(&mut gain, MIN_GAIN_DB..=MAX_GAIN_DB).text("Gain (dB)"));

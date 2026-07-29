@@ -93,6 +93,71 @@ pub struct ThemeColors {
     #[serde(with = "color32_serde")]
     pub clip_note_preview: Color32,
 
+    // Pattern strip (section MIDI overrides)
+    #[serde(default = "default_pattern_block_fill", with = "color32_serde")]
+    pub pattern_block_fill: Color32,
+    #[serde(
+        default = "default_pattern_block_fill_selected",
+        with = "color32_serde"
+    )]
+    pub pattern_block_fill_selected: Color32,
+    #[serde(default = "default_pattern_block_stroke", with = "color32_serde")]
+    pub pattern_block_stroke: Color32,
+    #[serde(
+        default = "default_pattern_block_stroke_selected",
+        with = "color32_serde"
+    )]
+    pub pattern_block_stroke_selected: Color32,
+    #[serde(default = "default_pattern_block_label", with = "color32_serde")]
+    pub pattern_block_label: Color32,
+    #[serde(default = "default_pattern_block_solo", with = "color32_serde")]
+    pub pattern_block_solo: Color32,
+    #[serde(default = "default_clip_ghosted", with = "color32_serde")]
+    pub clip_ghosted: Color32,
+
+    // Pattern rack (section MIDI row editor)
+    #[serde(default = "default_pattern_rack_row_bg", with = "color32_serde")]
+    pub pattern_rack_row_bg: Color32,
+    #[serde(
+        default = "default_pattern_rack_row_selected",
+        with = "color32_serde"
+    )]
+    pub pattern_rack_row_selected: Color32,
+    #[serde(
+        default = "default_pattern_rack_row_inactive",
+        with = "color32_serde"
+    )]
+    pub pattern_rack_row_inactive: Color32,
+    #[serde(
+        default = "default_pattern_rack_row_suppressed",
+        with = "color32_serde"
+    )]
+    pub pattern_rack_row_suppressed: Color32,
+    #[serde(default = "default_pattern_rack_content_bg", with = "color32_serde")]
+    pub pattern_rack_content_bg: Color32,
+    #[serde(
+        default = "default_pattern_rack_step_placeholder_bg",
+        with = "color32_serde"
+    )]
+    pub pattern_rack_step_placeholder_bg: Color32,
+    #[serde(
+        default = "default_pattern_rack_step_placeholder_text",
+        with = "color32_serde"
+    )]
+    pub pattern_rack_step_placeholder_text: Color32,
+
+    // Pattern row editor: step grid (Phase D2)
+    #[serde(default = "default_step_cell_bg", with = "color32_serde")]
+    pub step_cell_bg: Color32,
+    #[serde(default = "default_step_cell_bg_accent", with = "color32_serde")]
+    pub step_cell_bg_accent: Color32,
+    #[serde(default = "default_step_cell_active", with = "color32_serde")]
+    pub step_cell_active: Color32,
+    #[serde(default = "default_step_cell_border", with = "color32_serde")]
+    pub step_cell_border: Color32,
+    #[serde(default = "default_step_cell_playhead", with = "color32_serde")]
+    pub step_cell_playhead: Color32,
+
     // Piano roll
     #[serde(with = "color32_serde")]
     pub key_row_black: Color32,
@@ -190,6 +255,27 @@ impl ThemeColors {
             clip_stroke_selected: Color32::WHITE,
             clip_label: Color32::from_rgb(240, 240, 250),
             clip_note_preview: Color32::from_rgba_unmultiplied(255, 255, 255, 120),
+
+            pattern_block_fill: default_pattern_block_fill(),
+            pattern_block_fill_selected: default_pattern_block_fill_selected(),
+            pattern_block_stroke: default_pattern_block_stroke(),
+            pattern_block_stroke_selected: default_pattern_block_stroke_selected(),
+            pattern_block_label: default_pattern_block_label(),
+            pattern_block_solo: default_pattern_block_solo(),
+            clip_ghosted: default_clip_ghosted(),
+
+            pattern_rack_row_bg: default_pattern_rack_row_bg(),
+            pattern_rack_row_selected: default_pattern_rack_row_selected(),
+            pattern_rack_row_inactive: default_pattern_rack_row_inactive(),
+            pattern_rack_row_suppressed: default_pattern_rack_row_suppressed(),
+            pattern_rack_content_bg: default_pattern_rack_content_bg(),
+            pattern_rack_step_placeholder_bg: default_pattern_rack_step_placeholder_bg(),
+            pattern_rack_step_placeholder_text: default_pattern_rack_step_placeholder_text(),
+            step_cell_bg: default_step_cell_bg(),
+            step_cell_bg_accent: default_step_cell_bg_accent(),
+            step_cell_active: default_step_cell_active(),
+            step_cell_border: default_step_cell_border(),
+            step_cell_playhead: default_step_cell_playhead(),
 
             key_row_black: Color32::from_rgb(26, 26, 32),
             key_row_white: Color32::from_rgb(32, 32, 40),
@@ -303,6 +389,81 @@ impl ThemeColors {
             ),
             ("Playlist", "Clip label", &mut self.clip_label),
             ("Playlist", "Clip note preview", &mut self.clip_note_preview),
+            ("Playlist", "Pattern block fill", &mut self.pattern_block_fill),
+            (
+                "Playlist",
+                "Pattern block fill selected",
+                &mut self.pattern_block_fill_selected,
+            ),
+            ("Playlist", "Pattern block stroke", &mut self.pattern_block_stroke),
+            (
+                "Playlist",
+                "Pattern block stroke selected",
+                &mut self.pattern_block_stroke_selected,
+            ),
+            ("Playlist", "Pattern block label", &mut self.pattern_block_label),
+            ("Playlist", "Pattern block solo", &mut self.pattern_block_solo),
+            (
+                "Playlist",
+                "Clip ghosted (pattern override)",
+                &mut self.clip_ghosted,
+            ),
+            (
+                "Pattern rack",
+                "Row background",
+                &mut self.pattern_rack_row_bg,
+            ),
+            (
+                "Pattern rack",
+                "Row selected",
+                &mut self.pattern_rack_row_selected,
+            ),
+            (
+                "Pattern rack",
+                "Row inactive",
+                &mut self.pattern_rack_row_inactive,
+            ),
+            (
+                "Pattern rack",
+                "Row suppressed (lower lane)",
+                &mut self.pattern_rack_row_suppressed,
+            ),
+            (
+                "Pattern rack",
+                "Content background",
+                &mut self.pattern_rack_content_bg,
+            ),
+            (
+                "Pattern rack",
+                "Step placeholder background",
+                &mut self.pattern_rack_step_placeholder_bg,
+            ),
+            (
+                "Pattern rack",
+                "Step placeholder text",
+                &mut self.pattern_rack_step_placeholder_text,
+            ),
+            ("Pattern row editor", "Step cell background", &mut self.step_cell_bg),
+            (
+                "Pattern row editor",
+                "Step cell background (beat accent)",
+                &mut self.step_cell_bg_accent,
+            ),
+            (
+                "Pattern row editor",
+                "Step cell active",
+                &mut self.step_cell_active,
+            ),
+            (
+                "Pattern row editor",
+                "Step cell border",
+                &mut self.step_cell_border,
+            ),
+            (
+                "Pattern row editor",
+                "Step cell playhead",
+                &mut self.step_cell_playhead,
+            ),
             (
                 "Piano roll",
                 "Key row (black pitch)",
@@ -530,6 +691,82 @@ fn default_scrollbar_handle_hovered() -> Color32 {
 
 fn default_scrollbar_handle_active() -> Color32 {
     Color32::from_rgb(100, 170, 255)
+}
+
+fn default_pattern_block_fill() -> Color32 {
+    Color32::from_rgb(90, 70, 140)
+}
+
+fn default_pattern_block_fill_selected() -> Color32 {
+    Color32::from_rgb(130, 100, 200)
+}
+
+fn default_pattern_block_stroke() -> Color32 {
+    Color32::from_rgb(160, 140, 210)
+}
+
+fn default_pattern_block_stroke_selected() -> Color32 {
+    Color32::from_rgb(210, 190, 255)
+}
+
+fn default_pattern_block_label() -> Color32 {
+    Color32::from_rgb(235, 230, 250)
+}
+
+fn default_pattern_block_solo() -> Color32 {
+    Color32::from_rgb(240, 190, 90)
+}
+
+fn default_clip_ghosted() -> Color32 {
+    Color32::from_rgb(60, 110, 180)
+}
+
+fn default_pattern_rack_row_bg() -> Color32 {
+    Color32::from_rgb(30, 30, 38)
+}
+
+fn default_pattern_rack_row_selected() -> Color32 {
+    Color32::from_rgb(42, 38, 58)
+}
+
+fn default_pattern_rack_row_inactive() -> Color32 {
+    Color32::from_rgb(24, 24, 30)
+}
+
+fn default_pattern_rack_row_suppressed() -> Color32 {
+    Color32::from_rgb(20, 20, 26)
+}
+
+fn default_pattern_rack_content_bg() -> Color32 {
+    Color32::from_rgb(18, 18, 24)
+}
+
+fn default_pattern_rack_step_placeholder_bg() -> Color32 {
+    Color32::from_rgb(36, 36, 46)
+}
+
+fn default_pattern_rack_step_placeholder_text() -> Color32 {
+    Color32::from_rgb(150, 150, 170)
+}
+
+fn default_step_cell_bg() -> Color32 {
+    Color32::from_rgb(40, 40, 52)
+}
+
+fn default_step_cell_bg_accent() -> Color32 {
+    Color32::from_rgb(48, 48, 62)
+}
+
+fn default_step_cell_active() -> Color32 {
+    Color32::from_rgb(120, 190, 255)
+}
+
+fn default_step_cell_border() -> Color32 {
+    Color32::from_rgb(64, 64, 80)
+}
+
+fn default_step_cell_playhead() -> Color32 {
+    Color32::from_rgba_unmultiplied(255, 255, 255, 40)
 }
 
 mod color32_serde {

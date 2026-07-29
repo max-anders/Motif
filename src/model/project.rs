@@ -9,8 +9,12 @@ use super::clipboard::{ClipboardClip, ClipboardNote};
 use super::instrument::{PluginFormat, TrackInstrument};
 use super::mixer::{Device, Macro, MacroMapping, MacroTarget};
 use super::modulator::{LfoModulator, LfoRate};
+use super::pattern::{
+    override_windows_for_track, pattern_row_suppressed_by_higher_lane, resolve_midi_for_track,
+    solo_pattern_block, ResolvedMidiNote,
+};
 use super::track::{migrate_notes_to_clip, Track};
-use super::Note;
+use super::{PatternLane, Note};
 
 pub const DEFAULT_BPM: f32 = 120.0;
 pub const DEFAULT_BEATS_PER_BAR: f32 = 4.0;
@@ -25,6 +29,8 @@ pub const MIN_LOOP_SPAN_BEATS: f32 = 1.0;
 pub const MIN_PITCH: u8 = 0;
 pub const MAX_PITCH: u8 = 127;
 pub const DEFAULT_NOTE_DURATION_BEATS: f32 = 1.0;
+/// Default step-grid pitch for an empty pattern row (a low kick-drum note).
+pub const DEFAULT_STEP_PITCH: u8 = 36;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Project {
@@ -43,6 +49,9 @@ pub struct Project {
     #[serde(default)]
     pub master_gain_db: f32,
     pub tracks: Vec<Track>,
+    /// Section MIDI overrides; lane order is top-to-bottom priority (index 0 wins).
+    #[serde(default)]
+    pub pattern_lanes: Vec<PatternLane>,
     next_note_id: u64,
     next_clip_id: u64,
     next_track_id: u64,
@@ -58,6 +67,12 @@ pub struct Project {
     /// Missing on projects saved before macro ids; starts at 1.
     #[serde(default = "default_next_macro_id")]
     next_macro_id: u64,
+    /// Missing on projects saved before pattern lanes; starts at 1.
+    #[serde(default = "default_next_pattern_lane_id")]
+    next_pattern_lane_id: u64,
+    /// Missing on projects saved before pattern lanes; starts at 1.
+    #[serde(default = "default_next_pattern_block_id")]
+    next_pattern_block_id: u64,
 }
 
 fn default_next_device_id() -> u64 {
@@ -73,6 +88,14 @@ fn default_next_modulator_id() -> u64 {
 }
 
 fn default_next_macro_id() -> u64 {
+    1
+}
+
+fn default_next_pattern_lane_id() -> u64 {
+    1
+}
+
+fn default_next_pattern_block_id() -> u64 {
     1
 }
 
@@ -96,6 +119,7 @@ impl Default for Project {
             loop_enabled: false,
             master_gain_db: 0.0,
             tracks: Vec::new(),
+            pattern_lanes: Vec::new(),
             next_note_id: 1,
             next_clip_id: 2,
             next_track_id: 2,
@@ -103,6 +127,8 @@ impl Default for Project {
             next_automation_lane_id: 1,
             next_modulator_id: 1,
             next_macro_id: 1,
+            next_pattern_lane_id: 1,
+            next_pattern_block_id: 1,
         };
         let track_id = project.add_track("Track 1", TrackInstrument::BuiltInPiano);
         project.add_clip_to_track(track_id, 0.0, 4.0);
@@ -120,6 +146,11 @@ enum OverlapTrim {
         tail_start: f32,
         tail_end: f32,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BakeError {
+    BlockNotFound,
 }
 
 impl Project {
@@ -1202,7 +1233,17 @@ impl Project {
         }
         let before = self.tracks.len();
         self.tracks.retain(|track| track.id != track_id);
-        self.tracks.len() != before
+        let removed = self.tracks.len() != before;
+        if removed {
+            // Pattern rows reference tracks by id; drop the now-orphaned row from
+            // every block so a deleted track cannot leave dead content behind.
+            for lane in &mut self.pattern_lanes {
+                for block in &mut lane.blocks {
+                    block.tracks.retain(|row| row.track_id != track_id);
+                }
+            }
+        }
+        removed
     }
 
     /// Deep-copy a track (clips, notes, FX, automation, modulators, macros, plugin
@@ -2042,6 +2083,7 @@ impl Project {
             loop_enabled: false,
             master_gain_db: 0.0,
             tracks: vec![track],
+            pattern_lanes: Vec::new(),
             next_note_id: legacy.next_note_id,
             next_clip_id: 2,
             next_track_id: 2,
@@ -2049,7 +2091,1177 @@ impl Project {
             next_automation_lane_id: 1,
             next_modulator_id: 1,
             next_macro_id: 1,
+            next_pattern_lane_id: 1,
+            next_pattern_block_id: 1,
         })
+    }
+
+    /// MIDI for one track after pattern-lane overrides (playlist + top-lane-wins + solo).
+    pub fn resolved_midi_for_track(&self, track_id: u64) -> Vec<ResolvedMidiNote> {
+        resolve_midi_for_track(self, track_id)
+    }
+
+    /// Active solo pattern block, if any (top lane first).
+    pub fn solo_pattern_block(&self) -> Option<&super::pattern::PatternBlock> {
+        solo_pattern_block(&self.pattern_lanes)
+    }
+
+    pub fn next_pattern_lane_id(&self) -> u64 {
+        self.next_pattern_lane_id
+    }
+
+    pub fn bump_pattern_lane_id(&mut self) {
+        self.next_pattern_lane_id += 1;
+    }
+
+    pub fn next_pattern_block_id(&self) -> u64 {
+        self.next_pattern_block_id
+    }
+
+    pub fn bump_pattern_block_id(&mut self) {
+        self.next_pattern_block_id += 1;
+    }
+
+    /// Ensure at least one pattern lane exists (Phase C strip default).
+    pub fn ensure_pattern_lane(&mut self) -> u64 {
+        if let Some(lane) = self.pattern_lanes.first() {
+            return lane.id;
+        }
+        let id = self.next_pattern_lane_id();
+        self.bump_pattern_lane_id();
+        self.pattern_lanes.push(PatternLane {
+            id,
+            name: String::from("Pattern"),
+            blocks: Vec::new(),
+        });
+        id
+    }
+
+    pub fn pattern_lane(&self, lane_id: u64) -> Option<&PatternLane> {
+        self.pattern_lanes.iter().find(|lane| lane.id == lane_id)
+    }
+
+    pub fn pattern_lane_mut(&mut self, lane_id: u64) -> Option<&mut PatternLane> {
+        self.pattern_lanes.iter_mut().find(|lane| lane.id == lane_id)
+    }
+
+    pub fn pattern_block(&self, block_id: u64) -> Option<&super::pattern::PatternBlock> {
+        self.pattern_lanes
+            .iter()
+            .flat_map(|lane| lane.blocks.iter())
+            .find(|block| block.id == block_id)
+    }
+
+    pub fn pattern_block_mut(
+        &mut self,
+        block_id: u64,
+    ) -> Option<&mut super::pattern::PatternBlock> {
+        self.pattern_lanes
+            .iter_mut()
+            .flat_map(|lane| lane.blocks.iter_mut())
+            .find(|block| block.id == block_id)
+    }
+
+    pub fn pattern_lane_id_for_block(&self, block_id: u64) -> Option<u64> {
+        self.pattern_lanes
+            .iter()
+            .find(|lane| lane.blocks.iter().any(|block| block.id == block_id))
+            .map(|lane| lane.id)
+    }
+
+    /// Beat ranges where playlist MIDI is overridden for one track (UI ghost dimming).
+    pub fn pattern_override_windows_for_track(&self, track_id: u64) -> Vec<(f32, f32)> {
+        override_windows_for_track(self, track_id)
+    }
+
+    /// True when a higher-priority lane block silences this row for the track (rack dimming).
+    pub fn pattern_row_suppressed_by_higher_lane(&self, block_id: u64, track_id: u64) -> bool {
+        pattern_row_suppressed_by_higher_lane(self, block_id, track_id)
+    }
+
+    /// Whether `[start_beats, start_beats + length_beats)` is free within one pattern lane.
+    pub fn pattern_block_range_free(
+        &self,
+        lane_id: u64,
+        start_beats: f32,
+        length_beats: f32,
+        ignore_ids: &[u64],
+    ) -> bool {
+        let Some(lane) = self.pattern_lane(lane_id) else {
+            return false;
+        };
+        let start = Self::snap_beats(start_beats.max(0.0));
+        let end = start + Self::snap_beats(length_beats.max(SNAP_BEATS));
+        !lane.blocks.iter().any(|block| {
+            !ignore_ids.contains(&block.id)
+                && Self::beat_ranges_overlap(start, end, block.start_beats, block.end_beats())
+        })
+    }
+
+    pub fn add_pattern_block(
+        &mut self,
+        lane_id: u64,
+        start_beats: f32,
+        length_beats: f32,
+    ) -> Option<u64> {
+        let start = Self::snap_beats(start_beats.max(0.0));
+        let length = Self::snap_beats(length_beats.max(SNAP_BEATS));
+        if !self.pattern_block_range_free(lane_id, start, length, &[]) {
+            return None;
+        }
+        let block_number = self.pattern_lane(lane_id)?.blocks.len() + 1;
+        let block_id = self.next_pattern_block_id();
+        self.bump_pattern_block_id();
+        let block = super::pattern::PatternBlock {
+            id: block_id,
+            name: format!("Pattern {block_number}"),
+            start_beats: start,
+            length_beats: length,
+            solo: false,
+            tracks: Vec::new(),
+        };
+        self.pattern_lane_mut(lane_id)?.blocks.push(block);
+        Some(block_id)
+    }
+
+    pub fn remove_pattern_block(&mut self, block_id: u64) -> bool {
+        let Some(lane_id) = self.pattern_lane_id_for_block(block_id) else {
+            return false;
+        };
+        let Some(lane) = self.pattern_lane_mut(lane_id) else {
+            return false;
+        };
+        let before = lane.blocks.len();
+        lane.blocks.retain(|block| block.id != block_id);
+        lane.blocks.len() != before
+    }
+
+    /// Add another pattern lane below existing ones (index 0 = top priority).
+    pub fn add_pattern_lane(&mut self) -> u64 {
+        let number = self.pattern_lanes.len() + 1;
+        let id = self.next_pattern_lane_id();
+        self.bump_pattern_lane_id();
+        self.pattern_lanes.push(PatternLane {
+            id,
+            name: format!("Pattern {number}"),
+            blocks: Vec::new(),
+        });
+        id
+    }
+
+    /// Whether baking this block would split, trim, or delete existing MIDI clips.
+    pub fn bake_would_modify_playlist(&self, block_id: u64) -> bool {
+        let Some(block) = self.pattern_block(block_id) else {
+            return false;
+        };
+        let w_start = block.start_beats;
+        let w_end = block.end_beats();
+        for content in &block.tracks {
+            if content.notes.is_empty() {
+                continue;
+            }
+            let Some(track) = self.track(content.track_id) else {
+                continue;
+            };
+            for clip in &track.clips {
+                if clip.as_midi().is_some()
+                    && Self::beat_ranges_overlap(
+                        clip.start_beats(),
+                        clip.end_beats(),
+                        w_start,
+                        w_end,
+                    )
+                {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Materialize pattern MIDI into playlist clips for the block window, then remove the block.
+    pub fn bake_pattern_block(&mut self, block_id: u64) -> Result<(), BakeError> {
+        let block = self
+            .pattern_block(block_id)
+            .cloned()
+            .ok_or(BakeError::BlockNotFound)?;
+
+        let tracks_with_notes: Vec<_> = block
+            .tracks
+            .iter()
+            .filter(|row| !row.notes.is_empty())
+            .collect();
+
+        if tracks_with_notes.is_empty() {
+            self.remove_pattern_block(block_id);
+            return Ok(());
+        }
+
+        let w_start = block.start_beats;
+        let w_end = block.end_beats();
+        let block_name = block.name.clone();
+        let block_length = block.length_beats;
+
+        for content in tracks_with_notes {
+            let track_id = content.track_id;
+            self.clear_midi_clips_in_window(track_id, w_start, w_end);
+
+            let track_name = self
+                .track(track_id)
+                .map(|track| track.name.clone())
+                .unwrap_or_else(|| format!("Track {track_id}"));
+            let clip_name = if block_name.is_empty() {
+                format!("{track_name} (baked)")
+            } else {
+                block_name.clone()
+            };
+            let notes = self.clone_pattern_notes_for_bake(&content.notes, block_length);
+            self.insert_baked_midi_clip(track_id, w_start, block_length, clip_name, notes);
+        }
+
+        self.remove_pattern_block(block_id);
+        Ok(())
+    }
+
+    /// Clear MIDI clips overlapping `[w_start, w_end)` on one track (audio untouched).
+    fn clear_midi_clips_in_window(&mut self, track_id: u64, w_start: f32, w_end: f32) {
+        let victims: Vec<(u64, f32, f32, Clip)> = self
+            .track(track_id)
+            .map(|track| {
+                track
+                    .clips
+                    .iter()
+                    .filter_map(|clip| {
+                        let midi = clip.as_midi()?;
+                        Some((
+                            clip.id(),
+                            clip.start_beats(),
+                            clip.end_beats(),
+                            Clip::Midi(midi.clone()),
+                        ))
+                    })
+                    .filter(|(_, v_start, v_end, _)| {
+                        Self::beat_ranges_overlap(*v_start, *v_end, w_start, w_end)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        for (v_id, v_start, v_end, victim) in victims {
+            let Some(action) = Self::overlap_trim_action(v_start, v_end, w_start, w_end) else {
+                continue;
+            };
+            match action {
+                OverlapTrim::Delete => {
+                    if let Some(track) = self.track_mut(track_id) {
+                        track.remove_clip(v_id);
+                    }
+                }
+                OverlapTrim::TrimStart { new_start } => {
+                    let length = v_end - new_start;
+                    if length < SNAP_BEATS {
+                        if let Some(track) = self.track_mut(track_id) {
+                            track.remove_clip(v_id);
+                        }
+                    } else if let Some(clip) = self.clip_mut(v_id) {
+                        clip.set_start_beats(new_start);
+                        clip.set_length_beats(length);
+                    }
+                }
+                OverlapTrim::TrimEnd { new_end } => {
+                    let length = new_end - v_start;
+                    if length < SNAP_BEATS {
+                        if let Some(track) = self.track_mut(track_id) {
+                            track.remove_clip(v_id);
+                        }
+                    } else if let Some(clip) = self.clip_mut(v_id) {
+                        clip.set_length_beats(length);
+                    }
+                }
+                OverlapTrim::Split {
+                    left_end,
+                    tail_start,
+                    tail_end,
+                } => {
+                    let left_length = left_end - v_start;
+                    if left_length < SNAP_BEATS {
+                        if let Some(track) = self.track_mut(track_id) {
+                            track.remove_clip(v_id);
+                        }
+                    } else if let Some(clip) = self.clip_mut(v_id) {
+                        clip.set_length_beats(left_length);
+                    }
+                    let tail_length = tail_end - tail_start;
+                    if tail_length >= SNAP_BEATS {
+                        self.push_clip_tail_segment(track_id, &victim, tail_start, tail_length);
+                    }
+                }
+            }
+        }
+    }
+
+    fn clone_pattern_notes_for_bake(&mut self, notes: &[Note], block_length: f32) -> Vec<Note> {
+        let mut baked = Vec::new();
+        for note in notes {
+            if note.start_beats >= block_length {
+                continue;
+            }
+            let end = note.end_beats().min(block_length);
+            let duration = end - note.start_beats;
+            if duration < SNAP_BEATS {
+                continue;
+            }
+            let id = self.next_note_id();
+            self.bump_note_id();
+            baked.push(Note {
+                id,
+                pitch: note.pitch,
+                start_beats: Self::snap_beats(note.start_beats),
+                duration_beats: Self::snap_beats(duration),
+                velocity: note.velocity,
+            });
+        }
+        baked
+    }
+
+    fn insert_baked_midi_clip(
+        &mut self,
+        track_id: u64,
+        start_beats: f32,
+        length_beats: f32,
+        name: String,
+        notes: Vec<Note>,
+    ) -> Option<u64> {
+        let start = Self::snap_beats(start_beats.max(0.0));
+        let length = Self::snap_beats(length_beats.max(SNAP_BEATS));
+        let clip_id = self.next_clip_id();
+        self.bump_clip_id();
+        let clip = MidiClip {
+            id: clip_id,
+            name,
+            start_beats: start,
+            length_beats: length,
+            notes,
+        };
+        self.track_mut(track_id)?.clips.push(Clip::Midi(clip));
+        Some(clip_id)
+    }
+
+    pub fn set_pattern_block_solo(&mut self, block_id: u64, solo: bool) {
+        if solo {
+            for lane in &mut self.pattern_lanes {
+                for block in &mut lane.blocks {
+                    block.solo = block.id == block_id;
+                }
+            }
+        } else if let Some(block) = self.pattern_block_mut(block_id) {
+            block.solo = false;
+        }
+    }
+
+    pub fn toggle_pattern_block_solo(&mut self, block_id: u64) {
+        let solo = self
+            .pattern_block(block_id)
+            .map(|block| !block.solo)
+            .unwrap_or(false);
+        self.set_pattern_block_solo(block_id, solo);
+    }
+
+    /// Whether a playlist track has an explicit row entry in this pattern block.
+    /// Empty entries are still "off" for overrides; presence mainly stores notes / row mode.
+    pub fn pattern_row_included(&self, block_id: u64, track_id: u64) -> bool {
+        self.pattern_block(block_id)
+            .and_then(|block| block.track_content(track_id))
+            .is_some()
+    }
+
+    /// Ensure a track row exists (for notes / row-mode). Empty rows do not override playlist MIDI.
+    /// Passing `included: false` removes the row entry (and its notes).
+    pub fn set_pattern_row_included(
+        &mut self,
+        block_id: u64,
+        track_id: u64,
+        included: bool,
+    ) -> bool {
+        let Some(block) = self.pattern_block_mut(block_id) else {
+            return false;
+        };
+        if included {
+            if block.track_content(track_id).is_none() {
+                block.tracks.push(super::pattern::PatternTrackContent {
+                    track_id,
+                    notes: Vec::new(),
+                    row_mode: None,
+                });
+            }
+        } else {
+            block.tracks.retain(|row| row.track_id != track_id);
+        }
+        true
+    }
+
+    /// Clamp a multi-block move delta so blocks stay at or after beat 0.
+    pub fn clamp_pattern_block_move_delta(
+        &self,
+        lane_id: u64,
+        originals: &[(u64, f32, f32)],
+        mut delta: f32,
+        ignore_ids: &[u64],
+    ) -> f32 {
+        if originals.is_empty() {
+            return delta;
+        }
+        let min_start = originals
+            .iter()
+            .map(|(_, start, _)| *start)
+            .fold(f32::INFINITY, f32::min);
+        if min_start + delta < 0.0 {
+            delta = -min_start;
+        }
+        if self.pattern_move_would_overlap(lane_id, originals, delta, ignore_ids) {
+            return 0.0;
+        }
+        delta
+    }
+
+    fn pattern_move_would_overlap(
+        &self,
+        lane_id: u64,
+        originals: &[(u64, f32, f32)],
+        delta: f32,
+        ignore_ids: &[u64],
+    ) -> bool {
+        let Some(lane) = self.pattern_lane(lane_id) else {
+            return true;
+        };
+        let moving: std::collections::HashSet<u64> =
+            originals.iter().map(|(id, _, _)| *id).collect();
+        for (id, start, length) in originals {
+            let start = start + delta;
+            let end = start + length;
+            for block in &lane.blocks {
+                if ignore_ids.contains(&block.id) || moving.contains(&block.id) {
+                    continue;
+                }
+                if Self::beat_ranges_overlap(start, end, block.start_beats, block.end_beats()) {
+                    return true;
+                }
+            }
+            let _ = id;
+        }
+        false
+    }
+
+    pub fn pattern_block_resize_start_bound(
+        &self,
+        lane_id: u64,
+        block_id: u64,
+        current_start: f32,
+    ) -> f32 {
+        let Some(lane) = self.pattern_lane(lane_id) else {
+            return 0.0;
+        };
+        lane.blocks
+            .iter()
+            .filter(|block| block.id != block_id && block.end_beats() <= current_start + f32::EPSILON)
+            .map(|block| block.end_beats())
+            .fold(0.0_f32, f32::max)
+    }
+
+    pub fn pattern_block_resize_end_bound(
+        &self,
+        lane_id: u64,
+        block_id: u64,
+        current_end: f32,
+    ) -> f32 {
+        let Some(lane) = self.pattern_lane(lane_id) else {
+            return f32::INFINITY;
+        };
+        lane.blocks
+            .iter()
+            .filter(|block| block.id != block_id && block.start_beats >= current_end - f32::EPSILON)
+            .map(|block| block.start_beats)
+            .fold(f32::INFINITY, f32::min)
+    }
+
+    /// Deep-copy pattern blocks offset in time within the same lane.
+    pub fn duplicate_pattern_blocks(
+        &mut self,
+        block_ids: &[u64],
+        delta_beats: f32,
+        allow_overlap_sources: bool,
+    ) -> Vec<(u64, u64)> {
+        #[derive(Clone)]
+        struct BlockTemplate {
+            source_id: u64,
+            lane_id: u64,
+            name: String,
+            start_beats: f32,
+            length_beats: f32,
+            solo: bool,
+            tracks: Vec<super::pattern::PatternTrackContent>,
+        }
+
+        let mut templates = Vec::with_capacity(block_ids.len());
+        for &block_id in block_ids {
+            let Some(lane_id) = self.pattern_lane_id_for_block(block_id) else {
+                continue;
+            };
+            let Some(block) = self.pattern_block(block_id) else {
+                continue;
+            };
+            templates.push(BlockTemplate {
+                source_id: block_id,
+                lane_id,
+                name: block.name.clone(),
+                start_beats: block.start_beats,
+                length_beats: block.length_beats,
+                solo: block.solo,
+                tracks: block.tracks.clone(),
+            });
+        }
+
+        let source_ignore: Vec<u64> = if allow_overlap_sources {
+            templates.iter().map(|t| t.source_id).collect()
+        } else {
+            Vec::new()
+        };
+
+        let mut created = Vec::with_capacity(templates.len());
+        let mut placed: Vec<(f32, f32)> = Vec::new();
+        for template in templates {
+            let start = Self::snap_beats((template.start_beats + delta_beats).max(0.0));
+            let length = Self::snap_beats(template.length_beats.max(SNAP_BEATS));
+            let end = start + length;
+            if !self.pattern_block_range_free(template.lane_id, start, length, &source_ignore) {
+                continue;
+            }
+            if placed
+                .iter()
+                .any(|(p_start, p_end)| Self::beat_ranges_overlap(start, end, *p_start, *p_end))
+            {
+                continue;
+            }
+            let block_id = self.next_pattern_block_id();
+            self.bump_pattern_block_id();
+            let mut tracks = template.tracks;
+            for row in &mut tracks {
+                for note in &mut row.notes {
+                    let id = self.next_note_id();
+                    self.bump_note_id();
+                    note.id = id;
+                }
+            }
+            let block = super::pattern::PatternBlock {
+                id: block_id,
+                name: format!("{} copy", template.name),
+                start_beats: start,
+                length_beats: length,
+                solo: false,
+                tracks,
+            };
+            if let Some(lane) = self.pattern_lane_mut(template.lane_id) {
+                lane.blocks.push(block);
+                placed.push((start, end));
+                created.push((template.source_id, block_id));
+            }
+        }
+        created
+    }
+
+    // ---- Pattern row editing (Phase D2: step grid + pattern-scoped piano roll) ----
+    //
+    // These mirror the clip-note editing methods above (`add_note_to_clip`,
+    // `clamp_note_move_deltas`, `resolve_note_move_overlaps`,
+    // `note_resize_start_bound`/`end_bound`, `clamp_note_resize_start_delta`/`end_delta`,
+    // `duplicate_notes_in_clip`) but operate on one `PatternTrackContent` (a pattern
+    // block's row for a track) instead of a `MidiClip`. They share the same pure
+    // math (`Self::snap_beats`, `Self::beat_ranges_overlap`, `Self::clamp_pitch`,
+    // `Self::overlap_trim_action`) so the two editors stay behaviorally aligned.
+
+    pub fn pattern_track_notes(&self, block_id: u64, track_id: u64) -> Vec<Note> {
+        self.pattern_block(block_id)
+            .and_then(|block| block.track_content(track_id))
+            .map(|content| content.notes.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn pattern_track_note(&self, block_id: u64, track_id: u64, note_id: u64) -> Option<&Note> {
+        self.pattern_block(block_id)?
+            .track_content(track_id)?
+            .notes
+            .iter()
+            .find(|note| note.id == note_id)
+    }
+
+    pub fn pattern_track_note_mut(
+        &mut self,
+        block_id: u64,
+        track_id: u64,
+        note_id: u64,
+    ) -> Option<&mut Note> {
+        self.pattern_block_mut(block_id)?
+            .track_content_mut(track_id)?
+            .notes
+            .iter_mut()
+            .find(|note| note.id == note_id)
+    }
+
+    pub fn remove_note_from_pattern_track(&mut self, block_id: u64, track_id: u64, note_id: u64) {
+        if let Some(content) = self
+            .pattern_block_mut(block_id)
+            .and_then(|block| block.track_content_mut(track_id))
+        {
+            content.notes.retain(|note| note.id != note_id);
+        }
+    }
+
+    /// Whether `[start_beats, start_beats + duration_beats)` is free at `pitch` in a pattern row.
+    pub fn pattern_note_range_free(
+        &self,
+        block_id: u64,
+        track_id: u64,
+        pitch: u8,
+        start_beats: f32,
+        duration_beats: f32,
+        ignore_ids: &[u64],
+    ) -> bool {
+        let Some(content) = self
+            .pattern_block(block_id)
+            .and_then(|block| block.track_content(track_id))
+        else {
+            return true;
+        };
+        let start = Self::snap_beats(start_beats.max(0.0));
+        let duration = Self::snap_beats(duration_beats.max(SNAP_BEATS));
+        let end = start + duration;
+        !content.notes.iter().any(|note| {
+            note.pitch == pitch
+                && !ignore_ids.contains(&note.id)
+                && Self::beat_ranges_overlap(start, end, note.start_beats, note.end_beats())
+        })
+    }
+
+    /// Adds a note to a pattern row, creating the row (included, empty) first if needed.
+    pub fn add_note_to_pattern_track(
+        &mut self,
+        block_id: u64,
+        track_id: u64,
+        pitch: u8,
+        start_beats: f32,
+        duration_beats: f32,
+    ) -> Option<Note> {
+        let length = self.pattern_block(block_id)?.length_beats;
+        let start = Self::snap_beats(start_beats.max(0.0));
+        if start >= length {
+            return None;
+        }
+        let max_duration = (length - start).max(SNAP_BEATS);
+        let duration = Self::snap_beats(duration_beats.max(SNAP_BEATS).min(max_duration));
+        if start + duration > length + f32::EPSILON {
+            return None;
+        }
+        if !self.pattern_note_range_free(block_id, track_id, pitch, start, duration, &[]) {
+            return None;
+        }
+        let id = self.next_note_id();
+        self.bump_note_id();
+        self.set_pattern_row_included(block_id, track_id, true);
+        let content = self
+            .pattern_block_mut(block_id)?
+            .track_content_mut(track_id)?;
+        let note = Note {
+            id,
+            pitch,
+            start_beats: start,
+            duration_beats: duration,
+            velocity: 100,
+        };
+        content.notes.push(note);
+        Some(note)
+    }
+
+    /// Clamp time+pitch deltas so movers stay inside the pattern block and MIDI pitch range.
+    pub fn clamp_pattern_note_move_deltas(
+        &self,
+        block_id: u64,
+        originals: &[Note],
+        mut delta_beats: f32,
+        mut delta_pitch: i32,
+    ) -> (f32, i32) {
+        if originals.is_empty() {
+            return (delta_beats, delta_pitch);
+        }
+        let Some(block) = self.pattern_block(block_id) else {
+            return (delta_beats, delta_pitch);
+        };
+
+        let min_pitch = originals
+            .iter()
+            .map(|note| note.pitch as i32)
+            .min()
+            .unwrap_or(MIN_PITCH as i32);
+        let max_pitch = originals
+            .iter()
+            .map(|note| note.pitch as i32)
+            .max()
+            .unwrap_or(MAX_PITCH as i32);
+        delta_pitch = delta_pitch
+            .max(MIN_PITCH as i32 - min_pitch)
+            .min(MAX_PITCH as i32 - max_pitch);
+
+        let min_start = originals
+            .iter()
+            .map(|note| note.start_beats)
+            .fold(f32::INFINITY, f32::min);
+        if min_start + delta_beats < 0.0 {
+            delta_beats = -min_start;
+        }
+        let max_end = originals
+            .iter()
+            .map(Note::end_beats)
+            .fold(f32::NEG_INFINITY, f32::max);
+        if max_end + delta_beats > block.length_beats {
+            delta_beats = block.length_beats - max_end;
+        }
+
+        (delta_beats, delta_pitch)
+    }
+
+    /// After a pattern-row note move, shorten or remove stationary same-pitch notes the
+    /// movers overlap (mirrors `resolve_note_move_overlaps` for clips).
+    pub fn resolve_pattern_note_move_overlaps(
+        &mut self,
+        block_id: u64,
+        track_id: u64,
+        moved_ids: &[u64],
+    ) {
+        if moved_ids.is_empty() {
+            return;
+        }
+        let moving: std::collections::HashSet<u64> = moved_ids.iter().copied().collect();
+        let movers: Vec<(u8, f32, f32)> = self
+            .pattern_track_notes(block_id, track_id)
+            .iter()
+            .filter(|note| moving.contains(&note.id))
+            .map(|note| (note.pitch, note.start_beats, note.end_beats()))
+            .collect();
+
+        for (m_pitch, m_start, m_end) in movers {
+            let victims: Vec<(u64, f32, f32, u8)> = self
+                .pattern_track_notes(block_id, track_id)
+                .iter()
+                .filter(|note| {
+                    note.pitch == m_pitch
+                        && !moving.contains(&note.id)
+                        && Self::beat_ranges_overlap(
+                            m_start,
+                            m_end,
+                            note.start_beats,
+                            note.end_beats(),
+                        )
+                })
+                .map(|note| (note.id, note.start_beats, note.end_beats(), note.velocity))
+                .collect();
+
+            for (v_id, v_start, v_end, velocity) in victims {
+                let Some(action) = Self::overlap_trim_action(v_start, v_end, m_start, m_end)
+                else {
+                    continue;
+                };
+                match action {
+                    OverlapTrim::Delete => {
+                        self.remove_note_from_pattern_track(block_id, track_id, v_id);
+                    }
+                    OverlapTrim::TrimStart { new_start } => {
+                        let duration = v_end - new_start;
+                        if duration < SNAP_BEATS {
+                            self.remove_note_from_pattern_track(block_id, track_id, v_id);
+                        } else if let Some(note) =
+                            self.pattern_track_note_mut(block_id, track_id, v_id)
+                        {
+                            note.start_beats = Self::snap_beats(new_start);
+                            note.duration_beats = Self::snap_beats(duration);
+                        }
+                    }
+                    OverlapTrim::TrimEnd { new_end } => {
+                        let duration = new_end - v_start;
+                        if duration < SNAP_BEATS {
+                            self.remove_note_from_pattern_track(block_id, track_id, v_id);
+                        } else if let Some(note) =
+                            self.pattern_track_note_mut(block_id, track_id, v_id)
+                        {
+                            note.duration_beats = Self::snap_beats(duration);
+                        }
+                    }
+                    OverlapTrim::Split {
+                        left_end,
+                        tail_start,
+                        tail_end,
+                    } => {
+                        let left_duration = left_end - v_start;
+                        if left_duration < SNAP_BEATS {
+                            self.remove_note_from_pattern_track(block_id, track_id, v_id);
+                        } else if let Some(note) =
+                            self.pattern_track_note_mut(block_id, track_id, v_id)
+                        {
+                            note.duration_beats = Self::snap_beats(left_duration);
+                        }
+                        let tail_duration = tail_end - tail_start;
+                        if tail_duration >= SNAP_BEATS {
+                            let id = self.next_note_id();
+                            self.bump_note_id();
+                            if let Some(content) = self
+                                .pattern_block_mut(block_id)
+                                .and_then(|block| block.track_content_mut(track_id))
+                            {
+                                content.notes.push(Note {
+                                    id,
+                                    pitch: m_pitch,
+                                    start_beats: Self::snap_beats(tail_start),
+                                    duration_beats: Self::snap_beats(tail_duration),
+                                    velocity,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Left edge a pattern-row note resize-start drag may not cross.
+    pub fn pattern_note_resize_start_bound(
+        &self,
+        block_id: u64,
+        track_id: u64,
+        note_id: u64,
+        pitch: u8,
+        original_start: f32,
+        ignore_ids: &[u64],
+    ) -> f32 {
+        self.pattern_track_notes(block_id, track_id)
+            .iter()
+            .filter(|note| {
+                note.id != note_id
+                    && !ignore_ids.contains(&note.id)
+                    && note.pitch == pitch
+                    && note.end_beats() <= original_start
+            })
+            .map(Note::end_beats)
+            .fold(0.0_f32, f32::max)
+    }
+
+    /// Right edge a pattern-row note resize-end drag may not cross.
+    pub fn pattern_note_resize_end_bound(
+        &self,
+        block_id: u64,
+        track_id: u64,
+        note_id: u64,
+        pitch: u8,
+        original_end: f32,
+        ignore_ids: &[u64],
+    ) -> f32 {
+        let Some(block) = self.pattern_block(block_id) else {
+            return original_end;
+        };
+        let neighbor = self
+            .pattern_track_notes(block_id, track_id)
+            .iter()
+            .filter(|note| {
+                note.id != note_id
+                    && !ignore_ids.contains(&note.id)
+                    && note.pitch == pitch
+                    && note.start_beats >= original_end
+            })
+            .map(|note| note.start_beats)
+            .fold(f32::INFINITY, f32::min);
+        neighbor.min(block.length_beats)
+    }
+
+    pub fn clamp_pattern_note_resize_start_delta(
+        &self,
+        block_id: u64,
+        track_id: u64,
+        originals: &[Note],
+        mut delta: f32,
+    ) -> f32 {
+        if originals.is_empty() {
+            return delta;
+        }
+        let ignore: Vec<u64> = originals.iter().map(|note| note.id).collect();
+        for original in originals {
+            let bound = self.pattern_note_resize_start_bound(
+                block_id,
+                track_id,
+                original.id,
+                original.pitch,
+                original.start_beats,
+                &ignore,
+            );
+            let end = original.end_beats();
+            delta = delta
+                .max(bound - original.start_beats)
+                .max(-original.start_beats)
+                .min(end - SNAP_BEATS - original.start_beats);
+        }
+        delta
+    }
+
+    pub fn clamp_pattern_note_resize_end_delta(
+        &self,
+        block_id: u64,
+        track_id: u64,
+        originals: &[Note],
+        mut delta: f32,
+    ) -> f32 {
+        if originals.is_empty() {
+            return delta;
+        }
+        let ignore: Vec<u64> = originals.iter().map(|note| note.id).collect();
+        for original in originals {
+            let bound = self.pattern_note_resize_end_bound(
+                block_id,
+                track_id,
+                original.id,
+                original.pitch,
+                original.end_beats(),
+                &ignore,
+            );
+            let end = original.end_beats();
+            delta = delta
+                .min(bound - end)
+                .max(original.start_beats + SNAP_BEATS - end);
+        }
+        delta
+    }
+
+    /// Duplicate notes inside a pattern row (mirrors `duplicate_notes_in_clip`).
+    pub fn duplicate_notes_in_pattern_track(
+        &mut self,
+        block_id: u64,
+        track_id: u64,
+        note_ids: &[u64],
+        delta_beats: f32,
+        delta_pitch: i32,
+        allow_overlap_sources: bool,
+    ) -> Vec<u64> {
+        let all_notes = self.pattern_track_notes(block_id, track_id);
+        let templates: Vec<Note> = note_ids
+            .iter()
+            .filter_map(|id| all_notes.iter().find(|note| note.id == *id).copied())
+            .collect();
+        if templates.is_empty() {
+            return Vec::new();
+        }
+
+        let source_ignore: Vec<u64> = if allow_overlap_sources {
+            templates.iter().map(|note| note.id).collect()
+        } else {
+            Vec::new()
+        };
+
+        let mut new_ids = Vec::with_capacity(templates.len());
+        let mut placed: Vec<(u8, f32, f32)> = Vec::new();
+        for template in templates {
+            let pitch = Self::clamp_pitch(template.pitch as i32 + delta_pitch);
+            let start = Self::snap_beats((template.start_beats + delta_beats).max(0.0));
+            let duration = Self::snap_beats(template.duration_beats.max(SNAP_BEATS));
+            let end = start + duration;
+            if !self.pattern_note_range_free(block_id, track_id, pitch, start, duration, &source_ignore)
+            {
+                continue;
+            }
+            if placed.iter().any(|(p, p_start, p_end)| {
+                *p == pitch && Self::beat_ranges_overlap(start, end, *p_start, *p_end)
+            }) {
+                continue;
+            }
+            let id = self.next_note_id();
+            self.bump_note_id();
+            if let Some(content) = self
+                .pattern_block_mut(block_id)
+                .and_then(|block| block.track_content_mut(track_id))
+            {
+                content.notes.push(Note {
+                    id,
+                    pitch,
+                    start_beats: start,
+                    duration_beats: duration,
+                    velocity: template.velocity,
+                });
+                placed.push((pitch, start, end));
+                new_ids.push(id);
+            }
+        }
+        new_ids
+    }
+
+    /// Collect pattern-row notes by id for clipboard (mirrors `notes_for_clipboard`).
+    pub fn pattern_notes_for_clipboard(
+        &self,
+        block_id: u64,
+        track_id: u64,
+        note_ids: &[u64],
+    ) -> Vec<Note> {
+        let Some(content) = self
+            .pattern_block(block_id)
+            .and_then(|block| block.track_content(track_id))
+        else {
+            return Vec::new();
+        };
+        note_ids
+            .iter()
+            .filter_map(|id| content.notes.iter().find(|note| note.id == *id).copied())
+            .collect()
+    }
+
+    /// Paste clipboard notes into a pattern row, creating the row (included) if
+    /// needed. `origin_beats` is pattern-local; entries are clamped to the block
+    /// length. Mirrors `paste_notes_into_clip`.
+    pub fn paste_notes_into_pattern_track(
+        &mut self,
+        block_id: u64,
+        track_id: u64,
+        notes: &[ClipboardNote],
+        origin_beats: f32,
+    ) -> Vec<u64> {
+        if notes.is_empty() || self.pattern_block(block_id).is_none() {
+            return Vec::new();
+        }
+        let length = self
+            .pattern_block(block_id)
+            .map(|block| block.length_beats)
+            .unwrap_or(0.0);
+        let origin = Self::snap_beats(origin_beats.max(0.0));
+        self.set_pattern_row_included(block_id, track_id, true);
+        let mut new_ids = Vec::with_capacity(notes.len());
+        let mut placed: Vec<(u8, f32, f32)> = Vec::new();
+        for template in notes {
+            let start = Self::snap_beats((origin + template.start_beats).max(0.0));
+            let duration = Self::snap_beats(template.duration_beats.max(SNAP_BEATS));
+            let end = start + duration;
+            if end > length + f32::EPSILON {
+                continue;
+            }
+            if !self.pattern_note_range_free(block_id, track_id, template.pitch, start, duration, &[])
+            {
+                continue;
+            }
+            if placed.iter().any(|(p, p_start, p_end)| {
+                *p == template.pitch && Self::beat_ranges_overlap(start, end, *p_start, *p_end)
+            }) {
+                continue;
+            }
+            let id = self.next_note_id();
+            self.bump_note_id();
+            if let Some(content) = self
+                .pattern_block_mut(block_id)
+                .and_then(|block| block.track_content_mut(track_id))
+            {
+                content.notes.push(Note {
+                    id,
+                    pitch: template.pitch,
+                    start_beats: start,
+                    duration_beats: duration,
+                    velocity: template.velocity,
+                });
+                placed.push((template.pitch, start, end));
+                new_ids.push(id);
+            }
+        }
+        new_ids
+    }
+
+    /// Row editor surface (step grid vs piano roll): explicit override if the
+    /// user picked one, else derived from the row's current notes.
+    pub fn pattern_row_mode(&self, block_id: u64, track_id: u64) -> crate::model::pattern::PatternRowMode {
+        self.pattern_block(block_id)
+            .and_then(|block| block.track_content(track_id))
+            .map(super::pattern::PatternTrackContent::effective_row_mode)
+            .unwrap_or(crate::model::pattern::PatternRowMode::Step)
+    }
+
+    /// Explicitly set (or clear, with `None`, back to heuristic) a row's editor mode.
+    /// Creates an empty row entry if needed so mode can be set before the first note.
+    pub fn set_pattern_row_mode(
+        &mut self,
+        block_id: u64,
+        track_id: u64,
+        mode: Option<crate::model::pattern::PatternRowMode>,
+    ) -> bool {
+        if !self.set_pattern_row_included(block_id, track_id, true) {
+            return false;
+        }
+        let Some(content) = self
+            .pattern_block_mut(block_id)
+            .and_then(|block| block.track_content_mut(track_id))
+        else {
+            return false;
+        };
+        content.row_mode = mode;
+        true
+    }
+
+    /// Number of 1/16 (snap-grid) steps across a pattern block's length.
+    pub fn pattern_step_count(&self, block_id: u64) -> usize {
+        self.pattern_block(block_id)
+            .map(|block| (block.length_beats / SNAP_BEATS).round().max(1.0) as usize)
+            .unwrap_or(0)
+    }
+
+    /// The pitch step buttons toggle for a row: the most common pitch already in
+    /// the row, or a sensible drum default when the row is empty.
+    pub fn pattern_row_step_pitch(&self, block_id: u64, track_id: u64) -> u8 {
+        let notes = self.pattern_track_notes(block_id, track_id);
+        if notes.is_empty() {
+            return DEFAULT_STEP_PITCH;
+        }
+        let mut counts: HashMap<u8, usize> = HashMap::new();
+        for note in &notes {
+            *counts.entry(note.pitch).or_insert(0) += 1;
+        }
+        counts
+            .into_iter()
+            .max_by_key(|(_, count)| *count)
+            .map(|(pitch, _)| pitch)
+            .unwrap_or(DEFAULT_STEP_PITCH)
+    }
+
+    /// Whether a note starts exactly at `step_index` (at the row's step pitch).
+    pub fn pattern_step_active(&self, block_id: u64, track_id: u64, step_index: usize) -> bool {
+        let pitch = self.pattern_row_step_pitch(block_id, track_id);
+        let start = step_index as f32 * SNAP_BEATS;
+        self.pattern_track_notes(block_id, track_id)
+            .iter()
+            .any(|note| note.pitch == pitch && (note.start_beats - start).abs() < 1e-4)
+    }
+
+    /// Turn one step on/off. Returns the new active state.
+    pub fn set_pattern_step(
+        &mut self,
+        block_id: u64,
+        track_id: u64,
+        step_index: usize,
+        active: bool,
+    ) -> bool {
+        let pitch = self.pattern_row_step_pitch(block_id, track_id);
+        let start = step_index as f32 * SNAP_BEATS;
+        let existing = self
+            .pattern_track_notes(block_id, track_id)
+            .into_iter()
+            .find(|note| note.pitch == pitch && (note.start_beats - start).abs() < 1e-4);
+        match (active, existing) {
+            (true, Some(_)) => true,
+            (true, None) => self
+                .add_note_to_pattern_track(block_id, track_id, pitch, start, SNAP_BEATS)
+                .is_some(),
+            (false, Some(note)) => {
+                self.remove_note_from_pattern_track(block_id, track_id, note.id);
+                false
+            }
+            (false, None) => false,
+        }
     }
 }
 
@@ -2235,6 +3447,25 @@ mod tests {
         assert_eq!(project.tracks[0].id, keep);
         assert!(project.clip(clip_id).is_none());
         assert!(project.track(remove).is_none());
+    }
+
+    #[test]
+    fn remove_track_drops_orphaned_pattern_row() {
+        let mut project = Project::default();
+        let remove = project.add_track("Track 2", TrackInstrument::BuiltInPiano);
+        let lane_id = project.ensure_pattern_lane();
+        let block_id = project
+            .add_pattern_block(lane_id, 0.0, 4.0)
+            .expect("block");
+        project
+            .add_note_to_pattern_track(block_id, remove, 60, 0.0, 1.0)
+            .expect("note");
+        assert!(project.pattern_row_included(block_id, remove));
+
+        assert!(project.remove_track(remove));
+
+        assert!(!project.pattern_row_included(block_id, remove));
+        assert!(project.pattern_track_notes(block_id, remove).is_empty());
     }
 
     #[test]
@@ -3268,5 +4499,346 @@ mod tests {
         let lane = &project.tracks[0].automation_lanes[0];
         assert_eq!(lane.id, lane_id);
         assert!(lane.points.is_empty());
+    }
+
+    // ---- Pattern row editing (Phase D2) ----
+
+    fn pattern_block_for_tests(project: &mut Project, length_beats: f32) -> (u64, u64) {
+        let track_id = project.tracks[0].id;
+        let lane_id = project.ensure_pattern_lane();
+        let block_id = project
+            .add_pattern_block(lane_id, 0.0, length_beats)
+            .expect("block");
+        (block_id, track_id)
+    }
+
+    #[test]
+    fn add_note_to_pattern_track_includes_row_and_clamps_to_block_length() {
+        let mut project = Project::default();
+        let (block_id, track_id) = pattern_block_for_tests(&mut project, 4.0);
+        assert!(!project.pattern_row_included(block_id, track_id));
+
+        let note = project
+            .add_note_to_pattern_track(block_id, track_id, 60, 3.0, 4.0)
+            .expect("note fits, shortened to block end");
+        assert_eq!(note.start_beats, 3.0);
+        assert_eq!(note.duration_beats, 1.0);
+        assert!(project.pattern_row_included(block_id, track_id));
+
+        // Starting at/after the block end is rejected outright.
+        assert!(project
+            .add_note_to_pattern_track(block_id, track_id, 62, 4.0, 1.0)
+            .is_none());
+    }
+
+    #[test]
+    fn add_note_to_pattern_track_rejects_same_pitch_overlap() {
+        let mut project = Project::default();
+        let (block_id, track_id) = pattern_block_for_tests(&mut project, 8.0);
+        project
+            .add_note_to_pattern_track(block_id, track_id, 60, 0.0, 2.0)
+            .expect("first note");
+        assert!(project
+            .add_note_to_pattern_track(block_id, track_id, 60, 1.0, 2.0)
+            .is_none());
+        // Different pitch at the same time is fine.
+        assert!(project
+            .add_note_to_pattern_track(block_id, track_id, 64, 1.0, 2.0)
+            .is_some());
+    }
+
+    #[test]
+    fn clamp_pattern_note_move_deltas_stops_at_block_bounds() {
+        let mut project = Project::default();
+        let (block_id, track_id) = pattern_block_for_tests(&mut project, 4.0);
+        let note = project
+            .add_note_to_pattern_track(block_id, track_id, 60, 1.0, 1.0)
+            .expect("note");
+
+        // Cannot move before the block start.
+        let (delta_beats, _) =
+            project.clamp_pattern_note_move_deltas(block_id, &[note], -5.0, 0);
+        assert_eq!(delta_beats, -1.0);
+
+        // Cannot move past the block end.
+        let (delta_beats, _) =
+            project.clamp_pattern_note_move_deltas(block_id, &[note], 5.0, 0);
+        assert_eq!(delta_beats, 2.0);
+    }
+
+    #[test]
+    fn resolve_pattern_note_move_overlaps_trims_stationary_note() {
+        let mut project = Project::default();
+        let (block_id, track_id) = pattern_block_for_tests(&mut project, 8.0);
+        project
+            .add_note_to_pattern_track(block_id, track_id, 60, 0.0, 4.0)
+            .expect("victim");
+        let mover = project
+            .add_note_to_pattern_track(block_id, track_id, 60, 5.0, 1.0)
+            .expect("mover");
+
+        // Move the mover left so it overlaps the tail of the victim.
+        if let Some(note) = project.pattern_track_note_mut(block_id, track_id, mover.id) {
+            note.start_beats = 3.0;
+        }
+        project.resolve_pattern_note_move_overlaps(block_id, track_id, &[mover.id]);
+
+        let notes = project.pattern_track_notes(block_id, track_id);
+        let victim = notes
+            .iter()
+            .find(|note| note.id != mover.id)
+            .expect("victim survives, trimmed");
+        assert_eq!(victim.start_beats, 0.0);
+        assert_eq!(victim.duration_beats, 3.0);
+    }
+
+    #[test]
+    fn pattern_note_resize_bounds_respect_same_pitch_neighbors() {
+        let mut project = Project::default();
+        let (block_id, track_id) = pattern_block_for_tests(&mut project, 8.0);
+        project
+            .add_note_to_pattern_track(block_id, track_id, 60, 0.0, 1.0)
+            .expect("left neighbor");
+        let middle = project
+            .add_note_to_pattern_track(block_id, track_id, 60, 2.0, 1.0)
+            .expect("middle");
+        project
+            .add_note_to_pattern_track(block_id, track_id, 60, 4.0, 1.0)
+            .expect("right neighbor");
+
+        let start_bound = project.pattern_note_resize_start_bound(
+            block_id, track_id, middle.id, 60, 2.0, &[],
+        );
+        assert_eq!(start_bound, 1.0);
+        let end_bound =
+            project.pattern_note_resize_end_bound(block_id, track_id, middle.id, 60, 3.0, &[]);
+        assert_eq!(end_bound, 4.0);
+    }
+
+    #[test]
+    fn duplicate_notes_in_pattern_track_without_space_is_skipped() {
+        let mut project = Project::default();
+        let (block_id, track_id) = pattern_block_for_tests(&mut project, 4.0);
+        let note = project
+            .add_note_to_pattern_track(block_id, track_id, 60, 0.0, 1.0)
+            .expect("note");
+        project
+            .add_note_to_pattern_track(block_id, track_id, 60, 1.0, 1.0)
+            .expect("blocks the duplicate destination");
+
+        let new_ids =
+            project.duplicate_notes_in_pattern_track(block_id, track_id, &[note.id], 1.0, 0, false);
+        assert!(new_ids.is_empty());
+        assert_eq!(project.pattern_track_notes(block_id, track_id).len(), 2);
+    }
+
+    #[test]
+    fn pattern_notes_clipboard_round_trip() {
+        let mut project = Project::default();
+        let (block_id, track_id) = pattern_block_for_tests(&mut project, 8.0);
+        let note = project
+            .add_note_to_pattern_track(block_id, track_id, 60, 2.0, 1.0)
+            .expect("note");
+
+        let copied = project.pattern_notes_for_clipboard(block_id, track_id, &[note.id]);
+        assert_eq!(copied.len(), 1);
+        let clipboard_notes: Vec<ClipboardNote> = copied
+            .iter()
+            .map(|n| ClipboardNote {
+                pitch: n.pitch,
+                start_beats: 0.0,
+                duration_beats: n.duration_beats,
+                velocity: n.velocity,
+            })
+            .collect();
+
+        let dest_track = project.add_track("Drums", TrackInstrument::BuiltInPiano);
+        assert!(!project.pattern_row_included(block_id, dest_track));
+        let pasted = project.paste_notes_into_pattern_track(
+            block_id,
+            dest_track,
+            &clipboard_notes,
+            1.0,
+        );
+        assert_eq!(pasted.len(), 1);
+        assert!(project.pattern_row_included(block_id, dest_track));
+        let dest_notes = project.pattern_track_notes(block_id, dest_track);
+        assert_eq!(dest_notes[0].start_beats, 1.0);
+        assert_eq!(dest_notes[0].pitch, 60);
+    }
+
+    #[test]
+    fn pattern_row_mode_defaults_to_heuristic_and_can_be_overridden() {
+        let mut project = Project::default();
+        let (block_id, track_id) = pattern_block_for_tests(&mut project, 8.0);
+        project
+            .add_note_to_pattern_track(block_id, track_id, 60, 0.0, 1.0)
+            .expect("first note");
+        project
+            .add_note_to_pattern_track(block_id, track_id, 64, 1.0, 1.0)
+            .expect("second note");
+        project
+            .add_note_to_pattern_track(block_id, track_id, 67, 2.0, 1.0)
+            .expect("third note");
+
+        // 3 distinct pitches -> heuristic picks Melody.
+        assert_eq!(
+            project.pattern_row_mode(block_id, track_id),
+            crate::model::pattern::PatternRowMode::Melody
+        );
+
+        assert!(project.set_pattern_row_mode(
+            block_id,
+            track_id,
+            Some(crate::model::pattern::PatternRowMode::Step)
+        ));
+        assert_eq!(
+            project.pattern_row_mode(block_id, track_id),
+            crate::model::pattern::PatternRowMode::Step
+        );
+
+        // Clearing the override falls back to the heuristic again.
+        assert!(project.set_pattern_row_mode(block_id, track_id, None));
+        assert_eq!(
+            project.pattern_row_mode(block_id, track_id),
+            crate::model::pattern::PatternRowMode::Melody
+        );
+    }
+
+    #[test]
+    fn set_pattern_step_toggles_notes_on_and_off() {
+        let mut project = Project::default();
+        let (block_id, track_id) = pattern_block_for_tests(&mut project, 4.0);
+        assert_eq!(project.pattern_step_count(block_id), 16);
+        assert!(!project.pattern_step_active(block_id, track_id, 0));
+
+        assert!(project.set_pattern_step(block_id, track_id, 0, true));
+        assert!(project.pattern_step_active(block_id, track_id, 0));
+        assert_eq!(project.pattern_track_notes(block_id, track_id).len(), 1);
+
+        // Toggling the same step on again is idempotent (no duplicate note).
+        assert!(project.set_pattern_step(block_id, track_id, 0, true));
+        assert_eq!(project.pattern_track_notes(block_id, track_id).len(), 1);
+
+        assert!(!project.set_pattern_step(block_id, track_id, 0, false));
+        assert!(!project.pattern_step_active(block_id, track_id, 0));
+        assert!(project.pattern_track_notes(block_id, track_id).is_empty());
+    }
+
+    // ---- Pattern bake (Phase E) ----
+
+    #[test]
+    fn bake_block_with_notes_on_empty_playlist() {
+        let mut project = Project::default();
+        let track_id = project.tracks[0].id;
+        project.tracks[0].clips.clear();
+        let lane_id = project.ensure_pattern_lane();
+        let block_id = project.add_pattern_block(lane_id, 4.0, 8.0).expect("block");
+        project
+            .add_note_to_pattern_track(block_id, track_id, 60, 0.0, 2.0)
+            .expect("note");
+
+        project.bake_pattern_block(block_id).expect("bake");
+        assert!(project.pattern_block(block_id).is_none());
+        assert_eq!(project.tracks[0].clips.len(), 1);
+        let clip = project.tracks[0].clips[0].as_midi().expect("midi");
+        assert!((clip.start_beats - 4.0).abs() < 1e-5);
+        assert!((clip.length_beats - 8.0).abs() < 1e-5);
+        assert_eq!(clip.notes.len(), 1);
+        assert_eq!(clip.notes[0].pitch, 60);
+    }
+
+    #[test]
+    fn bake_replaces_fully_covered_clip() {
+        let mut project = Project::default();
+        let track_id = project.tracks[0].id;
+        project.tracks[0].clips.clear();
+        let old_id = project
+            .add_clip_to_track(track_id, 4.0, 8.0)
+            .expect("old clip");
+        let lane_id = project.ensure_pattern_lane();
+        let block_id = project.add_pattern_block(lane_id, 4.0, 8.0).expect("block");
+        project
+            .add_note_to_pattern_track(block_id, track_id, 72, 0.0, 2.0)
+            .expect("note");
+
+        assert!(project.bake_would_modify_playlist(block_id));
+        project.bake_pattern_block(block_id).expect("bake");
+        assert!(project.clip(old_id).is_none());
+        assert_eq!(project.tracks[0].clips.len(), 1);
+        let clip = project.tracks[0].clips[0].as_midi().expect("midi");
+        assert_eq!(clip.notes[0].pitch, 72);
+    }
+
+    #[test]
+    fn bake_partial_overlap_splits_clip() {
+        let mut project = Project::default();
+        let track_id = project.tracks[0].id;
+        project.tracks[0].clips.clear();
+        let clip_id = project
+            .add_clip_to_track(track_id, 0.0, 16.0)
+            .expect("long clip");
+        let lane_id = project.ensure_pattern_lane();
+        let block_id = project.add_pattern_block(lane_id, 4.0, 8.0).expect("block");
+        project
+            .add_note_to_pattern_track(block_id, track_id, 48, 0.0, 2.0)
+            .expect("note");
+
+        project.bake_pattern_block(block_id).expect("bake");
+        let clips: Vec<_> = project.tracks[0]
+            .clips
+            .iter()
+            .map(|c| (c.start_beats(), c.length_beats(), c.id()))
+            .collect();
+        assert_eq!(clips.len(), 3);
+        assert!(clips.iter().any(|(s, l, _)| (*s - 0.0).abs() < 1e-5 && (*l - 4.0).abs() < 1e-5));
+        assert!(clips.iter().any(|(s, l, _)| (*s - 4.0).abs() < 1e-5 && (*l - 8.0).abs() < 1e-5));
+        assert!(clips.iter().any(|(s, l, _)| (*s - 12.0).abs() < 1e-5 && (*l - 4.0).abs() < 1e-5));
+        assert!(project.clip(clip_id).is_some());
+    }
+
+    #[test]
+    fn bake_two_clip_span_trims_both_ends() {
+        let mut project = Project::default();
+        let track_id = project.tracks[0].id;
+        project.tracks[0].clips.clear();
+        project
+            .add_clip_to_track(track_id, 0.0, 8.0)
+            .expect("clip a");
+        project
+            .add_clip_to_track(track_id, 8.0, 8.0)
+            .expect("clip b");
+        let lane_id = project.ensure_pattern_lane();
+        let block_id = project.add_pattern_block(lane_id, 4.0, 8.0).expect("block");
+        project
+            .add_note_to_pattern_track(block_id, track_id, 50, 0.0, 2.0)
+            .expect("note");
+
+        project.bake_pattern_block(block_id).expect("bake");
+        let spans: Vec<(f32, f32)> = project.tracks[0]
+            .clips
+            .iter()
+            .map(|c| (c.start_beats(), c.end_beats()))
+            .collect();
+        assert_eq!(spans.len(), 3);
+        assert!(spans.contains(&(0.0, 4.0)));
+        assert!(spans.contains(&(4.0, 12.0)));
+        assert!(spans.contains(&(12.0, 16.0)));
+    }
+
+    #[test]
+    fn bake_empty_pattern_block_removes_without_playlist_change() {
+        let mut project = Project::default();
+        let track_id = project.tracks[0].id;
+        let clip_id = project.tracks[0].clips[0].id();
+        let lane_id = project.ensure_pattern_lane();
+        let block_id = project.add_pattern_block(lane_id, 0.0, 4.0).expect("block");
+        project.set_pattern_row_included(block_id, track_id, true);
+
+        assert!(!project.bake_would_modify_playlist(block_id));
+        project.bake_pattern_block(block_id).expect("bake");
+        assert!(project.pattern_block(block_id).is_none());
+        assert_eq!(project.tracks[0].clips.len(), 1);
+        assert_eq!(project.tracks[0].clips[0].id(), clip_id);
     }
 }

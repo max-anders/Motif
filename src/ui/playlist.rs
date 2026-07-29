@@ -2,12 +2,12 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use egui::{Pos2, Rect, Response, Sense, Ui, UiBuilder, Vec2};
+use egui::{Align, Layout, Pos2, Rect, Response, Sense, Ui, UiBuilder, Vec2};
 
 use crate::engine::{DawEngine, DecodedAudio, PluginCatalog, PluginRef};
 use crate::model::{
     AudioClip, Clip, EditHistory, Project, Track, TrackInstrument, DEFAULT_CLIP_LENGTH_BEATS,
-    MAX_PITCH, MIN_PITCH, SNAP_BEATS,
+    SNAP_BEATS,
 };
 use crate::ui::automation::{
     automation_extra_height, AutomationUi, ADD_AUTOMATION_ROW_HEIGHT, AUTOMATION_LANE_BODY_HEIGHT,
@@ -16,14 +16,17 @@ use crate::ui::instrument_menu::{
     choice_to_instrument, show_instrument_picker, track_name_for_choice, InstrumentChoice,
     MENU_LIST_MAX_HEIGHT,
 };
+use crate::ui::note_preview::{draw_note_preview, NotePreviewStyle};
+use crate::ui::pattern_strip::PatternStripUi;
 use crate::ui::theme::ThemeColors;
 use crate::ui::timeline::{
     apply_horizontal_wheel_controls, arrangement_beat_width_bounds, daw_editor_scroll_area,
     draw_loop_region, draw_playhead, draw_playback_anchor, draw_ruler, draw_timeline_grid_lines,
     handle_loop_region_pointer, handle_timeline_playhead_pointer, hit_test_loop_edge,
-    is_timeline_pointer, timeline_body_rect, timeline_x, with_solid_scrollbars, x_to_beat,
-    LoopEdge, TimelineMetrics, DEFAULT_BEAT_WIDTH, RULER_HEIGHT, TIMELINE_GUTTER_WIDTH,
+    is_timeline_pointer, timeline_x, with_solid_scrollbars, x_to_beat, LoopEdge, TimelineMetrics,
+    DEFAULT_BEAT_WIDTH, RULER_HEIGHT, TIMELINE_GUTTER_WIDTH,
 };
+use crate::ui::track_rename::TrackRenameUi;
 
 pub(crate) const TRACK_HEADER_WIDTH: f32 = TIMELINE_GUTTER_WIDTH;
 pub(crate) const LANE_HEIGHT: f32 = 72.0;
@@ -54,8 +57,16 @@ pub(crate) struct MarqueeDrag {
 }
 
 impl MarqueeDrag {
+    pub(crate) fn new(start: Pos2, current: Pos2) -> Self {
+        Self { start, current }
+    }
+
     pub(crate) fn rect(&self) -> Rect {
         Rect::from_two_pos(self.start, self.current)
+    }
+
+    pub(crate) fn set_current(&mut self, pos: Pos2) {
+        self.current = pos;
     }
 }
 
@@ -131,6 +142,7 @@ pub struct PlaylistUi {
     /// Tracks whose automation fold-out is expanded under the clip lane.
     automation_expanded: HashSet<u64>,
     automation: AutomationUi,
+    pattern_strips: HashMap<u64, PatternStripUi>,
 }
 
 impl Default for PlaylistUi {
@@ -156,6 +168,7 @@ impl Default for PlaylistUi {
             instrument_errors: HashMap::new(),
             automation_expanded: HashSet::new(),
             automation: AutomationUi::default(),
+            pattern_strips: HashMap::new(),
         }
     }
 }
@@ -253,9 +266,66 @@ impl PlaylistUi {
         self.selected_clip_ids.extend(clip_ids);
     }
 
+    fn sync_pattern_strips(&mut self, project: &Project) {
+        self.pattern_strips
+            .retain(|lane_id, _| project.pattern_lane(*lane_id).is_some());
+        for lane in &project.pattern_lanes {
+            self.pattern_strips.entry(lane.id).or_default();
+        }
+        for strip in self.pattern_strips.values_mut() {
+            strip.prune_selection(project);
+        }
+    }
+
+    fn any_pattern_strip_gesture_active(&self) -> bool {
+        self.pattern_strips.values().any(|strip| strip.gesture_active())
+    }
+
     pub fn prune_selection(&mut self, project: &Project) {
         self.selected_clip_ids
             .retain(|id| project.clip(*id).is_some());
+        self.sync_pattern_strips(project);
+    }
+
+    pub fn selected_pattern_block_ids(&self) -> Vec<u64> {
+        self.pattern_strips
+            .values()
+            .flat_map(|strip| strip.selected_block_ids().iter().copied())
+            .collect()
+    }
+
+    pub fn clear_pattern_selection(&mut self) {
+        for strip in self.pattern_strips.values_mut() {
+            strip.clear_selection();
+        }
+    }
+
+    pub fn set_pattern_selection(
+        &mut self,
+        project: &Project,
+        block_ids: impl IntoIterator<Item = u64>,
+    ) {
+        self.clear_pattern_selection();
+        let mut by_lane: HashMap<u64, Vec<u64>> = HashMap::new();
+        for id in block_ids {
+            if let Some(lane_id) = project.pattern_lane_id_for_block(id) {
+                by_lane.entry(lane_id).or_default().push(id);
+            }
+        }
+        for (lane_id, ids) in by_lane {
+            if let Some(strip) = self.pattern_strips.get_mut(&lane_id) {
+                strip.set_selection(ids);
+            }
+        }
+    }
+
+    pub fn take_open_pattern_block_request(&mut self) -> Option<u64> {
+        for strip in self.pattern_strips.values_mut() {
+            if let Some(id) = strip.take_open_block_request() {
+                return Some(id);
+            }
+        }
+        None
     }
 
     pub fn set_instrument_errors(&mut self, errors: HashMap<u64, String>) {
@@ -274,6 +344,7 @@ impl PlaylistUi {
         decoded_audio: &HashMap<PathBuf, Arc<DecodedAudio>>,
         settings: &mut crate::ui::app_settings::AppSettings,
         theme: &ThemeColors,
+        track_rename: &mut TrackRenameUi,
     ) -> bool {
         // CentralPanel uses Frame::NONE; paint the full panel so nothing shows through.
         ui.painter().rect_filled(ui.max_rect(), 0.0, theme.panel_bg);
@@ -309,111 +380,167 @@ impl PlaylistUi {
         });
         ui.add_space(4.0);
 
-        let viewport_rect = ui.available_rect_before_wrap();
-        ui.painter().rect_filled(viewport_rect, 0.0, theme.panel_bg);
+        let full = ui.available_rect_before_wrap();
+        ui.painter().rect_filled(full, 0.0, theme.panel_bg);
+
+        // Side-by-side layout (same model as the piano roll): fixed header column +
+        // corner on the left, ruler across the top-right, scrolling timeline in the
+        // rest. Headers/ruler are separate widgets beside the scroll content, not
+        // sticky overlays floating over beats.
+        let corner = Rect::from_min_max(
+            full.min,
+            Pos2::new(full.left() + TRACK_HEADER_WIDTH, full.top() + RULER_HEIGHT),
+        );
+        let ruler_area = Rect::from_min_max(
+            Pos2::new(full.left() + TRACK_HEADER_WIDTH, full.top()),
+            Pos2::new(full.right(), full.top() + RULER_HEIGHT),
+        );
+        let headers_area = Rect::from_min_max(
+            Pos2::new(full.left(), full.top() + RULER_HEIGHT),
+            Pos2::new(full.left() + TRACK_HEADER_WIDTH, full.bottom()),
+        );
+        let timeline_area = Rect::from_min_max(
+            Pos2::new(full.left() + TRACK_HEADER_WIDTH, full.top() + RULER_HEIGHT),
+            full.max,
+        );
+
         let total_beats = project.arrangement_length_beats();
         let timeline_view_w = if self.timeline_view_w > 0.0 {
             self.timeline_view_w
         } else {
-            (viewport_rect.width() - TRACK_HEADER_WIDTH).max(1.0)
+            timeline_area.width().max(1.0)
         };
         let (min_beat_width, max_beat_width) =
             arrangement_beat_width_bounds(timeline_view_w, total_beats);
         self.beat_width = self.beat_width.clamp(min_beat_width, max_beat_width);
+        // Zoom over ruler + timeline (header column is outside beat space).
+        let zoom_viewport = Rect::from_min_max(
+            Pos2::new(timeline_area.left(), full.top()),
+            timeline_area.max,
+        );
         apply_horizontal_wheel_controls(
             ui,
-            viewport_rect,
+            zoom_viewport,
             &mut self.beat_width,
             &mut self.scroll_offset.x,
             min_beat_width,
             max_beat_width,
+            0.0,
         );
 
         let metrics = TimelineMetrics {
             beat_width: self.beat_width,
         };
         let layout = TrackLayout::from_project(project, &self.automation_expanded);
-        let content_height = RULER_HEIGHT + layout.total_height() + ADD_TRACK_ROW_HEIGHT;
-        let content_width = TRACK_HEADER_WIDTH + total_beats * metrics.beat_width;
-        let viewport = ui.available_size();
+        project.ensure_pattern_lane();
+        self.sync_pattern_strips(project);
+        let track_area_height = layout.total_height();
+        let pattern_lanes_height =
+            PatternStripUi::pattern_lanes_area_height(project.pattern_lanes.len());
+        // Pure timeline scroll content: no header gutter, no ruler strip.
+        let content_height = track_area_height + pattern_lanes_height + ADD_TRACK_ROW_HEIGHT;
+        let content_width = total_beats * metrics.beat_width;
         let canvas_size = Vec2::new(
-            content_width.max(viewport.x),
-            content_height.max(viewport.y),
+            content_width.max(timeline_view_w),
+            content_height.max(timeline_area.height()),
         );
 
-        // Offset used to place content this frame (wheel updates apply next frame).
         let scroll = self.scroll_offset;
-
         let output = with_solid_scrollbars(ui, theme, |ui| {
+            let mut timeline_ui = ui.new_child(
+                UiBuilder::new()
+                    .id_salt("playlist_timeline")
+                    .max_rect(timeline_area)
+                    .layout(Layout::top_down(Align::LEFT)),
+            );
+            timeline_ui.set_clip_rect(timeline_area);
             daw_editor_scroll_area("playlist_canvas")
                 .scroll_offset(scroll)
-                .show(ui, |ui| {
+                .show(&mut timeline_ui, |ui| {
                     ui.set_min_size(canvas_size);
                     let (response, painter) =
                         ui.allocate_painter(canvas_size, Sense::click_and_drag());
                     let content = response.rect;
                     painter.rect_filled(content, 0.0, theme.panel_bg);
-                    let body = timeline_body_rect(content);
+                    // Shared timeline helpers add TIMELINE_GUTTER_WIDTH internally;
+                    // shift left so beat 0 lands on content.left().
+                    let body = playlist_beat_body(content);
                     let layout = TrackLayout::from_project(project, &self.automation_expanded);
+                    let track_area_height = layout.total_height();
+                    let pattern_lanes_height =
+                        PatternStripUi::pattern_lanes_area_height(project.pattern_lanes.len());
 
-                    // Visible viewport in screen space. Ruler stays pinned to the top
-                    // (follows horizontal scroll); track headers stay pinned to the left
-                    // (follow vertical scroll) - same sticky chrome as the piano roll.
-                    let viewport = Rect::from_min_size(content.min + scroll, viewport_rect.size())
-                        .intersect(ui.clip_rect());
-                    let sticky_ruler = Rect::from_min_max(
-                        viewport.min,
-                        Pos2::new(viewport.right(), viewport.top() + RULER_HEIGHT),
-                    );
-                    let ruler_timeline = Rect::from_min_max(
-                        Pos2::new(content.left(), sticky_ruler.top()),
-                        Pos2::new(content.right(), sticky_ruler.bottom()),
-                    );
-                    let sticky_headers = Rect::from_min_max(
-                        Pos2::new(viewport.left(), sticky_ruler.bottom()),
-                        Pos2::new(viewport.left() + TRACK_HEADER_WIDTH, viewport.bottom()),
-                    );
+                    let pattern_lane_hit = response.interact_pointer_pos().and_then(|pos| {
+                        project.pattern_lanes.iter().enumerate().find_map(|(idx, lane)| {
+                            PatternStripUi::contains_y(body, track_area_height, idx, pos.y)
+                                .then_some((idx, lane.id))
+                        })
+                    });
+                    let on_pattern_strip = pattern_lane_hit.is_some();
+                    let gesture_active = self.active_drag.is_some()
+                        || self.marquee.is_some()
+                        || self.any_pattern_strip_gesture_active();
 
-                    // When scrolled, content-space timeline hit tests treat the sticky
-                    // header column as beats; skip body seeks there (ruler still works).
-                    let on_sticky_headers = response
-                        .interact_pointer_pos()
-                        .is_some_and(|pos| sticky_headers.contains(pos));
-                    let gesture_active =
-                        self.active_drag.is_some() || self.marquee.is_some();
-                    let loop_handled = !gesture_active
-                        && handle_loop_region_pointer(
-                            &response,
-                            sticky_ruler,
-                            body,
-                            metrics,
-                            project,
-                            &mut self.dragging_loop_edge,
-                        );
-                    let allow_playhead = (self.dragging_playhead || !on_sticky_headers)
-                        && !gesture_active
-                        && !loop_handled;
+                    // Empty rect: header column is a separate widget, so timeline
+                    // hit-tests never land on headers. Kept so clip helpers stay shared.
+                    let no_header_overlay = Rect::NOTHING;
 
-                    if loop_handled {
-                        // Loop edge drag owns the pointer this frame.
-                    } else if allow_playhead
+                    if on_pattern_strip || self.any_pattern_strip_gesture_active() {
+                        let pattern_lane_work: Vec<(usize, u64)> = project
+                            .pattern_lanes
+                            .iter()
+                            .enumerate()
+                            .map(|(idx, lane)| (idx, lane.id))
+                            .collect();
+                        for (lane_index, lane_id) in pattern_lane_work {
+                            let on_this_strip = pattern_lane_hit
+                                .map(|(idx, _)| idx == lane_index)
+                                .unwrap_or(false);
+                            let strip_active = self
+                                .pattern_strips
+                                .get(&lane_id)
+                                .is_some_and(|strip| strip.gesture_active());
+                            if !on_this_strip && !strip_active {
+                                continue;
+                            }
+                            let Some(strip) = self.pattern_strips.get_mut(&lane_id) else {
+                                continue;
+                            };
+                            let strip_rect =
+                                PatternStripUi::strip_rect(body, track_area_height, lane_index);
+                            strip.handle_pointer(
+                                &response,
+                                body,
+                                strip_rect,
+                                lane_id,
+                                metrics,
+                                project,
+                                history,
+                                &mut self.selected_clip_ids,
+                            );
+                        }
+                    } else if !gesture_active
                         && handle_timeline_playhead_pointer(
                             &response,
-                            sticky_ruler,
+                            // Approximate ruler ref for body seeks; real ruler interact
+                            // runs after scroll (side-by-side dual Response).
+                            ruler_area.translate(Vec2::new(-TRACK_HEADER_WIDTH, 0.0)),
                             body,
                             metrics,
                             engine,
                             &mut self.dragging_playhead,
                             0.0,
-                            true,
                         )
                     {
-                        // Playhead handled; clip interactions skipped this frame when scrubbing.
-                    } else {
+                        // Playhead owns the pointer; skip clip picks this frame.
+                    } else if !gesture_active
+                        || self.active_drag.is_some()
+                        || self.marquee.is_some()
+                    {
                         handle_clip_pointer(
                             &response,
                             body,
-                            sticky_headers,
+                            no_header_overlay,
                             &layout,
                             metrics,
                             project,
@@ -424,15 +551,9 @@ impl PlaylistUi {
                             &mut self.open_clip_request,
                             &mut self.drag_moved,
                             selected_track,
+                            &mut self.pattern_strips,
                         );
                     }
-
-                    // Keep scrolled content out of the sticky header / ruler strips.
-                    let timeline_clip = Rect::from_min_max(
-                        Pos2::new(sticky_headers.right(), sticky_ruler.bottom()),
-                        content.max,
-                    );
-                    let timeline_painter = painter.with_clip_rect(timeline_clip);
 
                     let raise_clip_ids: HashSet<u64> = self
                         .active_drag
@@ -444,8 +565,10 @@ impl PlaylistUi {
                             continue;
                         };
                         let audible = project.track_audible(track);
+                        let override_windows =
+                            project.pattern_override_windows_for_track(track.id);
                         draw_lane_timeline(
-                            &timeline_painter,
+                            &painter,
                             lane_rect,
                             body,
                             metrics,
@@ -457,147 +580,50 @@ impl PlaylistUi {
                             audible,
                             project.bpm,
                             decoded_audio,
+                            &override_windows,
                             theme,
                         );
                     }
 
-                    if let Some(marquee) = &self.marquee {
-                        draw_marquee(&timeline_painter, marquee.rect(), theme);
-                    }
-
-                    // Sticky chrome on top of scrolled content.
-                    let track_ids: Vec<u64> = project.tracks.iter().map(|t| t.id).collect();
-                    for (index, track) in project.tracks.iter().enumerate() {
-                        let Some(lane_rect) = layout.clip_lane_rect(body, index) else {
-                            continue;
-                        };
-                        let header = Rect::from_min_max(
-                            Pos2::new(sticky_headers.left(), lane_rect.top()),
-                            Pos2::new(sticky_headers.right(), lane_rect.bottom()),
-                        );
-                        draw_track_header(
-                            &painter.with_clip_rect(sticky_headers),
-                            header,
-                            track.name.as_str(),
-                            track.instrument.display_name(),
-                            track.instrument.format_badge(),
-                            self.instrument_errors.get(&track.id).map(String::as_str),
-                            theme,
-                        );
-                    }
-
-                    draw_ruler(
-                        &painter.with_clip_rect(sticky_ruler),
-                        sticky_ruler,
-                        ruler_timeline,
-                        metrics,
-                        total_beats,
-                        project.beats_per_bar,
-                        theme,
-                    );
-
-                    // Loop region + playhead, clipped to the right of track headers.
-                    let playhead_clip = Rect::from_min_max(
-                        Pos2::new(sticky_headers.right(), sticky_ruler.top()),
-                        content.max,
-                    );
-                    if let Some((loop_start, loop_end)) = project.loop_span() {
-                        let hover_edge = response.hover_pos().and_then(|pos| {
-                            hit_test_loop_edge(
-                                sticky_ruler,
+                    for (lane_index, lane) in project.pattern_lanes.iter().enumerate() {
+                        let strip_rect =
+                            PatternStripUi::strip_rect(body, track_area_height, lane_index);
+                        if let Some(strip) = self.pattern_strips.get(&lane.id) {
+                            strip.paint(
+                                &painter,
+                                strip_rect,
                                 body,
                                 metrics,
-                                loop_start,
-                                loop_end,
-                                pos,
-                            )
-                        });
-                        let highlighted = self.dragging_loop_edge.or(hover_edge);
-                        draw_loop_region(
-                            &painter.with_clip_rect(playhead_clip),
-                            sticky_ruler,
-                            body,
-                            metrics,
-                            loop_start,
-                            loop_end,
-                            theme,
-                            highlighted,
-                        );
-                    }
-                    let playhead = engine.current_beats();
-                    let anchor = engine.playback_anchor_beats();
-                    let clip_painter = painter.with_clip_rect(playhead_clip);
-                    draw_playback_anchor(
-                        &clip_painter,
-                        sticky_ruler,
-                        body,
-                        metrics,
-                        anchor,
-                        playhead,
-                        true,
-                        theme,
-                    );
-                    draw_playhead(
-                        &clip_painter,
-                        sticky_ruler,
-                        body,
-                        metrics,
-                        playhead,
-                        true,
-                        theme,
-                    );
-
-                    // Track header controls (M/S, context menu, automation disclosure).
-                    // Disclosure toggles apply next frame so layout height stays consistent.
-                    let mut next_automation_expanded = self.automation_expanded.clone();
-                    for (index, track_id) in track_ids.iter().copied().enumerate() {
-                        let Some(lane_rect) = layout.clip_lane_rect(body, index) else {
-                            continue;
-                        };
-                        let header = Rect::from_min_max(
-                            Pos2::new(sticky_headers.left(), lane_rect.top()),
-                            Pos2::new(sticky_headers.right(), lane_rect.bottom()),
-                        );
-                        let track_snapshot = project
-                            .tracks
-                            .iter()
-                            .find(|t| t.id == track_id)
-                            .cloned();
-                        let Some(track_snapshot) = track_snapshot else {
-                            continue;
-                        };
-                        let mut auto_expanded = next_automation_expanded.contains(&track_id);
-                        track_header_row(
-                            ui,
-                            header,
-                            sticky_headers,
-                            &track_snapshot,
-                            track_id,
-                            project,
-                            engine,
-                            catalog,
-                            history,
-                            &mut self.change_instrument_search,
-                            self.instrument_errors.get(&track_id).map(String::as_str),
-                            theme,
-                            *selected_track == Some(track_id),
-                            selected_track,
-                            &mut self.plugin_editor_request,
-                            &mut self.delete_track_request,
-                            &mut self.duplicate_track_request,
-                            &mut self.hovered_track_header,
-                            Some(&mut auto_expanded),
-                            "playlist",
-                        );
-                        if auto_expanded {
-                            next_automation_expanded.insert(track_id);
-                        } else {
-                            next_automation_expanded.remove(&track_id);
+                                total_beats,
+                                project.beats_per_bar,
+                                project,
+                                lane.id,
+                                theme,
+                            );
                         }
                     }
 
-                    // Automation fold-out: sticky sub-headers + timeline curves.
-                    // Use the layout's expanded set (pre-toggle) for this frame's geometry.
+                    let add_lane_row = PatternStripUi::add_lane_row_rect(
+                        body,
+                        track_area_height,
+                        project.pattern_lanes.len(),
+                    );
+                    let add_lane_timeline = Rect::from_min_max(
+                        Pos2::new(content.left(), add_lane_row.top()),
+                        Pos2::new(content.right(), add_lane_row.bottom()),
+                    );
+                    painter.rect_filled(
+                        add_lane_timeline,
+                        0.0,
+                        theme.lane_bg.gamma_multiply(0.92),
+                    );
+
+                    if let Some(marquee) = &self.marquee {
+                        draw_marquee(&painter, marquee.rect(), theme);
+                    }
+
+                    // Automation fold-out timeline curves (headers live in the fixed column).
+                    let track_ids: Vec<u64> = project.tracks.iter().map(|t| t.id).collect();
                     for (index, track_id) in track_ids.iter().copied().enumerate() {
                         if !self.automation_expanded.contains(&track_id) {
                             continue;
@@ -605,41 +631,27 @@ impl PlaylistUi {
                         let Some(clip_lane) = layout.clip_lane_rect(body, index) else {
                             continue;
                         };
-                        let track_snapshot = project.track(track_id).cloned();
-                        let Some(track_snapshot) = track_snapshot else {
-                            continue;
-                        };
-                        let lane_ids: Vec<u64> = track_snapshot
-                            .automation_lanes
-                            .iter()
-                            .map(|lane| lane.id)
-                            .collect();
-                        for (lane_i, lane_id) in lane_ids.iter().copied().enumerate() {
+                        let lane_count = project
+                            .track(track_id)
+                            .map(|t| t.automation_lanes.len())
+                            .unwrap_or(0);
+                        for (lane_i, lane_id) in project
+                            .track(track_id)
+                            .map(|t| {
+                                t.automation_lanes
+                                    .iter()
+                                    .map(|lane| lane.id)
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default()
+                            .into_iter()
+                            .enumerate()
+                        {
                             let sub_top =
                                 clip_lane.bottom() + lane_i as f32 * AUTOMATION_LANE_BODY_HEIGHT;
-                            let sub_header = Rect::from_min_max(
-                                Pos2::new(sticky_headers.left(), sub_top),
-                                Pos2::new(
-                                    sticky_headers.right(),
-                                    sub_top + AUTOMATION_LANE_BODY_HEIGHT,
-                                ),
-                            );
                             let auto_body = Rect::from_min_max(
                                 Pos2::new(body.left(), sub_top),
                                 Pos2::new(body.right(), sub_top + AUTOMATION_LANE_BODY_HEIGHT),
-                            );
-                            self.automation.show_lane_header(
-                                ui,
-                                sub_header,
-                                project,
-                                track_id,
-                                lane_id,
-                                &track_snapshot,
-                                engine,
-                                history,
-                                settings,
-                                &mut settings_dirty,
-                                theme,
                             );
                             self.automation.show_lane_timeline(
                                 ui,
@@ -654,45 +666,26 @@ impl PlaylistUi {
                                 project.beats_per_bar,
                             );
                         }
-                        let add_top = clip_lane.bottom()
-                            + lane_ids.len() as f32 * AUTOMATION_LANE_BODY_HEIGHT;
-                        let add_row = Rect::from_min_max(
-                            Pos2::new(sticky_headers.left(), add_top),
-                            Pos2::new(
-                                sticky_headers.right(),
-                                add_top + ADD_AUTOMATION_ROW_HEIGHT,
-                            ),
-                        );
-                        // Dim empty timeline strip next to the add-row.
+                        let add_top =
+                            clip_lane.bottom() + lane_count as f32 * AUTOMATION_LANE_BODY_HEIGHT;
                         let add_body = Rect::from_min_max(
-                            Pos2::new(body.left(), add_top),
-                            Pos2::new(body.right(), add_top + ADD_AUTOMATION_ROW_HEIGHT),
+                            Pos2::new(content.left(), add_top),
+                            Pos2::new(content.right(), add_top + ADD_AUTOMATION_ROW_HEIGHT),
                         );
-                        ui.painter()
-                            .with_clip_rect(timeline_clip)
-                            .rect_filled(add_body, 0.0, theme.panel_bg.gamma_multiply(0.9));
-                        self.automation.show_add_lane_row(
-                            ui,
-                            add_row,
-                            project,
-                            track_id,
-                            history,
-                            theme,
-                        );
+                        painter.rect_filled(add_body, 0.0, theme.panel_bg.gamma_multiply(0.9));
                     }
 
-                    // Compact "+" centered under the last lane, with a bit of breathing room.
+                    // Compact "+" centered in the visible timeline, under the last lane.
                     let add_center = Pos2::new(
-                        (sticky_headers.right() + viewport.right()) * 0.5,
-                        body.top()
-                            + layout.total_height()
+                        timeline_area.center().x,
+                        content.top()
+                            + track_area_height
+                            + pattern_lanes_height
                             + ADD_TRACK_GAP
                             + ADD_TRACK_BUTTON_SIZE * 0.5,
                     );
-                    let add_button = Rect::from_center_size(
-                        add_center,
-                        Vec2::splat(ADD_TRACK_BUTTON_SIZE),
-                    );
+                    let add_button =
+                        Rect::from_center_size(add_center, Vec2::splat(ADD_TRACK_BUTTON_SIZE));
                     ui.allocate_new_ui(UiBuilder::new().max_rect(add_button), |ui| {
                         egui::menu::menu_button(
                             ui,
@@ -717,21 +710,343 @@ impl PlaylistUi {
                         .on_hover_text("Add track");
                     });
 
-                    self.automation_expanded = next_automation_expanded;
+                    (response, content, body, layout, track_area_height)
                 })
         });
 
+        let (response, _content, body, layout, track_area_height) = output.inner;
         self.scroll_offset = output.state.offset;
-        self.timeline_view_w = (output.inner_rect.width() - TRACK_HEADER_WIDTH).max(1.0);
+        self.timeline_view_w = output.inner_rect.width().max(1.0);
 
-        if self.active_drag.is_none() && !self.drag_moved {
-            // click-without-drag handled in handle_clip_pointer
+        // Shift ruler reference so shared helpers (gutter-aware) line up with beat 0.
+        let ruler_ref = Rect::from_min_max(
+            Pos2::new(ruler_area.left() - TRACK_HEADER_WIDTH, ruler_area.top()),
+            ruler_area.max,
+        );
+
+        let ruler_response = ui.interact(
+            ruler_area,
+            ui.id().with("playlist_ruler"),
+            Sense::click_and_drag(),
+        );
+
+        let gesture_active = self.active_drag.is_some()
+            || self.marquee.is_some()
+            || self.any_pattern_strip_gesture_active();
+        let loop_handled = !gesture_active
+            && handle_loop_region_pointer(
+                &ruler_response,
+                ruler_ref,
+                body,
+                metrics,
+                project,
+                &mut self.dragging_loop_edge,
+            );
+
+        // Ruler + timeline are separate interact regions (side-by-side), so playhead
+        // scrubbing must consult the ruler here as well. Body seeks already ran inside
+        // the scroll callback (before clip picks); continue an in-flight scrub on
+        // whichever region still owns the pointer.
+        if !gesture_active && !loop_handled {
+            if self.dragging_playhead {
+                let active = if response.interact_pointer_pos().is_some() {
+                    &response
+                } else {
+                    &ruler_response
+                };
+                handle_timeline_playhead_pointer(
+                    active,
+                    ruler_ref,
+                    body,
+                    metrics,
+                    engine,
+                    &mut self.dragging_playhead,
+                    0.0,
+                );
+            } else {
+                handle_timeline_playhead_pointer(
+                    &ruler_response,
+                    ruler_ref,
+                    body,
+                    metrics,
+                    engine,
+                    &mut self.dragging_playhead,
+                    0.0,
+                );
+            }
         }
+
+        // ---- Fixed header column (vertical scroll synced via content.top()) ----
+        ui.painter()
+            .with_clip_rect(headers_area)
+            .rect_filled(headers_area, 0.0, theme.track_header_bg);
+        ui.painter().rect_filled(corner, 0.0, theme.gutter_bg);
+        ui.painter().line_segment(
+            [corner.right_top(), corner.right_bottom()],
+            egui::Stroke::new(1.5_f32, theme.key_divider),
+        );
+        ui.painter().line_segment(
+            [headers_area.right_top(), headers_area.right_bottom()],
+            egui::Stroke::new(1.5_f32, theme.key_divider),
+        );
+
+        let headers_painter = ui.painter().with_clip_rect(headers_area);
+        let track_ids: Vec<u64> = project.tracks.iter().map(|t| t.id).collect();
+        let mut next_automation_expanded = self.automation_expanded.clone();
+
+        for (index, track) in project.tracks.iter().enumerate() {
+            let Some(lane_rect) = layout.clip_lane_rect(body, index) else {
+                continue;
+            };
+            let header = Rect::from_min_max(
+                Pos2::new(headers_area.left(), lane_rect.top()),
+                Pos2::new(headers_area.right(), lane_rect.bottom()),
+            );
+            draw_track_header(
+                &headers_painter,
+                header,
+                track.name.as_str(),
+                track.instrument.display_name(),
+                track.instrument.format_badge(),
+                self.instrument_errors.get(&track.id).map(String::as_str),
+                theme,
+            );
+        }
+
+        for (lane_index, lane) in project.pattern_lanes.iter().enumerate() {
+            let strip_rect = PatternStripUi::strip_rect(body, track_area_height, lane_index);
+            let header = Rect::from_min_max(
+                Pos2::new(headers_area.left(), strip_rect.top()),
+                Pos2::new(headers_area.right(), strip_rect.bottom()),
+            );
+            PatternStripUi::paint_lane_header(
+                &headers_painter,
+                header,
+                lane.name.as_str(),
+                theme,
+            );
+        }
+
+        let add_lane_row = PatternStripUi::add_lane_row_rect(
+            body,
+            track_area_height,
+            project.pattern_lanes.len(),
+        );
+        let add_lane_header = Rect::from_min_max(
+            Pos2::new(headers_area.left(), add_lane_row.top()),
+            Pos2::new(headers_area.right(), add_lane_row.bottom()),
+        );
+        headers_painter.rect_filled(add_lane_header, 0.0, theme.track_header_bg);
+        let add_lane_button = Rect::from_center_size(
+            add_lane_header.center(),
+            Vec2::new(ADD_TRACK_BUTTON_SIZE, ADD_TRACK_BUTTON_SIZE),
+        );
+        let add_lane_response = ui.interact(
+            add_lane_button,
+            ui.id().with("add_pattern_lane"),
+            Sense::click(),
+        );
+        headers_painter.rect_stroke(
+            add_lane_button,
+            4.0,
+            egui::Stroke::new(1.0_f32, theme.separator),
+            egui::StrokeKind::Inside,
+        );
+        headers_painter.text(
+            add_lane_button.center(),
+            egui::Align2::CENTER_CENTER,
+            "+",
+            egui::FontId::proportional(16.0),
+            theme.text_muted,
+        );
+        if add_lane_response.clicked() {
+            history.push_before(project.clone());
+            project.add_pattern_lane();
+        }
+        add_lane_response.on_hover_text("Add pattern lane");
+
+        for (index, track_id) in track_ids.iter().copied().enumerate() {
+            let Some(lane_rect) = layout.clip_lane_rect(body, index) else {
+                continue;
+            };
+            let header = Rect::from_min_max(
+                Pos2::new(headers_area.left(), lane_rect.top()),
+                Pos2::new(headers_area.right(), lane_rect.bottom()),
+            );
+            let track_snapshot = project
+                .tracks
+                .iter()
+                .find(|t| t.id == track_id)
+                .cloned();
+            let Some(track_snapshot) = track_snapshot else {
+                continue;
+            };
+            let mut auto_expanded = next_automation_expanded.contains(&track_id);
+            // Child UI pinned to the header so M/S allocate_ui_at_rect cannot
+            // rewind the parent cursor (same fix as devices headers).
+            let mut row_ui = ui.new_child(
+                UiBuilder::new()
+                    .id_salt(("playlist_header_row", track_id))
+                    .max_rect(header.intersect(headers_area))
+                    .layout(Layout::top_down(Align::Min)),
+            );
+            row_ui.set_clip_rect(headers_area);
+            track_header_row(
+                &mut row_ui,
+                header,
+                headers_area,
+                &track_snapshot,
+                track_id,
+                project,
+                engine,
+                catalog,
+                history,
+                &mut self.change_instrument_search,
+                self.instrument_errors.get(&track_id).map(String::as_str),
+                theme,
+                *selected_track == Some(track_id),
+                selected_track,
+                &mut self.plugin_editor_request,
+                &mut self.delete_track_request,
+                &mut self.duplicate_track_request,
+                &mut self.hovered_track_header,
+                Some(&mut auto_expanded),
+                "playlist",
+                track_rename,
+            );
+            if auto_expanded {
+                next_automation_expanded.insert(track_id);
+            } else {
+                next_automation_expanded.remove(&track_id);
+            }
+        }
+
+        for (index, track_id) in track_ids.iter().copied().enumerate() {
+            if !self.automation_expanded.contains(&track_id) {
+                continue;
+            }
+            let Some(clip_lane) = layout.clip_lane_rect(body, index) else {
+                continue;
+            };
+            let track_snapshot = project.track(track_id).cloned();
+            let Some(track_snapshot) = track_snapshot else {
+                continue;
+            };
+            let lane_ids: Vec<u64> = track_snapshot
+                .automation_lanes
+                .iter()
+                .map(|lane| lane.id)
+                .collect();
+            for (lane_i, lane_id) in lane_ids.iter().copied().enumerate() {
+                let sub_top = clip_lane.bottom() + lane_i as f32 * AUTOMATION_LANE_BODY_HEIGHT;
+                let sub_header = Rect::from_min_max(
+                    Pos2::new(headers_area.left(), sub_top),
+                    Pos2::new(
+                        headers_area.right(),
+                        sub_top + AUTOMATION_LANE_BODY_HEIGHT,
+                    ),
+                );
+                self.automation.show_lane_header(
+                    ui,
+                    sub_header,
+                    project,
+                    track_id,
+                    lane_id,
+                    &track_snapshot,
+                    engine,
+                    history,
+                    settings,
+                    &mut settings_dirty,
+                    theme,
+                );
+            }
+            let add_top =
+                clip_lane.bottom() + lane_ids.len() as f32 * AUTOMATION_LANE_BODY_HEIGHT;
+            let add_row = Rect::from_min_max(
+                Pos2::new(headers_area.left(), add_top),
+                Pos2::new(
+                    headers_area.right(),
+                    add_top + ADD_AUTOMATION_ROW_HEIGHT,
+                ),
+            );
+            self.automation.show_add_lane_row(
+                ui,
+                add_row,
+                project,
+                track_id,
+                history,
+                theme,
+            );
+        }
+
+        self.automation_expanded = next_automation_expanded;
+
+        // ---- Ruler + playhead / loop (beside the timeline, not over headers) ----
+        draw_ruler(
+            &ui.painter().with_clip_rect(ruler_area),
+            ruler_ref,
+            body,
+            metrics,
+            total_beats,
+            project.beats_per_bar,
+            theme,
+        );
+        let playhead_clip =
+            Rect::from_min_max(Pos2::new(timeline_area.left(), full.top()), full.max);
+        let clip_painter = ui.painter().with_clip_rect(playhead_clip);
+        if let Some((loop_start, loop_end)) = project.loop_span() {
+            let hover_edge = ruler_response.hover_pos().and_then(|pos| {
+                hit_test_loop_edge(ruler_ref, body, metrics, loop_start, loop_end, pos)
+            });
+            let highlighted = self.dragging_loop_edge.or(hover_edge);
+            draw_loop_region(
+                &clip_painter,
+                ruler_ref,
+                body,
+                metrics,
+                loop_start,
+                loop_end,
+                theme,
+                highlighted,
+            );
+        }
+        let playhead = engine.current_beats();
+        let anchor = engine.playback_anchor_beats();
+        draw_playback_anchor(
+            &clip_painter,
+            ruler_ref,
+            body,
+            metrics,
+            anchor,
+            playhead,
+            true,
+            theme,
+        );
+        draw_playhead(
+            &clip_painter,
+            ruler_ref,
+            body,
+            metrics,
+            playhead,
+            true,
+            theme,
+        );
+
         if self.active_drag.is_none() {
             self.drag_moved = false;
         }
         settings_dirty
     }
+}
+
+/// Beat-mapping rect for playlist scroll content. Shared `timeline_x` / `x_to_beat`
+/// helpers add `TIMELINE_GUTTER_WIDTH` to `rect.left()`, so shifting left by the
+/// header column makes beat 0 resolve to `content.left()`.
+fn playlist_beat_body(content: Rect) -> Rect {
+    Rect::from_min_max(
+        Pos2::new(content.left() - TRACK_HEADER_WIDTH, content.top()),
+        content.max,
+    )
 }
 
 /// Instrument picker that creates a track; returns true when a choice was made.
@@ -814,6 +1129,7 @@ pub(crate) fn track_header_row(
     hovered_track_header: &mut Option<u64>,
     automation_expanded: Option<&mut bool>,
     id_scope: &'static str,
+    track_rename: &mut TrackRenameUi,
 ) {
     draw_track_header(
         &ui.painter().with_clip_rect(paint_clip),
@@ -840,6 +1156,13 @@ pub(crate) fn track_header_row(
     }
     if header_response.clicked() {
         *select_track_request = Some(track_id);
+    }
+
+    let name_rect = track_header_name_rect(header);
+    let name_id = ui.id().with((id_scope, "track_name", track_id));
+    let name_response = ui.interact(name_rect, name_id, Sense::click());
+    if name_response.double_clicked() {
+        track_rename.begin(track_id, &track_snapshot.name);
     }
 
     if let Some(expanded) = automation_expanded {
@@ -944,6 +1267,11 @@ pub(crate) fn track_header_row(
             }
             ui.separator();
         }
+        if ui.button("Rename track...").clicked() {
+            track_rename.begin(track_id, &track_snapshot.name);
+            ui.close_menu();
+        }
+        ui.separator();
         ui.label("Change instrument");
         ui.separator();
         if let Some(choice) = show_instrument_picker(
@@ -1016,6 +1344,13 @@ pub(crate) fn track_header_row(
     });
 }
 
+fn track_header_name_rect(header: Rect) -> Rect {
+    Rect::from_min_max(
+        Pos2::new(header.left() + 4.0, header.top() + 4.0),
+        Pos2::new(header.right() - MS_BUTTON_SIZE * 2.0 - 12.0, header.top() + 36.0),
+    )
+}
+
 fn draw_track_header(
     painter: &egui::Painter,
     header: Rect,
@@ -1074,6 +1409,7 @@ pub(crate) fn draw_lane_timeline(
     audible: bool,
     bpm: f32,
     decoded_audio: &HashMap<PathBuf, Arc<DecodedAudio>>,
+    override_windows: &[(f32, f32)],
     theme: &ThemeColors,
 ) {
     let timeline_lane = Rect::from_min_max(
@@ -1100,7 +1436,19 @@ pub(crate) fn draw_lane_timeline(
         let clip_rect = clip_block_rect(timeline, lane, clip, metrics);
         let is_selected = selected.contains(&clip.id());
         let is_audio = clip.as_audio().is_some();
-        let fill = if is_selected {
+        let ghosted = audible
+            && !is_audio
+            && override_windows.iter().any(|(win_start, win_end)| {
+                Project::beat_ranges_overlap(
+                    clip.start_beats(),
+                    clip.end_beats(),
+                    *win_start,
+                    *win_end,
+                )
+            });
+        let fill = if ghosted {
+            theme.clip_ghosted.gamma_multiply(0.42)
+        } else if is_selected {
             if is_audio {
                 theme.clip_fill_selected.gamma_multiply(0.85)
             } else {
@@ -1290,32 +1638,14 @@ fn draw_clip_note_preview(
     let Some(clip) = clip.as_midi() else {
         return;
     };
-    if clip.notes.is_empty() {
-        return;
-    }
-    let preview_top = clip_rect.top() + 20.0;
-    let preview_height = (clip_rect.height() - 24.0).max(8.0);
-    let pitch_span = (MAX_PITCH - MIN_PITCH + 1) as f32;
-    let length = clip.length_beats.max(SNAP_BEATS);
-    // Clip notes to the block so resize does not paint past the edges.
-    let clipped = painter.with_clip_rect(clip_rect);
-
-    for note in &clip.notes {
-        if note.start_beats >= length {
-            continue;
-        }
-        let rel_start = note.start_beats / length;
-        let rel_end = note.end_beats().min(length) / length;
-        let x0 = clip_rect.left() + 4.0 + rel_start * (clip_rect.width() - 8.0);
-        let x1 = clip_rect.left() + 4.0 + rel_end * (clip_rect.width() - 8.0);
-        let pitch_norm = (note.pitch as f32 - MIN_PITCH as f32) / pitch_span;
-        let y = preview_top + (1.0 - pitch_norm) * preview_height;
-        clipped.rect_filled(
-            Rect::from_min_max(Pos2::new(x0, y), Pos2::new(x1.max(x0 + 2.0), y + 3.0)),
-            1.0,
-            theme.clip_note_preview,
-        );
-    }
+    draw_note_preview(
+        painter,
+        clip_rect,
+        &clip.notes,
+        clip.length_beats,
+        theme,
+        &NotePreviewStyle::clip_thumbnail(),
+    );
 }
 
 pub(crate) fn hit_test_clip<'a>(
@@ -1460,6 +1790,12 @@ fn sync_selected_track_from_clips(
     }
 }
 
+fn clear_all_pattern_strips(strips: &mut HashMap<u64, PatternStripUi>) {
+    for strip in strips.values_mut() {
+        strip.clear_selection();
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn handle_clip_pointer(
     response: &Response,
@@ -1475,6 +1811,7 @@ fn handle_clip_pointer(
     open_clip_request: &mut Option<u64>,
     drag_moved: &mut bool,
     selected_track: &mut Option<u64>,
+    pattern_strips: &mut HashMap<u64, PatternStripUi>,
 ) {
     update_clip_resize_hover_cursor(response, body, sticky_headers, layout, project, metrics);
 
@@ -1537,6 +1874,7 @@ fn handle_clip_pointer(
             *selected =
                 select_clips_in_rect(body, layout, project, active_marquee.rect(), metrics);
             sync_selected_track_from_clips(project, selected, selected_track);
+            clear_all_pattern_strips(pattern_strips);
         }
         return;
     }
@@ -1584,6 +1922,7 @@ fn handle_clip_pointer(
                 selected.clear();
                 selected.insert(clip.id());
             }
+            clear_all_pattern_strips(pattern_strips);
             *selected_track = Some(track_id);
 
             // Snapshot before Shift-duplicate so one undo covers dup+move.
@@ -1660,6 +1999,24 @@ fn handle_clip_pointer(
         }
     }
 
+    if response.clicked_by(egui::PointerButton::Secondary) && !response.dragged() {
+        if let Some(clip) = hit_test_clip(
+            body,
+            lane,
+            &project.tracks[track_index].clips,
+            pointer,
+            metrics,
+        ) {
+            let clip_id = clip.id();
+            let before = project.clone();
+            project.remove_clip(clip_id);
+            history.push_before(before);
+            selected.remove(&clip_id);
+            clear_all_pattern_strips(pattern_strips);
+            return;
+        }
+    }
+
     if response.clicked_by(egui::PointerButton::Primary)
         && !response.dragged()
         && is_timeline_pointer(lane, pointer)
@@ -1680,6 +2037,7 @@ fn handle_clip_pointer(
                 selected.clear();
                 selected.insert(clip.id());
             }
+            clear_all_pattern_strips(pattern_strips);
             *selected_track = Some(track_id);
         } else {
             let start = Project::snap_beats(x_to_beat(body, pointer.x, metrics).max(0.0));
@@ -1690,6 +2048,7 @@ fn handle_clip_pointer(
                 history.push_before(before);
                 selected.clear();
                 selected.insert(clip_id);
+                clear_all_pattern_strips(pattern_strips);
                 *selected_track = Some(track_id);
             }
         }
@@ -1699,6 +2058,7 @@ fn handle_clip_pointer(
         if let Some(clip_id) = hit_test_clip_id(body, layout, project, pointer, metrics) {
             selected.clear();
             selected.insert(clip_id);
+            clear_all_pattern_strips(pattern_strips);
             *selected_track = Some(track_id);
             *open_clip_request = Some(clip_id);
         }
@@ -1884,6 +2244,17 @@ pub(crate) fn handle_single_track_clip_pointer(
                 Rect::from_two_pos(press_pos, pointer),
                 metrics,
             );
+        }
+    }
+
+    if response.clicked_by(egui::PointerButton::Secondary) && !response.dragged() {
+        if let Some(clip) = hit_test_clip(body, lane, clips, pointer, metrics) {
+            let clip_id = clip.id();
+            let before = project.clone();
+            project.remove_clip(clip_id);
+            history.push_before(before);
+            selected.remove(&clip_id);
+            return;
         }
     }
 
