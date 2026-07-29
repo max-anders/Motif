@@ -611,6 +611,15 @@ impl PlaylistUi {
                         );
                     }
 
+                    let priority_row =
+                        PatternStripUi::priority_row_rect(body, track_area_height);
+                    PatternStripUi::paint_priority_timeline(
+                        &painter,
+                        priority_row,
+                        project.pattern_overrides_playlist,
+                        theme,
+                    );
+
                     for (lane_index, lane) in project.pattern_lanes.iter().enumerate() {
                         let strip_rect =
                             PatternStripUi::strip_rect(body, track_area_height, lane_index);
@@ -838,6 +847,19 @@ impl PlaylistUi {
                 theme,
             );
         }
+
+        let priority_row = PatternStripUi::priority_row_rect(body, track_area_height);
+        let priority_header = Rect::from_min_max(
+            Pos2::new(headers_area.left(), priority_row.top()),
+            Pos2::new(headers_area.right(), priority_row.bottom()),
+        );
+        PatternStripUi::show_priority_header(
+            ui,
+            priority_header,
+            headers_area,
+            project,
+            theme,
+        );
 
         for (lane_index, lane) in project.pattern_lanes.iter().enumerate() {
             let strip_rect = PatternStripUi::strip_rect(body, track_area_height, lane_index);

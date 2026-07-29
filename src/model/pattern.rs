@@ -75,6 +75,10 @@ impl PatternTrackContent {
 }
 
 impl PatternBlock {
+    pub fn has_override_notes(&self) -> bool {
+        self.tracks.iter().any(|row| !row.notes.is_empty())
+    }
+
     pub fn end_beats(&self) -> f32 {
         self.start_beats + self.length_beats
     }
@@ -161,6 +165,9 @@ fn pattern_notes_for_track_in_block(block: &PatternBlock, track_id: u64) -> Vec<
 
 /// Beat ranges where playlist MIDI is visually overridden for one track (ghost dimming).
 pub fn override_windows_for_track(project: &Project, track_id: u64) -> Vec<(f32, f32)> {
+    if !project.pattern_overrides_playlist {
+        return Vec::new();
+    }
     if let Some(solo_block) = solo_pattern_block(&project.pattern_lanes) {
         if solo_block
             .track_content(track_id)
@@ -200,6 +207,10 @@ pub fn override_windows_for_track(project: &Project, track_id: u64) -> Vec<(f32,
 pub fn resolve_midi_for_track(project: &Project, track_id: u64) -> Vec<ResolvedMidiNote> {
     if let Some(solo_block) = solo_pattern_block(&project.pattern_lanes) {
         return pattern_notes_for_track_in_block(solo_block, track_id);
+    }
+
+    if !project.pattern_overrides_playlist {
+        return playlist_midi_for_track(project, track_id);
     }
 
     let mut notes = playlist_midi_for_track(project, track_id);
@@ -492,6 +503,46 @@ mod tests {
         assert_eq!(resolved[1].end_beats, 6.0);
         assert_eq!(resolved[2].pitch, 62);
         assert_eq!(resolved[2].start_beats, 8.0);
+    }
+
+    #[test]
+    fn playlist_priority_ignores_pattern_rows_until_solo() {
+        let project = empty_project_with_tracks(vec![track_with_clip(
+            1,
+            0.0,
+            16.0,
+            vec![note(1, 60, 0.0, 8.0)],
+        )]);
+        let mut project = project;
+        project.pattern_overrides_playlist = false;
+        project.pattern_lanes = vec![PatternLane {
+            id: 1,
+            name: String::from("Lane 1"),
+            blocks: vec![PatternBlock {
+                id: 1,
+                name: String::from("Draft"),
+                start_beats: 4.0,
+                length_beats: 4.0,
+                solo: false,
+                tracks: vec![PatternTrackContent {
+                    track_id: 1,
+                    notes: vec![note(10, 72, 0.0, 2.0)],
+                    row_mode: None,
+                }],
+            }],
+        }];
+
+        let resolved = resolve_midi_for_track(&project, 1);
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].pitch, 60);
+        assert_eq!(resolved[0].end_beats, 8.0);
+
+        assert!(override_windows_for_track(&project, 1).is_empty());
+
+        project.pattern_lanes[0].blocks[0].solo = true;
+        let soloed = resolve_midi_for_track(&project, 1);
+        assert_eq!(soloed.len(), 1);
+        assert_eq!(soloed[0].pitch, 72);
     }
 
     #[test]

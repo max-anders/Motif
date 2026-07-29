@@ -3673,6 +3673,34 @@ mod tests {
     }
 
     #[test]
+    fn playback_playlist_priority_ignores_pattern_rows() {
+        let mut project = Project::default();
+        project.tracks = vec![track_with_clip(1, vec![note(1, 60, 0.0, 8.0)])];
+        project.pattern_overrides_playlist = false;
+        project.pattern_lanes = vec![PatternLane {
+            id: 1,
+            name: String::from("Lane 1"),
+            blocks: vec![PatternBlock {
+                id: 1,
+                name: String::from("Draft"),
+                start_beats: 4.0,
+                length_beats: 4.0,
+                solo: false,
+                tracks: vec![PatternTrackContent {
+                    track_id: 1,
+                    notes: vec![note(10, 72, 0.0, 2.0)],
+                    row_mode: None,
+                }],
+            }],
+        }];
+
+        let rt_notes = track_rt_notes(&project, &project.tracks[0]);
+        assert_eq!(rt_notes.len(), 1);
+        assert_eq!(rt_notes[0].pitch, 60);
+        assert_eq!(rt_notes[0].end_beats, 8.0);
+    }
+
+    #[test]
     fn playback_solo_block_silences_tracks_it_does_not_claim() {
         let mut project = Project::default();
         project.tracks = vec![

@@ -16,6 +16,7 @@ use crate::ui::timeline::{
 pub const PATTERN_STRIP_HEIGHT: f32 = 40.0;
 pub const PATTERN_STRIP_GAP: f32 = 4.0;
 pub const PATTERN_STRIP_LANE_GAP: f32 = 2.0;
+pub const PATTERN_PRIORITY_ROW_HEIGHT: f32 = 26.0;
 pub const ADD_PATTERN_LANE_ROW_HEIGHT: f32 = 28.0;
 const SOLO_BUTTON_WIDTH: f32 = 18.0;
 
@@ -96,19 +97,30 @@ impl PatternStripUi {
 
     /// Total vertical space used by `lane_count` pattern strips plus the add-lane row.
     pub fn pattern_lanes_area_height(lane_count: usize) -> f32 {
-        if lane_count == 0 {
-            return PATTERN_STRIP_GAP + ADD_PATTERN_LANE_ROW_HEIGHT;
-        }
-        PATTERN_STRIP_GAP
-            + lane_count as f32 * PATTERN_STRIP_HEIGHT
-            + (lane_count.saturating_sub(1)) as f32 * PATTERN_STRIP_LANE_GAP
-            + PATTERN_STRIP_GAP
-            + ADD_PATTERN_LANE_ROW_HEIGHT
+        let strips = if lane_count == 0 {
+            PATTERN_STRIP_GAP + ADD_PATTERN_LANE_ROW_HEIGHT
+        } else {
+            PATTERN_STRIP_GAP
+                + lane_count as f32 * PATTERN_STRIP_HEIGHT
+                + (lane_count.saturating_sub(1)) as f32 * PATTERN_STRIP_LANE_GAP
+                + PATTERN_STRIP_GAP
+                + ADD_PATTERN_LANE_ROW_HEIGHT
+        };
+        PATTERN_PRIORITY_ROW_HEIGHT + strips
+    }
+
+    pub fn priority_row_rect(body: Rect, track_area_height: f32) -> Rect {
+        let top = body.top() + track_area_height;
+        Rect::from_min_max(
+            Pos2::new(body.left(), top),
+            Pos2::new(body.right(), top + PATTERN_PRIORITY_ROW_HEIGHT),
+        )
     }
 
     /// Y offset of one pattern strip below track lanes (lane 0 = top / highest priority).
     pub fn strip_top(track_area_height: f32, lane_index: usize) -> f32 {
         track_area_height
+            + PATTERN_PRIORITY_ROW_HEIGHT
             + PATTERN_STRIP_GAP
             + lane_index as f32 * (PATTERN_STRIP_HEIGHT + PATTERN_STRIP_LANE_GAP)
     }
@@ -137,6 +149,114 @@ impl PatternStripUi {
             Pos2::new(body.left(), top),
             Pos2::new(body.right(), top + ADD_PATTERN_LANE_ROW_HEIGHT),
         )
+    }
+
+    /// Timeline half of the play-priority divider between track lanes and pattern strips.
+    pub fn paint_priority_timeline(
+        painter: &egui::Painter,
+        row: Rect,
+        patterns_override: bool,
+        theme: &ThemeColors,
+    ) {
+        let bg = if patterns_override {
+            theme.accent.gamma_multiply(0.10)
+        } else {
+            theme.panel_bg.gamma_multiply(0.92)
+        };
+        painter.rect_filled(row, 0.0, bg);
+        painter.line_segment(
+            [row.left_top(), row.right_top()],
+            egui::Stroke::new(1.0_f32, theme.separator),
+        );
+        painter.line_segment(
+            [row.left_bottom(), row.right_bottom()],
+            egui::Stroke::new(1.0_f32, theme.separator),
+        );
+        let hint_rect = Rect::from_min_max(
+            Pos2::new(row.left() + TRACK_HEADER_WIDTH + 6.0, row.top()),
+            row.max,
+        );
+        let hint = if patterns_override {
+            "Patterns override playlist MIDI"
+        } else {
+            "Playlist MIDI wins - pattern rows are draft until bake or solo"
+        };
+        painter.with_clip_rect(hint_rect).text(
+            Pos2::new(hint_rect.left(), hint_rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            hint,
+            egui::FontId::proportional(10.0),
+            theme.text_muted,
+        );
+    }
+
+    /// Header-column toggle: Playlist vs Patterns playback priority.
+    pub fn show_priority_header(
+        ui: &mut egui::Ui,
+        header: Rect,
+        clip: Rect,
+        project: &mut Project,
+        theme: &ThemeColors,
+    ) {
+        let painter = ui.painter().with_clip_rect(clip);
+        let patterns_win = project.pattern_overrides_playlist;
+        painter.rect_filled(header, 0.0, theme.track_header_bg);
+        let gap = 3.0;
+        let btn_w = (header.width() - gap * 3.0) / 2.0;
+        let btn_h = header.height() - 8.0;
+        let playlist_btn = Rect::from_center_size(
+            Pos2::new(header.left() + gap + btn_w * 0.5, header.center().y),
+            Vec2::new(btn_w, btn_h),
+        );
+        let patterns_btn = Rect::from_center_size(
+            Pos2::new(header.right() - gap - btn_w * 0.5, header.center().y),
+            Vec2::new(btn_w, btn_h),
+        );
+
+        for (rect, label, active, value) in [
+            (playlist_btn, "Playlist", !patterns_win, false),
+            (patterns_btn, "Patterns", patterns_win, true),
+        ] {
+            let fill = if active {
+                theme.accent.gamma_multiply(0.35)
+            } else {
+                theme.widget_bg
+            };
+            let stroke = if active {
+                theme.accent
+            } else {
+                theme.separator
+            };
+            painter.rect(
+                rect,
+                3.0,
+                fill,
+                egui::Stroke::new(1.0_f32, stroke),
+                egui::StrokeKind::Inside,
+            );
+            painter.text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                label,
+                egui::FontId::proportional(10.0),
+                if active {
+                    theme.text_primary
+                } else {
+                    theme.text_muted
+                },
+            );
+            let id = ui.id().with(("pattern_play_priority", label));
+            let response = ui.interact(rect, id, egui::Sense::click());
+            if response.clicked() && project.pattern_overrides_playlist != value {
+                project.pattern_overrides_playlist = value;
+            }
+            let hover = if value {
+                "Pattern rows replace playlist MIDI in their windows"
+            } else {
+                "Playlist clips play; pattern rows are draft until bake or block solo"
+            };
+            response.on_hover_text(hover);
+        }
     }
 
     /// Lane label in the fixed header column (side-by-side playlist layout).
@@ -207,7 +327,16 @@ impl PatternStripUi {
         for block in draw_order {
             let block_rect = pattern_block_rect(body, strip, block, metrics);
             let selected = self.selected_block_ids.contains(&block.id);
-            let fill = if selected {
+            let ghosted = !project.pattern_overrides_playlist
+                && block.has_override_notes()
+                && !block.solo;
+            let fill = if ghosted {
+                if selected {
+                    theme.pattern_block_fill_selected.gamma_multiply(0.42)
+                } else {
+                    theme.clip_ghosted.gamma_multiply(0.42)
+                }
+            } else if selected {
                 theme.pattern_block_fill_selected
             } else {
                 theme.pattern_block_fill

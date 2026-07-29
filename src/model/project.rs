@@ -48,6 +48,11 @@ pub struct Project {
     /// Master bus fader in dB (0 = unity).
     #[serde(default)]
     pub master_gain_db: f32,
+    /// When true, pattern blocks with notes replace playlist MIDI in their windows
+    /// (default). When false, playlist MIDI wins; pattern rows are draft until bake
+    /// or block solo.
+    #[serde(default = "default_pattern_overrides_playlist")]
+    pub pattern_overrides_playlist: bool,
     pub tracks: Vec<Track>,
     /// Section MIDI overrides; lane order is top-to-bottom priority (index 0 wins).
     #[serde(default)]
@@ -99,6 +104,10 @@ fn default_next_pattern_block_id() -> u64 {
     1
 }
 
+fn default_pattern_overrides_playlist() -> bool {
+    true
+}
+
 /// Legacy on-disk format before tracks/clips.
 #[derive(Debug, Deserialize)]
 struct LegacyProject {
@@ -118,6 +127,7 @@ impl Default for Project {
             loop_start_beats: 0.0,
             loop_enabled: false,
             master_gain_db: 0.0,
+            pattern_overrides_playlist: true,
             tracks: Vec::new(),
             pattern_lanes: Vec::new(),
             next_note_id: 1,
@@ -2082,6 +2092,7 @@ impl Project {
             loop_start_beats: 0.0,
             loop_enabled: false,
             master_gain_db: 0.0,
+            pattern_overrides_playlist: true,
             tracks: vec![track],
             pattern_lanes: Vec::new(),
             next_note_id: legacy.next_note_id,

@@ -154,6 +154,7 @@ cargo run --release
 
 The pattern strip sits under the playlist tracks for drafting section-scoped MIDI overrides (verse/chorus variations) without touching playlist clips. Stacked lanes share scroll/zoom; the top lane wins when two blocks claim the same track over the same time.
 
+- **Playlist / Patterns row** (between track lanes and pattern strip) - toggle playback priority: **Patterns** (default) replaces playlist MIDI where pattern rows have notes; **Playlist** plays arrangement clips and treats pattern rows as draft until bake or block solo. Persisted in the `.motif` project.
 - **Click a lane header** - select that pattern lane (accent outline)
 - **Double-click lane name** or **right-click header -> Rename** - rename the lane
 - **Right-click lane header** - duplicate or delete the lane (cannot delete the last lane)
