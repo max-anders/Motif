@@ -23,7 +23,7 @@ If you found this through a comment thread or a social post: welcome. The projec
 - Help build the project if you are comfortable with Rust, egui, audio, MIDI, Linux desktop apps, plugin hosting, or DAW-style editing tools.
 - Try it on Linux and report where setup, audio, plugins, or editing break.
 - Open focused issues for sharp edges, crashes, confusing controls, or README gaps.
-- Ask before investing in large code patches, because the license and long-term contribution model are still being decided.
+- Send focused pull requests on this repo. For a larger change, open an issue first so we can work on it together.
 
 ## Status
 
@@ -73,15 +73,15 @@ Star/watch the repo, open issues, or help build on [GitHub](https://github.com/m
 
 ## Source and licensing
 
-This is an experimental DAW project I am building because existing DAWs do not let me customize the workflow I want, especially the piano roll, pattern flow, plugin workflow, and the path from loop sketch to arrangement. The comparison point is not "the next Bitwig"; it is whether Motif becomes the fastest place for me to turn musical ideas into structured tracks.
+This is an experimental DAW project I am building because existing DAWs do not let me customize the workflow I want, especially the piano roll, pattern flow, plugin workflow, and the path from loop sketch to arrangement. The test is whether Motif becomes the fastest place for me to turn musical ideas into structured tracks.
 
-The repository is **public while the project is in active development**. You can watch it evolve, report bugs, and share ideas. **Long-term licensing, distribution, and commercialization have not been decided yet.**
+The repository is **public while the project is in active development**. You can watch it evolve, report bugs, share ideas, and send pull requests here. **Long-term licensing, distribution, and commercialization have not been decided yet.**
 
 Early versions are rough. I iterate quickly in public; not every path is reviewed to production standards. This is not a promise that every feature request will land, and there is no community-driven product roadmap. I develop at my own pace.
 
-**Using the code today:** No open-source license is attached yet. You may browse the source on GitHub, but copying, modifying, or redistributing it requires permission until a license is announced. If you want to experiment or contribute substantial work, open an issue or discussion first.
+**Using the code today:** There is no license yet, so this is not a fork-and-ship-your-own-Motif project. Clone it, run it, open issues, and send pull requests on **this** repository. Publishing or redistributing Motif as your own product still needs permission until a license is announced.
 
-**Feedback and contributions:** Bug reports and ideas are welcome. Code contributions may be accepted case by case once licensing is clearer; ask before investing large patches.
+**Feedback and contributions:** Bug reports, ideas, and focused PRs on this repo are welcome. I still decide what lands. For a larger slice, open an issue first so we can work on it together.
 
 ## License
 
