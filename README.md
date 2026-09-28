@@ -57,7 +57,9 @@ The repository is public from the first commit so progress is visible early — 
 
 ## Screenshots and demo
 
-Screenshots and a short screen demo are coming soon. They are the easiest way to see Motif before cloning, because install and audio setup on Linux are still rough.
+<img width="2536" height="1369" alt="Piano roll" src="https://github.com/user-attachments/assets/0e31860c-b40c-4a1f-a43d-fff56b7b61ba" />
+
+<img width="2536" height="1369" alt="Playlist hero" src="https://github.com/user-attachments/assets/823db366-2544-4a3c-998c-22e95d593854" />
 
 Planned captures:
 
