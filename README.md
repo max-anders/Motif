@@ -128,6 +128,15 @@ Release build (snappier UI):
 cargo run --release
 ```
 
+Linux launcher install (build release, copy to `~/.local/opt/motif`, write a `.desktop` entry). The desktop file sets `Path=` to the repo so `settings.json` and `plugin_cache.json` stay in the project tree:
+
+```bash
+./scripts/ship-linux.sh
+# optional: --restart after install; optional project file .ship-linux (see script --help)
+```
+
+Symlink for a global command: `ln -sf "$(pwd)/scripts/ship-linux.sh" ~/bin/ship-motif`
+
 ## Controls
 
 ### Playlist (default view)
