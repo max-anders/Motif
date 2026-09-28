@@ -1,6 +1,29 @@
 # Motif
 
-Experimental music sketchpad: piano roll, playlist, soft-synth piano, and CLAP/VST3 instruments (optional native editor windows) over a real audio engine.
+Early Linux-native DAW prototype in Rust: playlist, piano roll, patterns, mixer, soft-synth piano, and CLAP/VST3 instruments over a real audio engine.
+
+Motif is for people who want a music-making tool that can be reshaped instead of treated like a closed box. The long-term goal is a fast, hackable workflow for composing loops, arranging sections, editing MIDI, trying instruments, and turning musical ideas into structure without fighting the tool.
+
+It takes inspiration from FL Studio and other DAWs, but it is not trying to become a feature-for-feature clone. The focus is the creative loop: create clips quickly, edit notes directly, experiment with patterns and variations, hear everything through real instruments, and keep the architecture open enough that contributors can help shape the workflow.
+
+## Why Motif
+
+- **Built for Linux first:** developed and tested on Linux instead of treating it as an afterthought.
+- **Rust + egui codebase:** a native desktop app with a small, inspectable stack for people who want to understand or modify the tool.
+- **Playlist and piano roll together:** arrangement editing and MIDI editing are both first-class, with matching shortcuts and gestures.
+- **Plugin-friendly direction:** CLAP/VST3 instruments, plugin scanning, plugin state, and native editor windows are already part of the prototype.
+- **Workflow experimentation:** patterns, clip variations, linked clips, linked pattern blocks, and bake-to-playlist are all aimed at faster sketch-to-arrangement iteration.
+- **Public early:** the project is visible while the foundations are still forming, so useful feedback can influence the shape of the app.
+
+If you found this through a comment thread or a social post: welcome. The project is early, rough, and changing quickly, but the core loop already runs. Curious users, Linux audio people, Rust/egui hackers, plugin-hosting tinkerers, and musicians with workflow opinions are all welcome to look around.
+
+## What Kind of Help Fits Right Now
+
+- Help prioritize what matters next for a fast music-making workflow, especially around playlist, piano roll, patterns, mixer, and plugin UX.
+- Help build the project if you are comfortable with Rust, egui, audio, MIDI, Linux desktop apps, plugin hosting, or DAW-style editing tools.
+- Try it on Linux and report where setup, audio, plugins, or editing break.
+- Open focused issues for sharp edges, crashes, confusing controls, or README gaps.
+- Ask before investing in large code patches, because the license and long-term contribution model are still being decided.
 
 ## Status
 
@@ -29,9 +52,25 @@ Experimental music sketchpad: piano roll, playlist, soft-synth piano, and CLAP/V
 
 The repository is public from the first commit so progress is visible early — not a closed preview opened up later.
 
+## Screenshots
+
+Screenshots are coming soon. The most useful first set will be:
+
+- Playlist with clips, pattern strip, and mixer dock
+- Piano roll with notes and the variation panel
+- Devices / plugin workflow with a native CLAP or VST3 editor
+
+Until then, the README below describes the current controls and architecture in detail.
+
+## Support
+
+The best support right now is to star/watch the repository, try the app on Linux, share focused feedback, point interested Rust/audio people here, or help fund development.
+
+A donation link may be added here soon for anyone who wants to support the time it takes to build Motif.
+
 ## Source and licensing
 
-This is an experimental sketchpad I am building because existing DAWs do not let me customize the workflow I want — especially the piano roll and the sketch loop. The comparison point is not "the next Bitwig"; it is whether Motif becomes the fastest place for me to sketch melodies and arrange ideas.
+This is an experimental DAW project I am building because existing DAWs do not let me customize the workflow I want, especially the piano roll, pattern flow, plugin workflow, and the path from loop sketch to arrangement. The comparison point is not "the next Bitwig"; it is whether Motif becomes the fastest place for me to turn musical ideas into structured tracks.
 
 The repository is **public while the project is in active development**. You can watch it evolve, report bugs, and share ideas. **Long-term licensing, distribution, and commercialization have not been decided yet.**
 
