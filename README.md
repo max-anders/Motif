@@ -64,9 +64,9 @@ Until then, the README below describes the current controls and architecture in 
 
 ## Support
 
-The best support right now is to star/watch the repository, try the app on Linux, share focused feedback, point interested Rust/audio people here, or help fund development.
+Star/watch the repo, open issues, or help build on [GitHub](https://github.com/max-anders/Motif).
 
-A donation link may be added here soon for anyone who wants to support the time it takes to build Motif.
+**[Support Motif development on Ko-fi](https://ko-fi.com/maxanders)** — tips help fund focused dev time on the app.
 
 ## Source and licensing
 
