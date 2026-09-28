@@ -58,8 +58,6 @@ https://github.com/user-attachments/assets/23d76eb4-b7a3-497d-a1e7-059ed6e70c1a
 
 <img width="2536" height="1369" alt="Piano roll" src="https://github.com/user-attachments/assets/0e31860c-b40c-4a1f-a43d-fff56b7b61ba" />
 
-<img width="2536" height="1369" alt="Playlist hero" src="https://github.com/user-attachments/assets/823db366-2544-4a3c-998c-22e95d593854" />
-
 <img width="2536" height="1369" alt="Plugins" src="https://github.com/user-attachments/assets/350214f8-024e-4b54-b0e6-8afc9be37145" />
 
 ## Support
