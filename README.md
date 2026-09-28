@@ -1,6 +1,5 @@
 
-
-https://github.com/user-attachments/assets/bc621b3c-6f28-4d0f-b66c-fbda77f2e030
+https://github.com/user-attachments/assets/23d76eb4-b7a3-497d-a1e7-059ed6e70c1a
 
 # Motif
 
