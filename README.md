@@ -109,10 +109,10 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source "$HOME/.cargo/env"
 ```
 
-Linux needs egui native deps (Wayland/X11 + OpenGL or wgpu stack) and audio (ALSA/PipeWire). On Arch:
+Linux needs egui native deps (Wayland/X11 + OpenGL or wgpu stack) and audio (ALSA/PipeWire). Motif also links **libX11** (plugin editor windows) and **libdbus** (realtime audio via rtkit). On Arch:
 
 ```bash
-sudo pacman -S --needed base-devel pkgconf openssl libxkbcommon wayland alsa-lib
+sudo pacman -S --needed base-devel pkgconf openssl libxkbcommon wayland alsa-lib libx11 dbus
 ```
 
 ## Run
