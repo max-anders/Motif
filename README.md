@@ -96,7 +96,7 @@ The stack (egui, cpal, truce-rack) is cross-platform in principle, so ports may 
 
 **Not yet:** you want a stable daily DAW or a one-click installer. Expect bugs, missing features, and manual setup (see **Setup** and **Plugins** below).
 
-**Easiest path:** skim screenshots or watch the demo when it is linked above before cloning.
+**Easiest path:** skim the screenshots or watch the demo above before cloning.
 
 If something breaks after you build, open a GitHub issue with your distro, audio stack (PipeWire / ALSA), and what you were doing.
 
