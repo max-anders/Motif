@@ -19,15 +19,13 @@ fn show_time_box(ui: &mut Ui, beats: f32, beats_per_second: f32) {
     let text = format_playhead_time(beats, beats_per_second);
     egui::Frame::new()
         .fill(ui.visuals().widgets.inactive.bg_fill)
-        .stroke(Stroke::new(1.0_f32, ui.visuals().widgets.noninteractive.bg_stroke.color))
+        .stroke(Stroke::new(
+            1.0_f32,
+            ui.visuals().widgets.noninteractive.bg_stroke.color,
+        ))
         .inner_margin(6.0)
         .show(ui, |ui| {
-            ui.label(
-                RichText::new(text)
-                    .monospace()
-                    .size(15.0)
-                    .strong(),
-            );
+            ui.label(RichText::new(text).monospace().size(15.0).strong());
         });
 }
 
@@ -68,20 +66,14 @@ fn show_perf_strip(ui: &mut Ui, perf: EnginePerformance) {
 }
 
 impl TransportUi {
-    pub fn show(
-        ui: &mut Ui,
-        project: &mut Project,
-        engine: &mut dyn DawEngine,
-    ) -> bool {
+    pub fn show(ui: &mut Ui, project: &mut Project, engine: &mut dyn DawEngine) -> bool {
         let mut metronome_changed = false;
         ui.horizontal(|ui| {
             let play_label = if engine.is_playing() { "Pause" } else { "Play" };
-            let play_resp = ui
-                .button(play_label)
-                .on_hover_text(
-                    "Space: pause returns to the start mark (triangle on the ruler).\n\
+            let play_resp = ui.button(play_label).on_hover_text(
+                "Space: pause returns to the start mark (triangle on the ruler).\n\
                      Shift+Space (or Shift+click): pause and leave the playhead.",
-                );
+            );
             if play_resp.clicked() {
                 let shift = ui.input(|i| i.modifiers.shift);
                 if shift && engine.is_playing() {

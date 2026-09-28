@@ -73,9 +73,11 @@ impl PatternRackUi {
                 action = PatternRackAction::Bake;
             }
             ui.label(
-                RichText::new("Commits pattern MIDI inside this section; removes the pattern block.")
-                    .color(theme.text_muted)
-                    .small(),
+                RichText::new(
+                    "Commits pattern MIDI inside this section; removes the pattern block.",
+                )
+                .color(theme.text_muted)
+                .small(),
             );
         });
         ui.add_space(6.0);
@@ -137,8 +139,11 @@ impl PatternRackUi {
                         Pos2::new(row_rect.left() + 8.0, row_rect.top()),
                         Pos2::new(row_rect.left() + LABEL_WIDTH, row_rect.bottom()),
                     );
-                    let label_response =
-                        ui.interact(label_rect, ui.id().with(track_id).with("label"), Sense::click());
+                    let label_response = ui.interact(
+                        label_rect,
+                        ui.id().with(track_id).with("label"),
+                        Sense::click(),
+                    );
                     let label_color = if has_data {
                         theme.track_header_text
                     } else {

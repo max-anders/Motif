@@ -100,12 +100,5 @@ pub fn migrate_notes_to_clip(notes: Vec<Note>, loop_end_beats: f32) -> MidiClip 
             .max(DEFAULT_CLIP_LENGTH_BEATS),
     );
 
-    MidiClip::with_single_variation(
-        1,
-        String::from("Clip 1"),
-        0.0,
-        length,
-        1,
-        notes,
-    )
+    MidiClip::with_single_variation(1, String::from("Clip 1"), 0.0, length, 1, notes)
 }

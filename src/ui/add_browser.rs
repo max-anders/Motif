@@ -8,9 +8,7 @@ use std::path::{Path, PathBuf};
 use egui::{Align2, Context, Key, Ui, Vec2, Window};
 
 use crate::engine::{CatalogEntry, PluginCatalog};
-use crate::ui::instrument_menu::{
-    show_effect_picker, show_instrument_picker, InstrumentChoice,
-};
+use crate::ui::instrument_menu::{show_effect_picker, show_instrument_picker, InstrumentChoice};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum BrowserTab {

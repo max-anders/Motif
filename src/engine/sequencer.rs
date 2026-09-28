@@ -288,11 +288,7 @@ impl RtSequencer {
                 let Some(state) = self.tracks.get_mut(&track_id) else {
                     continue;
                 };
-                let notes = self
-                    .notes
-                    .get(&track_id)
-                    .map(Vec::as_slice)
-                    .unwrap_or(&[]);
+                let notes = self.notes.get(&track_id).map(Vec::as_slice).unwrap_or(&[]);
                 if state.needs_seed {
                     state.needs_seed = false;
                     Self::seed_track(
@@ -514,7 +510,9 @@ impl RtSequencer {
         if off_scratch.is_empty() {
             return;
         }
-        state.active.retain(|note| (note.end_beats as f64) >= span.end);
+        state
+            .active
+            .retain(|note| (note.end_beats as f64) >= span.end);
         off_scratch.retain(|(pitch, _)| !state.active.iter().any(|note| note.pitch == *pitch));
         for (pitch, end) in off_scratch.iter() {
             events.push(SeqEvent {

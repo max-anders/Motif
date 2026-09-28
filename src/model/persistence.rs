@@ -104,7 +104,8 @@ pub fn save_project_to(path: &Path, project: &Project) -> Result<(), String> {
 }
 
 pub fn load_project_from(path: &Path) -> Result<Project, String> {
-    let json = fs::read_to_string(path).map_err(|error| format!("read {}: {error}", path.display()))?;
+    let json =
+        fs::read_to_string(path).map_err(|error| format!("read {}: {error}", path.display()))?;
     Project::from_json(&json).map_err(|error| format!("parse {}: {error}", path.display()))
 }
 

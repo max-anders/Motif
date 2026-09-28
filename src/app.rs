@@ -6,24 +6,23 @@ use std::sync::Arc;
 use eframe::egui;
 
 use crate::engine::{
-    decode_audio_file, packed_version_for_entry, plugin_gl_software_enabled, plugin_gui_may_abort_host,
-    AudioEngine,
-    DawEngine, DecodedAudio, EditorCloseBinding, LoopPlayback,
-    ParamTouchEvent, PluginCatalog, PluginRef, PLUGIN_CACHE_FILE,
+    decode_audio_file, packed_version_for_entry, plugin_gl_software_enabled,
+    plugin_gui_may_abort_host, AudioEngine, DawEngine, DecodedAudio, EditorCloseBinding,
+    LoopPlayback, ParamTouchEvent, PluginCatalog, PluginRef, PLUGIN_CACHE_FILE,
 };
 use crate::model::{
     clear_recovery, ensure_motif_extension, format_unix_time, legacy_project_path,
     load_project_from, load_recovery_meta, load_recovery_project, project_display_name,
-    projects_dir, push_recent, save_project_to, write_recovery, BakeError, EditClipboard, EditHistory,
-    Project, RecoveryMeta, TrackInstrument, PROJECT_EXTENSION,
+    projects_dir, push_recent, save_project_to, write_recovery, BakeError, EditClipboard,
+    EditHistory, Project, RecoveryMeta, TrackInstrument, PROJECT_EXTENSION,
 };
 use crate::ui::{
     choice_to_instrument, show_inspector, track_name_for_choice, Action, AddBrowserAction,
     AddBrowserUi, AppSettings, AudioImportRequest, BrowserTab, Chord, DevicesUi, MixerPanelResize,
-    MixerUi, PatternLaneRenameUi, PatternRackAction, PatternRackUi, PatternRowEditorAction, PatternRowEditorUi,
-    PerformanceUi, PianoRollUi, PlaylistUi, PluginEditorRequest, PollFilter, ProjectBrowserAction,
-    ProjectBrowserUi, SettingsAction, SettingsUi, TrackRenameUi, TransportUi, MIXER_PANEL_ID,
-    MIXER_PANEL_MIN_HEIGHT, SETTINGS_FILE,
+    MixerUi, PatternLaneRenameUi, PatternRackAction, PatternRackUi, PatternRowEditorAction,
+    PatternRowEditorUi, PerformanceUi, PianoRollUi, PlaylistUi, PluginEditorRequest, PollFilter,
+    ProjectBrowserAction, ProjectBrowserUi, SettingsAction, SettingsUi, TrackRenameUi, TransportUi,
+    MIXER_PANEL_ID, MIXER_PANEL_MIN_HEIGHT, SETTINGS_FILE,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1228,9 +1227,9 @@ impl DawApp {
             .unwrap_or(0.0);
         let origin = (self.engine.current_beats() - block_start).max(0.0);
         let before = self.project.clone();
-        let new_ids =
-            self.project
-                .paste_notes_into_pattern_track(block_id, track_id, &notes, origin);
+        let new_ids = self
+            .project
+            .paste_notes_into_pattern_track(block_id, track_id, &notes, origin);
         if new_ids.is_empty() {
             self.project = before;
             self.status_message = String::from("Paste failed (overlap or out of range)");
@@ -1261,9 +1260,9 @@ impl DawApp {
             }))
         };
         self.history.push_before(self.project.clone());
-        let new_ids = self.project.duplicate_notes_in_pattern_track(
-            block_id, track_id, &ids, span, 0, false,
-        );
+        let new_ids = self
+            .project
+            .duplicate_notes_in_pattern_track(block_id, track_id, &ids, span, 0, false);
         if !new_ids.is_empty() {
             self.pattern_row_editor.set_selection(new_ids);
         }
@@ -1402,9 +1401,7 @@ impl DawApp {
     }
 
     fn delete_pattern_lane(&mut self, lane_id: u64) {
-        if !self.project.can_remove_pattern_lane()
-            || self.project.pattern_lane(lane_id).is_none()
-        {
+        if !self.project.can_remove_pattern_lane() || self.project.pattern_lane(lane_id).is_none() {
             return;
         }
 
@@ -1782,8 +1779,11 @@ impl DawApp {
     fn open_pattern_row_melody(&mut self, block_id: u64, track_id: u64) {
         if self.project.pattern_block(block_id).is_some() && self.project.track(track_id).is_some()
         {
-            self.project
-                .set_pattern_row_mode(block_id, track_id, Some(crate::model::PatternRowMode::Melody));
+            self.project.set_pattern_row_mode(
+                block_id,
+                track_id,
+                Some(crate::model::PatternRowMode::Melody),
+            );
             self.center_view = CenterView::PatternRow { block_id, track_id };
         }
     }
@@ -2128,7 +2128,9 @@ impl DawApp {
         self.show_mixer_panel
             && matches!(
                 self.center_view,
-                CenterView::Playlist | CenterView::PianoRoll { .. } | CenterView::PatternRack { .. }
+                CenterView::Playlist
+                    | CenterView::PianoRoll { .. }
+                    | CenterView::PatternRack { .. }
             )
     }
 
@@ -2174,7 +2176,9 @@ impl DawApp {
         self.show_devices_strip
             && matches!(
                 self.center_view,
-                CenterView::Playlist | CenterView::PianoRoll { .. } | CenterView::PatternRack { .. }
+                CenterView::Playlist
+                    | CenterView::PianoRoll { .. }
+                    | CenterView::PatternRack { .. }
             )
     }
 
@@ -2725,7 +2729,15 @@ impl eframe::App for DawApp {
                         track_rename,
                         ..
                     } = self;
-                    mixer.show(ui, project, engine, history, selected_track, &theme, track_rename);
+                    mixer.show(
+                        ui,
+                        project,
+                        engine,
+                        history,
+                        selected_track,
+                        &theme,
+                        track_rename,
+                    );
                 });
             if hide_mixer {
                 self.show_mixer_panel = false;
@@ -2972,9 +2984,9 @@ impl eframe::App for DawApp {
                             ..
                         } = self;
                         let theme = settings.themes.colors().clone();
-                        match pattern_row_editor.show(
-                            ui, block_id, track_id, project, engine, history, &theme,
-                        ) {
+                        match pattern_row_editor
+                            .show(ui, block_id, track_id, project, engine, history, &theme)
+                        {
                             PatternRowEditorAction::None => {}
                             PatternRowEditorAction::Close => {
                                 close_pattern_row = Some(block_id);
@@ -3071,7 +3083,8 @@ impl eframe::App for DawApp {
             }
         }
 
-        self.track_rename.show_window(ctx, &mut self.project, &mut self.history);
+        self.track_rename
+            .show_window(ctx, &mut self.project, &mut self.history);
         self.pattern_lane_rename
             .show_window(ctx, &mut self.project, &mut self.history);
 

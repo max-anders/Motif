@@ -173,17 +173,20 @@ pub fn show_favorites_panel(
                                     .strong()
                                     .color(theme.track_header_text),
                             );
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if ui
-                                    .small_button("x")
-                                    .on_hover_text("Remove favorite")
-                                    .clicked()
-                                {
-                                    if settings.remove_favorite(&unique_id, fav.param_id) {
-                                        settings_dirty = true;
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui
+                                        .small_button("x")
+                                        .on_hover_text("Remove favorite")
+                                        .clicked()
+                                    {
+                                        if settings.remove_favorite(&unique_id, fav.param_id) {
+                                            settings_dirty = true;
+                                        }
                                     }
-                                }
-                            });
+                                },
+                            );
                         });
 
                         let mut value = engine

@@ -166,7 +166,10 @@ mod tests {
         assert_eq!(project.tracks[0].clips.len(), before.tracks[0].clips.len());
         assert!(history.can_redo());
         assert!(history.redo(&mut project));
-        assert_eq!(project.tracks[0].clips.len(), tiny_project(1).tracks[0].clips.len());
+        assert_eq!(
+            project.tracks[0].clips.len(),
+            tiny_project(1).tracks[0].clips.len()
+        );
     }
 
     #[test]
@@ -248,7 +251,7 @@ mod tests {
         assert!(history.can_undo());
         history.begin(&project);
         history.commit(&project); // no change
-        // Still only one undo step.
+                                  // Still only one undo step.
         assert!(history.undo(&mut project));
         assert!(!history.undo(&mut project));
     }

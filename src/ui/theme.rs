@@ -122,15 +122,9 @@ pub struct ThemeColors {
     // Pattern rack (section MIDI row editor)
     #[serde(default = "default_pattern_rack_row_bg", with = "color32_serde")]
     pub pattern_rack_row_bg: Color32,
-    #[serde(
-        default = "default_pattern_rack_row_selected",
-        with = "color32_serde"
-    )]
+    #[serde(default = "default_pattern_rack_row_selected", with = "color32_serde")]
     pub pattern_rack_row_selected: Color32,
-    #[serde(
-        default = "default_pattern_rack_row_inactive",
-        with = "color32_serde"
-    )]
+    #[serde(default = "default_pattern_rack_row_inactive", with = "color32_serde")]
     pub pattern_rack_row_inactive: Color32,
     #[serde(
         default = "default_pattern_rack_row_suppressed",
@@ -395,22 +389,42 @@ impl ThemeColors {
             ),
             ("Playlist", "Clip label", &mut self.clip_label),
             ("Playlist", "Clip note preview", &mut self.clip_note_preview),
-            ("Playlist", "Clip linked stroke", &mut self.clip_linked_stroke),
+            (
+                "Playlist",
+                "Clip linked stroke",
+                &mut self.clip_linked_stroke,
+            ),
             ("Playlist", "Clip linked fill", &mut self.clip_linked_fill),
-            ("Playlist", "Pattern block fill", &mut self.pattern_block_fill),
+            (
+                "Playlist",
+                "Pattern block fill",
+                &mut self.pattern_block_fill,
+            ),
             (
                 "Playlist",
                 "Pattern block fill selected",
                 &mut self.pattern_block_fill_selected,
             ),
-            ("Playlist", "Pattern block stroke", &mut self.pattern_block_stroke),
+            (
+                "Playlist",
+                "Pattern block stroke",
+                &mut self.pattern_block_stroke,
+            ),
             (
                 "Playlist",
                 "Pattern block stroke selected",
                 &mut self.pattern_block_stroke_selected,
             ),
-            ("Playlist", "Pattern block label", &mut self.pattern_block_label),
-            ("Playlist", "Pattern block solo", &mut self.pattern_block_solo),
+            (
+                "Playlist",
+                "Pattern block label",
+                &mut self.pattern_block_label,
+            ),
+            (
+                "Playlist",
+                "Pattern block solo",
+                &mut self.pattern_block_solo,
+            ),
             (
                 "Playlist",
                 "Clip ghosted (pattern override)",
@@ -451,7 +465,11 @@ impl ThemeColors {
                 "Step placeholder text",
                 &mut self.pattern_rack_step_placeholder_text,
             ),
-            ("Pattern row editor", "Step cell background", &mut self.step_cell_bg),
+            (
+                "Pattern row editor",
+                "Step cell background",
+                &mut self.step_cell_bg,
+            ),
             (
                 "Pattern row editor",
                 "Step cell background (beat accent)",

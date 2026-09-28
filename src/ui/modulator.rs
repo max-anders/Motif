@@ -49,7 +49,9 @@ pub fn target_filter_from_device_key(device_key: u64) -> TargetFilter {
     if device_key == INSTRUMENT_MOD_TARGET_KEY {
         TargetFilter::Instrument
     } else {
-        TargetFilter::Device { device_id: device_key }
+        TargetFilter::Device {
+            device_id: device_key,
+        }
     }
 }
 
@@ -274,12 +276,9 @@ impl TargetFilter {
     fn matches(self, target: &AutomationTarget) -> bool {
         match (self, target) {
             (Self::Instrument, AutomationTarget::Instrument { .. }) => true,
-            (
-                Self::Device { device_id },
-                AutomationTarget::Device {
-                    device_id: tid, ..
-                },
-            ) => *tid == device_id,
+            (Self::Device { device_id }, AutomationTarget::Device { device_id: tid, .. }) => {
+                *tid == device_id
+            }
             _ => false,
         }
     }
@@ -533,9 +532,11 @@ fn show_add_mod_tile(
                     ui.add_space(MODULATOR_CANVAS_HEIGHT * 0.35);
                     if ui
                         .add(
-                            egui::Button::new(RichText::new("+ Mod").small().color(theme.text_muted))
-                                .fill(theme.widget_bg)
-                                .min_size(Vec2::new(CHIP_WIDTH - 12.0, 28.0)),
+                            egui::Button::new(
+                                RichText::new("+ Mod").small().color(theme.text_muted),
+                            )
+                            .fill(theme.widget_bg)
+                            .min_size(Vec2::new(CHIP_WIDTH - 12.0, 28.0)),
                         )
                         .on_hover_text("Add modulator for this device")
                         .clicked()
@@ -569,11 +570,7 @@ fn paint_modulator_controls(
     let param_label = modulator_param_display_name(&snapshot.param_name)
         .map(|name| truncate_label(name, 18))
         .unwrap_or_else(|| "(pick parameter)".to_string());
-    ui.label(
-        RichText::new(param_label)
-            .small()
-            .color(theme.text_muted),
-    );
+    ui.label(RichText::new(param_label).small().color(theme.text_muted));
 
     ui.horizontal(|ui| {
         let param_menu_label = modulator_param_display_name(&snapshot.param_name)
@@ -624,9 +621,7 @@ fn paint_modulator_controls(
                                     modulator.param_name = param.name.clone();
                                     modulator.target = match &modulator.target {
                                         AutomationTarget::Instrument { .. } => {
-                                            AutomationTarget::Instrument {
-                                                param_id: param.id,
-                                            }
+                                            AutomationTarget::Instrument { param_id: param.id }
                                         }
                                         AutomationTarget::Device { device_id, .. } => {
                                             AutomationTarget::Device {
@@ -772,7 +767,9 @@ fn paint_modulator_controls(
             let mut hz = hz;
             if mod_slider(
                 ui,
-                egui::Slider::new(&mut hz, 0.01..=30.0).text("Hz").logarithmic(true),
+                egui::Slider::new(&mut hz, 0.01..=30.0)
+                    .text("Hz")
+                    .logarithmic(true),
                 theme,
             )
             .changed()
@@ -887,7 +884,12 @@ fn show_modulator_canvas(
     }
 
     let cycle_phase = if engine.is_playing() {
-        Some(modulator_cycle_phase01(engine, track_id, modulator_id, snapshot))
+        Some(modulator_cycle_phase01(
+            engine,
+            track_id,
+            modulator_id,
+            snapshot,
+        ))
     } else {
         None
     };
@@ -924,7 +926,13 @@ fn show_modulator_canvas(
             history,
         );
     } else {
-        paint_preset_curve(canvas, &painter, snapshot.shape, snapshot.bipolar, theme.accent);
+        paint_preset_curve(
+            canvas,
+            &painter,
+            snapshot.shape,
+            snapshot.bipolar,
+            theme.accent,
+        );
     }
 
     if let Some(phase) = cycle_phase {
@@ -950,9 +958,7 @@ fn modulator_cycle_phase01(
             (engine.current_beats() / period + phase_offset).rem_euclid(1.0)
         }
         LfoRate::Hz { .. } => {
-            let free = engine
-                .free_lfo_phase(track_id, modulator_id)
-                .unwrap_or(0.0);
+            let free = engine.free_lfo_phase(track_id, modulator_id).unwrap_or(0.0);
             (free + phase_offset).rem_euclid(1.0)
         }
     }
@@ -1038,29 +1044,15 @@ fn show_shape_selector(
         .on_hover_text("Draw a custom multi-segment envelope")
         .clicked()
     {
-        set_modulator_shape(
-            project,
-            track_id,
-            modulator_id,
-            LfoShape::Custom,
-            history,
-        );
+        set_modulator_shape(project, track_id, modulator_id, LfoShape::Custom, history);
     }
 }
 
 fn chip_button_colors(selected: bool, theme: &ThemeColors) -> (Color32, Color32, Color32) {
     if selected {
-        (
-            theme.accent,
-            theme.accent,
-            theme.panel_bg,
-        )
+        (theme.accent, theme.accent, theme.panel_bg)
     } else {
-        (
-            theme.panel_bg,
-            theme.separator,
-            theme.button_text,
-        )
+        (theme.panel_bg, theme.separator, theme.button_text)
     }
 }
 
@@ -1123,17 +1115,10 @@ fn chip_action_button(
     }
 }
 
-fn mod_slider(
-    ui: &mut Ui,
-    slider: egui::Slider<'_>,
-    theme: &ThemeColors,
-) -> egui::Response {
+fn mod_slider(ui: &mut Ui, slider: egui::Slider<'_>, theme: &ThemeColors) -> egui::Response {
     egui::Frame::new()
         .fill(theme.panel_bg)
-        .stroke(Stroke::new(
-            1.0_f32,
-            theme.separator.gamma_multiply(0.55),
-        ))
+        .stroke(Stroke::new(1.0_f32, theme.separator.gamma_multiply(0.55)))
         .corner_radius(3.0)
         .inner_margin(egui::Margin::symmetric(6, 4))
         .show(ui, |ui| {
@@ -1241,8 +1226,7 @@ fn handle_custom_curve_input(
             }
         }
     } else if response.clicked_by(egui::PointerButton::Primary) && near.is_none() {
-        let (cycle, value) =
-            mseg_pos_to_cycle_value(canvas, pointer, snapshot.mseg_grid_divisions);
+        let (cycle, value) = mseg_pos_to_cycle_value(canvas, pointer, snapshot.mseg_grid_divisions);
         history.push_before(project.clone());
         if let Some(modulator) = project.modulator_mut(track_id, modulator_id) {
             modulator.mseg_points.push(AutomationPoint {
@@ -1334,11 +1318,7 @@ fn mseg_point_to_pos(canvas: egui::Rect, cycle: f32, value: f32) -> Pos2 {
     )
 }
 
-fn mseg_pos_to_cycle_value(
-    canvas: egui::Rect,
-    pos: Pos2,
-    grid_divisions: u8,
-) -> (f32, f32) {
+fn mseg_pos_to_cycle_value(canvas: egui::Rect, pos: Pos2, grid_divisions: u8) -> (f32, f32) {
     let mut cycle = ((pos.x - canvas.left()) / canvas.width()).clamp(0.0, 1.0);
     let mut value = ((canvas.bottom() - pos.y) / canvas.height()).clamp(0.0, 1.0);
     if grid_divisions > 0 {

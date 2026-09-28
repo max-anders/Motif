@@ -90,7 +90,10 @@ impl HostedPlugin {
 
     /// Convert normalized `0..1` automation to this param's native plugin units.
     pub fn map_normalized_to_native(&self, param_id: u32, normalized_value: f64) -> Option<f64> {
-        let info = self.parameters().into_iter().find(|param| param.id == param_id)?;
+        let info = self
+            .parameters()
+            .into_iter()
+            .find(|param| param.id == param_id)?;
         let clamped = normalized_value.clamp(0.0, 1.0);
         let span = (info.max - info.min).max(0.0);
         let mut native = info.min + clamped * span;

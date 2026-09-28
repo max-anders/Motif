@@ -6,8 +6,8 @@ use rubato::audioadapter_buffers::direct::SequentialSliceOfVecs;
 use rubato::{FixedSync, Resampler};
 use symphonia::core::codecs::audio::AudioDecoderOptions;
 use symphonia::core::errors::Error as SymphoniaError;
-use symphonia::core::formats::FormatOptions;
 use symphonia::core::formats::probe::Hint;
+use symphonia::core::formats::FormatOptions;
 use symphonia::core::formats::TrackType;
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
@@ -161,7 +161,10 @@ fn resample_stereo(
 
     let input_adapter = SequentialSliceOfVecs::new(&input, 2, frames)
         .map_err(|error| format!("resampler input adapter: {error}"))?;
-    let mut output = vec![vec![0.0_f32; output_capacity], vec![0.0_f32; output_capacity]];
+    let mut output = vec![
+        vec![0.0_f32; output_capacity],
+        vec![0.0_f32; output_capacity],
+    ];
     let mut output_adapter = SequentialSliceOfVecs::new_mut(&mut output, 2, output_capacity)
         .map_err(|error| format!("resampler output adapter: {error}"))?;
     let (_, out_frames) = resampler

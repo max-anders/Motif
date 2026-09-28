@@ -14,13 +14,12 @@ use crate::ui::piano_roll::{
     beat_grid_rect, clear_audition, draw_grid, draw_keyboard, draw_marquee, draw_notes,
     handle_keyboard_audition, hit_test_note, hold_audition_pitch, note_rect, pitch_name,
     preview_pitch_briefly, resize_drag_mode, select_notes_in_rect, set_single_selection,
-    tick_timed_audition, update_resize_hover_cursor, y_to_pitch, ActiveDrag, DragMode,
-    MarqueeDrag, ViewMetrics, DEFAULT_KEY_HEIGHT, KEY_COLUMN_WIDTH, MAX_KEY_HEIGHT,
-    MIN_KEY_HEIGHT,
+    tick_timed_audition, update_resize_hover_cursor, y_to_pitch, ActiveDrag, DragMode, MarqueeDrag,
+    ViewMetrics, DEFAULT_KEY_HEIGHT, KEY_COLUMN_WIDTH, MAX_KEY_HEIGHT, MIN_KEY_HEIGHT,
 };
 use crate::ui::theme::ThemeColors;
 use crate::ui::timeline::{
-    apply_piano_roll_wheel_controls, daw_editor_scroll_area, draw_playhead, draw_ruler,
+    apply_editor_wheel_controls, daw_editor_scroll_area, draw_playhead, draw_ruler,
     is_timeline_pointer, with_solid_scrollbars, x_to_beat, DEFAULT_BEAT_WIDTH, MAX_BEAT_WIDTH,
     MIN_BEAT_WIDTH, RULER_HEIGHT,
 };
@@ -163,15 +162,16 @@ impl PatternRowEditorUi {
             ui.heading(format!("{track_name} - {}", block.name));
             ui.add_space(8.0);
             ui.label(
-                RichText::new(format!(
-                    "Melody - {:.1} beats",
-                    block.length_beats
-                ))
-                .color(theme.text_muted)
-                .small(),
+                RichText::new(format!("Melody - {:.1} beats", block.length_beats))
+                    .color(theme.text_muted)
+                    .small(),
             );
             ui.add_space(16.0);
-            if ui.button("Steps").on_hover_text("Back to inline step grid on the rack").clicked() {
+            if ui
+                .button("Steps")
+                .on_hover_text("Back to inline step grid on the rack")
+                .clicked()
+            {
                 history.push_before(project.clone());
                 project.set_pattern_row_mode(block_id, track_id, Some(PatternRowMode::Step));
                 action = PatternRowEditorAction::Close;
@@ -180,7 +180,9 @@ impl PatternRowEditorUi {
         ui.add_space(4.0);
 
         let body = ui.available_rect_before_wrap();
-        self.show_melody(ui, body, block_id, track_id, &block, project, engine, history, theme);
+        self.show_melody(
+            ui, body, block_id, track_id, &block, project, engine, history, theme,
+        );
 
         action
     }
@@ -240,8 +242,9 @@ impl PatternRowEditorUi {
             state.beat_width = state.beat_width.clamp(min_beat_width, max_beat_width);
         }
 
-        let did_h_zoom = apply_piano_roll_wheel_controls(
+        let did_h_zoom = apply_editor_wheel_controls(
             ui,
+            grid_area,
             grid_area,
             &mut state.beat_width,
             min_beat_width,
@@ -283,7 +286,11 @@ impl PatternRowEditorUi {
         let global_playhead = engine.current_beats();
         let local_playhead = global_playhead - block.start_beats;
         let playhead_visible = local_playhead >= 0.0 && local_playhead <= total_beats;
-        let playhead_draw = if playhead_visible { local_playhead } else { -1.0 };
+        let playhead_draw = if playhead_visible {
+            local_playhead
+        } else {
+            -1.0
+        };
 
         let notes: Vec<Note> = project.pattern_track_notes(block_id, track_id);
 
@@ -466,16 +473,16 @@ fn handle_melody_pointer(
     let primary_down = response
         .ctx
         .input(|input| input.pointer.button_down(egui::PointerButton::Primary));
-    let ctrl_or_cmd = response.ctx.input(|input| {
-        input.modifiers.ctrl || input.modifiers.command || input.modifiers.mac_cmd
-    });
+    let ctrl_or_cmd = response
+        .ctx
+        .input(|input| input.modifiers.ctrl || input.modifiers.command || input.modifiers.mac_cmd);
 
     let notes: Vec<Note> = project.pattern_track_notes(block_id, track_id);
 
     update_resize_hover_cursor(response, grid, &notes, metrics);
 
-    let end_drag = response.drag_stopped()
-        || (!primary_down && (active_drag.is_some() || marquee.is_some()));
+    let end_drag =
+        response.drag_stopped() || (!primary_down && (active_drag.is_some() || marquee.is_some()));
     if end_drag {
         finish_melody_drag(
             active_drag,
@@ -540,7 +547,13 @@ fn handle_melody_pointer(
         && active_drag.is_none()
         && *audition_held
     {
-        clear_audition(engine, track_id, audition_pitch, audition_held, audition_until);
+        clear_audition(
+            engine,
+            track_id,
+            audition_pitch,
+            audition_held,
+            audition_until,
+        );
     }
 
     if let Some(drag) = active_drag.clone() {
@@ -653,7 +666,8 @@ fn handle_melody_pointer(
         }
     }
 
-    if response.drag_started_by(egui::PointerButton::Primary) && is_timeline_pointer(grid, press_pos)
+    if response.drag_started_by(egui::PointerButton::Primary)
+        && is_timeline_pointer(grid, press_pos)
     {
         if let Some(note) = hit_test_note(grid, &notes, press_pos, metrics).cloned() {
             *marquee = None;
@@ -674,7 +688,12 @@ fn handle_melody_pointer(
                 let source_ids: Vec<u64> = selected_note_ids.iter().copied().collect();
                 ignore_ids = source_ids.clone();
                 let new_ids = project.duplicate_notes_in_pattern_track(
-                    block_id, track_id, &source_ids, 0.0, 0, true,
+                    block_id,
+                    track_id,
+                    &source_ids,
+                    0.0,
+                    0,
+                    true,
                 );
                 if let Some(mapped_primary) = source_ids
                     .iter()
@@ -754,8 +773,12 @@ fn handle_melody_pointer(
                 start: press_pos,
                 current: pointer,
             });
-            *selected_note_ids =
-                select_notes_in_rect(grid, &notes, Rect::from_two_pos(press_pos, pointer), metrics);
+            *selected_note_ids = select_notes_in_rect(
+                grid,
+                &notes,
+                Rect::from_two_pos(press_pos, pointer),
+                metrics,
+            );
         }
     }
 }
@@ -843,7 +866,8 @@ fn apply_melody_resize_drag(
                     .max(bound)
                     .max(0.0)
                     .min(end - SNAP_BEATS);
-                if let Some(note) = project.pattern_track_note_mut(block_id, track_id, original.id) {
+                if let Some(note) = project.pattern_track_note_mut(block_id, track_id, original.id)
+                {
                     note.start_beats = new_start;
                     note.duration_beats = (end - new_start).max(SNAP_BEATS);
                     note.pitch = original.pitch;
@@ -871,7 +895,8 @@ fn apply_melody_resize_drag(
                 let new_end = (original.end_beats() + delta)
                     .min(bound)
                     .max(original.start_beats + SNAP_BEATS);
-                if let Some(note) = project.pattern_track_note_mut(block_id, track_id, original.id) {
+                if let Some(note) = project.pattern_track_note_mut(block_id, track_id, original.id)
+                {
                     note.start_beats = original.start_beats;
                     note.duration_beats = (new_end - original.start_beats).max(SNAP_BEATS);
                     note.pitch = original.pitch;
@@ -907,7 +932,13 @@ fn finish_melody_drag(
         selected_note_ids.clear();
         selected_note_ids.extend(drag.ignore_ids.iter().copied());
         if *audition_held {
-            clear_audition(engine, audition_track_id, audition_pitch, audition_held, audition_until);
+            clear_audition(
+                engine,
+                audition_track_id,
+                audition_pitch,
+                audition_held,
+                audition_until,
+            );
         }
         return;
     }
@@ -926,7 +957,13 @@ fn finish_melody_drag(
         }
     }
     if matches!(drag.mode, DragMode::Move) && *audition_held {
-        clear_audition(engine, audition_track_id, audition_pitch, audition_held, audition_until);
+        clear_audition(
+            engine,
+            audition_track_id,
+            audition_pitch,
+            audition_held,
+            audition_until,
+        );
     }
 }
 
@@ -1054,7 +1091,8 @@ pub(crate) fn paint_inline_step_strip(
             project.set_pattern_step(block_id, track_id, idx, next);
         }
     } else if response.dragged() {
-        if let (Some(pos), Some((paint_track, value))) = (response.interact_pointer_pos(), *step_paint)
+        if let (Some(pos), Some((paint_track, value))) =
+            (response.interact_pointer_pos(), *step_paint)
         {
             if paint_track == track_id {
                 if let Some(idx) = hovered_step(pos) {

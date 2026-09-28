@@ -55,9 +55,11 @@ impl PerformanceUi {
 
         ui.label(RichText::new("Per-track DSP (latest callback)").strong());
         ui.label(
-            RichText::new("Sorted by total ms. Voice = instrument; FX = insert chain; Samples = audio clips.")
-                .color(theme.text_muted)
-                .small(),
+            RichText::new(
+                "Sorted by total ms. Voice = instrument; FX = insert chain; Samples = audio clips.",
+            )
+            .color(theme.text_muted)
+            .small(),
         );
         ui.add_space(4.0);
 
@@ -81,10 +83,7 @@ impl PerformanceUi {
                     .format_badge()
                     .map(|b| format!(" [{b}]"))
                     .unwrap_or_default();
-                (
-                    t.id,
-                    format!("{}{badge}", t.instrument.display_name()),
-                )
+                (t.id, format!("{}{badge}", t.instrument.display_name()))
             })
             .collect();
         let device_counts: HashMap<u64, usize> = project
@@ -121,19 +120,14 @@ impl PerformanceUi {
                             return;
                         }
 
-                        let budget_ms = if summary.sample_rate_hz > 0
-                            && summary.buffer_frames > 0
-                        {
+                        let budget_ms = if summary.sample_rate_hz > 0 && summary.buffer_frames > 0 {
                             (summary.buffer_frames as f32 / summary.sample_rate_hz as f32) * 1000.0
                         } else {
                             0.0
                         };
 
                         for row in &rows {
-                            let name = track_names
-                                .get(&row.track_id)
-                                .copied()
-                                .unwrap_or("?");
+                            let name = track_names.get(&row.track_id).copied().unwrap_or("?");
                             let instrument = instruments
                                 .get(&row.track_id)
                                 .map(String::as_str)
@@ -151,11 +145,7 @@ impl PerformanceUi {
                             };
 
                             ui.label(RichText::new(name).color(theme.text_primary));
-                            ui.label(
-                                RichText::new(instrument)
-                                    .color(theme.text_muted)
-                                    .small(),
-                            );
+                            ui.label(RichText::new(instrument).color(theme.text_muted).small());
                             ui.label(RichText::new(row.voice_kind.label()).monospace());
                             let voices = if row.voice_kind == TrackVoiceKind::Piano {
                                 format!("{}", row.active_voices)
@@ -234,7 +224,13 @@ fn show_summary_row(
     };
 
     ui.horizontal_wrapped(|ui| {
-        metric_chip(ui, "CPU", format!("{:.1}%", summary.cpu_percent), cpu_color, theme);
+        metric_chip(
+            ui,
+            "CPU",
+            format!("{:.1}%", summary.cpu_percent),
+            cpu_color,
+            theme,
+        );
         metric_chip(ui, "Buffer", buf, theme.text_primary, theme);
         metric_chip(ui, "Latency", latency, theme.text_primary, theme);
         metric_chip(
@@ -295,8 +291,10 @@ fn metric_chip(ui: &mut Ui, label: &str, value: String, value_color: Color32, th
 }
 
 fn draw_cpu_graph(ui: &mut Ui, history: &VecDeque<f32>, current: f32, theme: &ThemeColors) {
-    let (rect, _response) =
-        ui.allocate_exact_size(Vec2::new(ui.available_width(), GRAPH_HEIGHT), Sense::hover());
+    let (rect, _response) = ui.allocate_exact_size(
+        Vec2::new(ui.available_width(), GRAPH_HEIGHT),
+        Sense::hover(),
+    );
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 4.0, theme.widget_bg);
     painter.rect_stroke(

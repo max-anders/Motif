@@ -37,11 +37,7 @@ pub fn show_param_pick_menu(
 ) {
     let automatable: Vec<&PluginParamInfo> = params.iter().filter(|p| p.automatable).collect();
     if automatable.is_empty() {
-        ui.label(
-            RichText::new(empty_label)
-                .small()
-                .color(theme.text_muted),
-        );
+        ui.label(RichText::new(empty_label).small().color(theme.text_muted));
         return;
     }
 
@@ -146,7 +142,8 @@ fn show_param_row(
                             })
                             .clicked()
                         {
-                            let mut changed = settings.add_favorite(uid, param.id, param.name.clone());
+                            let mut changed =
+                                settings.add_favorite(uid, param.id, param.name.clone());
                             changed |= settings.touch_param(uid, param.id, param.name.clone());
                             if changed {
                                 *settings_dirty = true;
@@ -162,7 +159,10 @@ fn show_param_row(
             };
             let already = settings.has_favorite(uid, param.id);
             let row_label = if already {
-                format!("* {}", truncate_label(&param.name, name_max_chars.saturating_sub(2)))
+                format!(
+                    "* {}",
+                    truncate_label(&param.name, name_max_chars.saturating_sub(2))
+                )
             } else {
                 truncate_label(&param.name, name_max_chars)
             };

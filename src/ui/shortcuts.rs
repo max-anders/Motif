@@ -384,7 +384,9 @@ pub enum ApplyChordOutcome {
     /// Chord already bound to this action (no change).
     Unchanged,
     /// Chord is used by another action; retry with `override_conflict: true` to steal it.
-    Conflict { with: Action },
+    Conflict {
+        with: Action,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -419,10 +421,7 @@ impl ShortcutRegistry {
         Self {
             bindings: vec![
                 (Action::TogglePlayback, Binding::Key(Chord::new(Key::Space))),
-                (
-                    Action::PauseInPlace,
-                    Binding::Key(Chord::shift(Key::Space)),
-                ),
+                (Action::PauseInPlace, Binding::Key(Chord::shift(Key::Space))),
                 (Action::ToggleLoop, Binding::Key(Chord::new(Key::L))),
                 (
                     Action::DeleteSelection,
@@ -441,25 +440,16 @@ impl ShortcutRegistry {
                     Action::DuplicateSelection,
                     Binding::Key(Chord::ctrl_or_cmd(Key::D)),
                 ),
-                (
-                    Action::MergeClips,
-                    Binding::Key(Chord::ctrl_or_cmd(Key::G)),
-                ),
+                (Action::MergeClips, Binding::Key(Chord::ctrl_or_cmd(Key::G))),
                 (Action::Undo, Binding::Key(Chord::ctrl_or_cmd(Key::Z))),
-                (
-                    Action::Redo,
-                    Binding::Key(Chord::ctrl_or_cmd_shift(Key::Z)),
-                ),
+                (Action::Redo, Binding::Key(Chord::ctrl_or_cmd_shift(Key::Z))),
                 (Action::Save, Binding::Key(Chord::ctrl_or_cmd(Key::S))),
                 (Action::Open, Binding::Key(Chord::ctrl_or_cmd(Key::O))),
                 (
                     Action::SaveProjectAs,
                     Binding::Key(Chord::ctrl_or_cmd_alt(Key::S)),
                 ),
-                (
-                    Action::NewProject,
-                    Binding::Key(Chord::ctrl_or_cmd(Key::N)),
-                ),
+                (Action::NewProject, Binding::Key(Chord::ctrl_or_cmd(Key::N))),
                 (
                     Action::OpenInstrumentBrowser,
                     Binding::Key(Chord::ctrl_or_cmd(Key::W)),
@@ -481,10 +471,7 @@ impl ShortcutRegistry {
                     Action::TogglePerformance,
                     Binding::Key(Chord::ctrl_or_cmd_shift(Key::P)),
                 ),
-                (
-                    Action::ToggleDevices,
-                    Binding::Key(Chord::new(Key::D)),
-                ),
+                (Action::ToggleDevices, Binding::Key(Chord::new(Key::D))),
                 (
                     Action::TogglePluginEditor,
                     Binding::Key(Chord::ctrl_or_cmd_shift(Key::E)),
@@ -515,14 +502,8 @@ impl ShortcutRegistry {
                     Action::TransposeDownOctave,
                     Binding::Key(Chord::ctrl_or_cmd(Key::ArrowDown)),
                 ),
-                (
-                    Action::ExclusiveSolo,
-                    Binding::Key(Chord::shift(Key::S)),
-                ),
-                (
-                    Action::ExclusiveMute,
-                    Binding::Key(Chord::shift(Key::M)),
-                ),
+                (Action::ExclusiveSolo, Binding::Key(Chord::shift(Key::S))),
+                (Action::ExclusiveMute, Binding::Key(Chord::shift(Key::M))),
             ],
         }
     }

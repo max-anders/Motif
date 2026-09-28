@@ -386,16 +386,17 @@ pub fn pattern_row_suppressed_by_higher_lane(
     block_id: u64,
     track_id: u64,
 ) -> bool {
-    let Some((lane_index, block)) = project
-        .pattern_lanes
-        .iter()
-        .enumerate()
-        .find_map(|(index, lane)| {
-            lane.blocks
-                .iter()
-                .find(|b| b.id == block_id)
-                .map(|b| (index, b))
-        })
+    let Some((lane_index, block)) =
+        project
+            .pattern_lanes
+            .iter()
+            .enumerate()
+            .find_map(|(index, lane)| {
+                lane.blocks
+                    .iter()
+                    .find(|b| b.id == block_id)
+                    .map(|b| (index, b))
+            })
     else {
         return false;
     };
@@ -717,12 +718,7 @@ mod tests {
 
     #[test]
     fn top_lane_wins_on_same_track_overlap() {
-        let project = empty_project_with_tracks(vec![track_with_clip(
-            1,
-            0.0,
-            16.0,
-            Vec::new(),
-        )]);
+        let project = empty_project_with_tracks(vec![track_with_clip(1, 0.0, 16.0, Vec::new())]);
         let mut project = project;
         project.pattern_lanes = vec![
             PatternLane {
@@ -885,12 +881,7 @@ mod tests {
 
     #[test]
     fn pattern_row_suppressed_when_higher_lane_wins() {
-        let project = empty_project_with_tracks(vec![track_with_clip(
-            1,
-            0.0,
-            16.0,
-            Vec::new(),
-        )]);
+        let project = empty_project_with_tracks(vec![track_with_clip(1, 0.0, 16.0, Vec::new())]);
         let mut project = project;
         project.pattern_lanes = vec![
             PatternLane {

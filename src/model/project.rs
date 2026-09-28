@@ -14,7 +14,7 @@ use super::pattern::{
     solo_pattern_block, ResolvedMidiNote,
 };
 use super::track::{migrate_notes_to_clip, Track};
-use super::{PatternLane, Note};
+use super::{Note, PatternLane};
 
 pub const DEFAULT_BPM: f32 = 120.0;
 pub const DEFAULT_BEATS_PER_BAR: f32 = 4.0;
@@ -165,8 +165,12 @@ impl Default for Project {
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum OverlapTrim {
     Delete,
-    TrimStart { new_start: f32 },
-    TrimEnd { new_end: f32 },
+    TrimStart {
+        new_start: f32,
+    },
+    TrimEnd {
+        new_end: f32,
+    },
     Split {
         left_end: f32,
         tail_start: f32,
@@ -347,8 +351,7 @@ impl Project {
         if moved_ids.is_empty() {
             return;
         }
-        let moving: std::collections::HashSet<u64> =
-            moved_ids.iter().copied().collect();
+        let moving: std::collections::HashSet<u64> = moved_ids.iter().copied().collect();
         let movers: Vec<(u8, f32, f32)> = self
             .midi_clip(clip_id)
             .map(|clip| {
@@ -376,14 +379,7 @@ impl Project {
                                     note.end_beats(),
                                 )
                         })
-                        .map(|note| {
-                            (
-                                note.id,
-                                note.start_beats,
-                                note.end_beats(),
-                                note.velocity,
-                            )
-                        })
+                        .map(|note| (note.id, note.start_beats, note.end_beats(), note.velocity))
                         .collect()
                 })
                 .unwrap_or_default();
@@ -592,19 +588,13 @@ impl Project {
         if moved_ids.is_empty() {
             return;
         }
-        let moving: std::collections::HashSet<u64> =
-            moved_ids.iter().copied().collect();
+        let moving: std::collections::HashSet<u64> = moved_ids.iter().copied().collect();
         let movers: Vec<(u64, u64, f32, f32)> = moved_ids
             .iter()
             .filter_map(|&clip_id| {
                 let track_id = self.track_id_for_clip(clip_id)?;
                 let clip = self.clip(clip_id)?;
-                Some((
-                    clip_id,
-                    track_id,
-                    clip.start_beats(),
-                    clip.end_beats(),
-                ))
+                Some((clip_id, track_id, clip.start_beats(), clip.end_beats()))
             })
             .collect();
 
@@ -984,7 +974,9 @@ impl Project {
             return false;
         };
         let before = track.modulators.len();
-        track.modulators.retain(|modulator| modulator.id != modulator_id);
+        track
+            .modulators
+            .retain(|modulator| modulator.id != modulator_id);
         track.modulators.len() != before
     }
 
@@ -995,11 +987,7 @@ impl Project {
             .find(|modulator| modulator.id == modulator_id)
     }
 
-    pub fn modulator_mut(
-        &mut self,
-        track_id: u64,
-        modulator_id: u64,
-    ) -> Option<&mut LfoModulator> {
+    pub fn modulator_mut(&mut self, track_id: u64, modulator_id: u64) -> Option<&mut LfoModulator> {
         self.track_mut(track_id)?
             .modulators
             .iter_mut()
@@ -1409,12 +1397,7 @@ impl Project {
         true
     }
 
-    pub fn rename_clip_variation(
-        &mut self,
-        clip_id: u64,
-        variation_id: u64,
-        name: String,
-    ) -> bool {
+    pub fn rename_clip_variation(&mut self, clip_id: u64, variation_id: u64, name: String) -> bool {
         let trimmed = name.trim().to_string();
         if trimmed.is_empty() {
             return false;
@@ -1465,17 +1448,19 @@ impl Project {
             .macros
             .iter()
             .flat_map(|macro_knob| {
-                macro_knob.mappings.iter().filter_map(|mapping| {
-                    match mapping.target {
-                        MacroTarget::ModulatorRate { .. }
-                        | MacroTarget::ModulatorDepth { .. } => Some((
-                            macro_knob.id,
-                            mapping.target.clone(),
-                            mapping.mapped_value(macro_knob.value),
-                        )),
+                macro_knob
+                    .mappings
+                    .iter()
+                    .filter_map(|mapping| match mapping.target {
+                        MacroTarget::ModulatorRate { .. } | MacroTarget::ModulatorDepth { .. } => {
+                            Some((
+                                macro_knob.id,
+                                mapping.target.clone(),
+                                mapping.mapped_value(macro_knob.value),
+                            ))
+                        }
                         _ => None,
-                    }
-                })
+                    })
             })
             .collect();
 
@@ -1489,7 +1474,8 @@ impl Project {
                                     .clamp(0.0625, 16.0),
                             },
                             LfoRate::Hz { .. } => LfoRate::Hz {
-                                hz: (0.01 + (30.0 - 0.01) * value.clamp(0.0, 1.0)).clamp(0.01, 30.0),
+                                hz: (0.01 + (30.0 - 0.01) * value.clamp(0.0, 1.0))
+                                    .clamp(0.01, 30.0),
                             },
                         };
                     }
@@ -2154,7 +2140,8 @@ impl Project {
                 continue;
             }
             if placed.iter().any(|(track_id, p_start, p_end)| {
-                *track_id == template.track_id && Self::beat_ranges_overlap(start, end, *p_start, *p_end)
+                *track_id == template.track_id
+                    && Self::beat_ranges_overlap(start, end, *p_start, *p_end)
             }) {
                 continue;
             }
@@ -2643,7 +2630,9 @@ impl Project {
     }
 
     pub fn pattern_lane_mut(&mut self, lane_id: u64) -> Option<&mut PatternLane> {
-        self.pattern_lanes.iter_mut().find(|lane| lane.id == lane_id)
+        self.pattern_lanes
+            .iter_mut()
+            .find(|lane| lane.id == lane_id)
     }
 
     pub fn pattern_block(&self, block_id: u64) -> Option<&super::pattern::PatternBlock> {
@@ -2769,7 +2758,10 @@ impl Project {
     /// Deep-copy a pattern lane (blocks + row notes) and insert it directly below
     /// the source. Returns the new lane id.
     pub fn duplicate_pattern_lane(&mut self, lane_id: u64) -> Option<u64> {
-        let index = self.pattern_lanes.iter().position(|lane| lane.id == lane_id)?;
+        let index = self
+            .pattern_lanes
+            .iter()
+            .position(|lane| lane.id == lane_id)?;
         let source = self.pattern_lanes[index].clone();
 
         let new_lane_id = self.next_pattern_lane_id();
@@ -2997,14 +2989,8 @@ impl Project {
         self.bump_clip_id();
         let variation_id = self.next_variation_id();
         self.bump_variation_id();
-        let clip = MidiClip::with_single_variation(
-            clip_id,
-            name,
-            start,
-            length,
-            variation_id,
-            notes,
-        );
+        let clip =
+            MidiClip::with_single_variation(clip_id, name, start, length, variation_id, notes);
         self.track_mut(track_id)?.clips.push(Clip::Midi(clip));
         Some(clip_id)
     }
@@ -3154,7 +3140,9 @@ impl Project {
         };
         lane.blocks
             .iter()
-            .filter(|block| block.id != block_id && block.end_beats() <= current_start + f32::EPSILON)
+            .filter(|block| {
+                block.id != block_id && block.end_beats() <= current_start + f32::EPSILON
+            })
             .map(|block| block.end_beats())
             .fold(0.0_f32, f32::max)
     }
@@ -3465,8 +3453,7 @@ impl Project {
                 .collect();
 
             for (v_id, v_start, v_end, velocity) in victims {
-                let Some(action) = Self::overlap_trim_action(v_start, v_end, m_start, m_end)
-                else {
+                let Some(action) = Self::overlap_trim_action(v_start, v_end, m_start, m_end) else {
                     continue;
                 };
                 match action {
@@ -3669,8 +3656,14 @@ impl Project {
             let start = Self::snap_beats((template.start_beats + delta_beats).max(0.0));
             let duration = Self::snap_beats(template.duration_beats.max(SNAP_BEATS));
             let end = start + duration;
-            if !self.pattern_note_range_free(block_id, track_id, pitch, start, duration, &source_ignore)
-            {
+            if !self.pattern_note_range_free(
+                block_id,
+                track_id,
+                pitch,
+                start,
+                duration,
+                &source_ignore,
+            ) {
                 continue;
             }
             if placed.iter().any(|(p, p_start, p_end)| {
@@ -3748,8 +3741,14 @@ impl Project {
             if end > length + f32::EPSILON {
                 continue;
             }
-            if !self.pattern_note_range_free(block_id, track_id, template.pitch, start, duration, &[])
-            {
+            if !self.pattern_note_range_free(
+                block_id,
+                track_id,
+                template.pitch,
+                start,
+                duration,
+                &[],
+            ) {
                 continue;
             }
             if placed.iter().any(|(p, p_start, p_end)| {
@@ -3782,7 +3781,11 @@ impl Project {
 
     /// Row editor surface (step grid vs piano roll): explicit override if the
     /// user picked one, else derived from the row's current notes.
-    pub fn pattern_row_mode(&self, block_id: u64, track_id: u64) -> crate::model::pattern::PatternRowMode {
+    pub fn pattern_row_mode(
+        &self,
+        block_id: u64,
+        track_id: u64,
+    ) -> crate::model::pattern::PatternRowMode {
         self.pattern_block(block_id)
             .and_then(|block| block.track_content(track_id))
             .map(super::pattern::PatternTrackContent::effective_row_mode)
@@ -3890,12 +3893,8 @@ mod tests {
             .add_clip_to_track(track_id, 4.0, 4.0)
             .expect("dst clip");
 
-        let a = project
-            .add_note_to_clip(src, 60, 1.0, 1.0)
-            .expect("note a");
-        let b = project
-            .add_note_to_clip(src, 64, 2.0, 0.5)
-            .expect("note b");
+        let a = project.add_note_to_clip(src, 60, 1.0, 1.0).expect("note a");
+        let b = project.add_note_to_clip(src, 64, 2.0, 0.5).expect("note b");
         if let Some(note) = project.midi_clip_mut(src).and_then(|c| c.note_mut(b.id)) {
             note.velocity = 77;
         }
@@ -3915,7 +3914,10 @@ mod tests {
         assert_eq!(n1.pitch, 64);
         assert_eq!(n1.start_beats, 1.5);
         assert_eq!(n1.velocity, 77);
-        assert_eq!(project.midi_clip(src).map(|c| c.active_notes().len()), Some(2));
+        assert_eq!(
+            project.midi_clip(src).map(|c| c.active_notes().len()),
+            Some(2)
+        );
     }
 
     #[test]
@@ -3945,10 +3947,7 @@ mod tests {
             .map(|clip| clip.active_notes().iter().map(|note| note.id).collect())
             .unwrap_or_default();
         for id in existing {
-            project
-                .midi_clip_mut(dst)
-                .expect("dst")
-                .remove_note(id);
+            project.midi_clip_mut(dst).expect("dst").remove_note(id);
         }
         let new_ids = project.paste_notes_into_clip(dst, &entries, 0.0);
         assert_eq!(new_ids.len(), 1);
@@ -4045,9 +4044,7 @@ mod tests {
         let mut project = Project::default();
         let keep = project.tracks[0].id;
         let remove = project.add_track("Track 2", TrackInstrument::BuiltInPiano);
-        let clip_id = project
-            .add_clip_to_track(remove, 2.0, 4.0)
-            .expect("clip");
+        let clip_id = project.add_clip_to_track(remove, 2.0, 4.0).expect("clip");
         project
             .add_note_to_clip(clip_id, 60, 0.0, 1.0)
             .expect("note");
@@ -4064,9 +4061,7 @@ mod tests {
         let mut project = Project::default();
         let remove = project.add_track("Track 2", TrackInstrument::BuiltInPiano);
         let lane_id = project.ensure_pattern_lane();
-        let block_id = project
-            .add_pattern_block(lane_id, 0.0, 4.0)
-            .expect("block");
+        let block_id = project.add_pattern_block(lane_id, 0.0, 4.0).expect("block");
         project
             .add_note_to_pattern_track(block_id, remove, 60, 0.0, 1.0)
             .expect("note");
@@ -4188,13 +4183,23 @@ mod tests {
 
         assert!(!project.transpose_notes_in_clip(clip_id, &[high], 1));
         assert_eq!(
-            project.midi_clip(clip_id).unwrap().note(high).unwrap().pitch,
+            project
+                .midi_clip(clip_id)
+                .unwrap()
+                .note(high)
+                .unwrap()
+                .pitch,
             MAX_PITCH
         );
 
         assert!(project.transpose_notes_in_clip(clip_id, &[high], -12));
         assert_eq!(
-            project.midi_clip(clip_id).unwrap().note(high).unwrap().pitch,
+            project
+                .midi_clip(clip_id)
+                .unwrap()
+                .note(high)
+                .unwrap()
+                .pitch,
             MAX_PITCH - 12
         );
     }
@@ -4439,9 +4444,7 @@ mod tests {
         let right = project
             .add_note_to_clip(clip_id, 60, 2.0, 1.0)
             .expect("right");
-        assert!(
-            (project.note_resize_end_bound(clip_id, left.id, 60, 1.0, &[]) - 2.0).abs() < 1e-5
-        );
+        assert!((project.note_resize_end_bound(clip_id, left.id, 60, 1.0, &[]) - 2.0).abs() < 1e-5);
         assert!(
             (project.note_resize_start_bound(clip_id, right.id, 60, 2.0, &[]) - 1.0).abs() < 1e-5
         );
@@ -4466,12 +4469,8 @@ mod tests {
     fn clamp_note_resize_end_delta_stops_at_clip_length() {
         let mut project = Project::default();
         let clip_id = project.tracks[0].clips[0].id();
-        let a = project
-            .add_note_to_clip(clip_id, 60, 0.0, 1.0)
-            .expect("a");
-        let b = project
-            .add_note_to_clip(clip_id, 64, 1.0, 1.0)
-            .expect("b");
+        let a = project.add_note_to_clip(clip_id, 60, 0.0, 1.0).expect("a");
+        let b = project.add_note_to_clip(clip_id, 64, 1.0, 1.0).expect("b");
         let originals = vec![a, b];
         let delta = project.clamp_note_resize_end_delta(clip_id, &originals, 100.0);
         // b ends at 2.0; clip is 4.0 -> max shared delta is +2.0
@@ -4485,8 +4484,7 @@ mod tests {
         let note = project
             .add_note_to_clip(clip_id, 60, 2.0, 1.0)
             .expect("note");
-        let (delta, pitch) =
-            project.clamp_note_move_deltas(clip_id, &[note], 100.0, 0, &[]);
+        let (delta, pitch) = project.clamp_note_move_deltas(clip_id, &[note], 100.0, 0, &[]);
         assert_eq!(pitch, 0);
         // note ends at 3.0; clip length 4.0 -> max delta +1.0
         assert!((delta - 1.0).abs() < 1e-5);
@@ -4611,9 +4609,10 @@ mod tests {
         assert_eq!(clip.length_beats(), 8.0);
         let midi = clip.as_midi().expect("midi");
         assert_eq!(midi.active_notes().len(), 2);
-        assert!(midi.active_notes().iter().any(|note| {
-            note.pitch == 64 && (note.start_beats - 4.0).abs() < 1e-5
-        }));
+        assert!(midi
+            .active_notes()
+            .iter()
+            .any(|note| { note.pitch == 64 && (note.start_beats - 4.0).abs() < 1e-5 }));
     }
 
     #[test]
@@ -4841,10 +4840,7 @@ mod tests {
         let c = project
             .add_device(track_id, crate::model::PluginFormat::Clap, "c", "C")
             .expect("c");
-        assert_eq!(
-            project.track(track_id).unwrap().devices.len(),
-            3
-        );
+        assert_eq!(project.track(track_id).unwrap().devices.len(), 3);
 
         assert!(project.set_device_bypass(track_id, b, true));
         assert!(project.track(track_id).unwrap().devices[1].bypassed);
@@ -5166,13 +5162,11 @@ mod tests {
             .expect("note");
 
         // Cannot move before the block start.
-        let (delta_beats, _) =
-            project.clamp_pattern_note_move_deltas(block_id, &[note], -5.0, 0);
+        let (delta_beats, _) = project.clamp_pattern_note_move_deltas(block_id, &[note], -5.0, 0);
         assert_eq!(delta_beats, -1.0);
 
         // Cannot move past the block end.
-        let (delta_beats, _) =
-            project.clamp_pattern_note_move_deltas(block_id, &[note], 5.0, 0);
+        let (delta_beats, _) = project.clamp_pattern_note_move_deltas(block_id, &[note], 5.0, 0);
         assert_eq!(delta_beats, 2.0);
     }
 
@@ -5216,9 +5210,8 @@ mod tests {
             .add_note_to_pattern_track(block_id, track_id, 60, 4.0, 1.0)
             .expect("right neighbor");
 
-        let start_bound = project.pattern_note_resize_start_bound(
-            block_id, track_id, middle.id, 60, 2.0, &[],
-        );
+        let start_bound =
+            project.pattern_note_resize_start_bound(block_id, track_id, middle.id, 60, 2.0, &[]);
         assert_eq!(start_bound, 1.0);
         let end_bound =
             project.pattern_note_resize_end_bound(block_id, track_id, middle.id, 60, 3.0, &[]);
@@ -5264,12 +5257,8 @@ mod tests {
 
         let dest_track = project.add_track("Drums", TrackInstrument::BuiltInPiano);
         assert!(!project.pattern_row_included(block_id, dest_track));
-        let pasted = project.paste_notes_into_pattern_track(
-            block_id,
-            dest_track,
-            &clipboard_notes,
-            1.0,
-        );
+        let pasted =
+            project.paste_notes_into_pattern_track(block_id, dest_track, &clipboard_notes, 1.0);
         assert_eq!(pasted.len(), 1);
         assert!(project.pattern_row_included(block_id, dest_track));
         let dest_notes = project.pattern_track_notes(block_id, dest_track);
@@ -5401,9 +5390,15 @@ mod tests {
             .map(|c| (c.start_beats(), c.length_beats(), c.id()))
             .collect();
         assert_eq!(clips.len(), 3);
-        assert!(clips.iter().any(|(s, l, _)| (*s - 0.0).abs() < 1e-5 && (*l - 4.0).abs() < 1e-5));
-        assert!(clips.iter().any(|(s, l, _)| (*s - 4.0).abs() < 1e-5 && (*l - 8.0).abs() < 1e-5));
-        assert!(clips.iter().any(|(s, l, _)| (*s - 12.0).abs() < 1e-5 && (*l - 4.0).abs() < 1e-5));
+        assert!(clips
+            .iter()
+            .any(|(s, l, _)| (*s - 0.0).abs() < 1e-5 && (*l - 4.0).abs() < 1e-5));
+        assert!(clips
+            .iter()
+            .any(|(s, l, _)| (*s - 4.0).abs() < 1e-5 && (*l - 8.0).abs() < 1e-5));
+        assert!(clips
+            .iter()
+            .any(|(s, l, _)| (*s - 12.0).abs() < 1e-5 && (*l - 4.0).abs() < 1e-5));
         assert!(project.clip(clip_id).is_some());
     }
 
@@ -5499,7 +5494,11 @@ mod tests {
             .notes[0]
             .id;
         assert_ne!(source_note, copied_note);
-        assert!(project.pattern_lane(new_lane_id).unwrap().name.ends_with("copy"));
+        assert!(project
+            .pattern_lane(new_lane_id)
+            .unwrap()
+            .name
+            .ends_with("copy"));
     }
 
     #[test]
@@ -5516,7 +5515,10 @@ mod tests {
             .expect("clone take");
         assert_ne!(a_id, b_id);
         assert_eq!(project.midi_clip(clip_id).unwrap().variations.len(), 2);
-        assert_eq!(project.midi_clip(clip_id).unwrap().active_variation_id, b_id);
+        assert_eq!(
+            project.midi_clip(clip_id).unwrap().active_variation_id,
+            b_id
+        );
         assert_eq!(project.midi_clip(clip_id).unwrap().active_notes().len(), 1);
 
         let empty_id = project
@@ -5526,13 +5528,22 @@ mod tests {
             project.midi_clip(clip_id).unwrap().active_variation_id,
             empty_id
         );
-        assert!(project.midi_clip(clip_id).unwrap().active_notes().is_empty());
+        assert!(project
+            .midi_clip(clip_id)
+            .unwrap()
+            .active_notes()
+            .is_empty());
 
         assert!(project.set_active_clip_variation(clip_id, a_id));
         assert_eq!(project.midi_clip(clip_id).unwrap().active_notes().len(), 1);
         assert!(project.rename_clip_variation(clip_id, a_id, "Verse".into()));
         assert_eq!(
-            project.midi_clip(clip_id).unwrap().variation(a_id).unwrap().name,
+            project
+                .midi_clip(clip_id)
+                .unwrap()
+                .variation(a_id)
+                .unwrap()
+                .name,
             "Verse"
         );
 
@@ -5579,9 +5590,7 @@ mod tests {
         project
             .add_note_to_clip(clip_id, 60, 0.0, 1.0)
             .expect("note");
-        project
-            .add_clip_variation_empty(clip_id)
-            .expect("empty B");
+        project.add_clip_variation_empty(clip_id).expect("empty B");
         assert_eq!(project.midi_clip(clip_id).unwrap().variations.len(), 2);
 
         let created = project.duplicate_clips(&[clip_id], 4.0, false);
@@ -5657,13 +5666,20 @@ mod tests {
         assert_eq!(project.midi_clip(clip_a).unwrap().variations.len(), 2);
         assert_eq!(project.midi_clip(clip_b).unwrap().variations.len(), 2);
         assert_eq!(
-            project.midi_clip(clip_a).unwrap().active_variation().unwrap().name,
-            project.midi_clip(clip_b).unwrap().active_variation().unwrap().name
+            project
+                .midi_clip(clip_a)
+                .unwrap()
+                .active_variation()
+                .unwrap()
+                .name,
+            project
+                .midi_clip(clip_b)
+                .unwrap()
+                .active_variation()
+                .unwrap()
+                .name
         );
-        assert_ne!(
-            project.midi_clip(clip_b).unwrap().active_variation_id,
-            b_id
-        );
+        assert_ne!(project.midi_clip(clip_b).unwrap().active_variation_id, b_id);
 
         project.unlink_clip(clip_b);
         assert_eq!(project.midi_clip(clip_b).unwrap().link_group_id, None);
@@ -5745,9 +5761,7 @@ mod tests {
         project
             .add_note_to_pattern_track(block_a, track_id, 60, 0.0, 1.0)
             .expect("note");
-        let group = project
-            .enable_pattern_block_link(block_a)
-            .expect("link");
+        let group = project.enable_pattern_block_link(block_a).expect("link");
 
         let created = project.duplicate_pattern_blocks(&[block_a], 4.0, false);
         assert_eq!(created.len(), 1);

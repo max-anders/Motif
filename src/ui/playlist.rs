@@ -12,21 +12,21 @@ use crate::model::{
 use crate::ui::automation::{
     automation_extra_height, AutomationUi, ADD_AUTOMATION_ROW_HEIGHT, AUTOMATION_LANE_BODY_HEIGHT,
 };
-use crate::ui::instrument_menu::{
-    choice_to_instrument, show_instrument_picker, track_name_for_choice, InstrumentChoice,
-    MENU_LIST_MAX_HEIGHT,
-};
 use crate::ui::clip_variations::{
     show_pattern_block_link_control, show_playlist_clip_link_control,
     show_playlist_clip_mute_control, show_playlist_clip_variation_menu,
 };
-use crate::ui::pattern_strip::pattern_block_rect;
+use crate::ui::instrument_menu::{
+    choice_to_instrument, show_instrument_picker, track_name_for_choice, InstrumentChoice,
+    MENU_LIST_MAX_HEIGHT,
+};
 use crate::ui::note_preview::{draw_note_preview, NotePreviewStyle};
+use crate::ui::pattern_strip::pattern_block_rect;
 use crate::ui::pattern_strip::PatternStripUi;
 use crate::ui::theme::ThemeColors;
 use crate::ui::timeline::{
-    apply_horizontal_wheel_controls, arrangement_beat_width_bounds, daw_editor_scroll_area,
-    draw_loop_region, draw_playhead, draw_playback_anchor, draw_ruler, draw_timeline_grid_lines,
+    apply_editor_wheel_controls, arrangement_beat_width_bounds, daw_editor_scroll_area,
+    draw_loop_region, draw_playback_anchor, draw_playhead, draw_ruler, draw_timeline_grid_lines,
     handle_loop_region_pointer, handle_timeline_playhead_pointer, hit_test_loop_edge,
     is_timeline_pointer, timeline_x, with_solid_scrollbars, x_to_beat, LoopEdge, TimelineMetrics,
     DEFAULT_BEAT_WIDTH, RULER_HEIGHT, TIMELINE_GUTTER_WIDTH,
@@ -34,7 +34,10 @@ use crate::ui::timeline::{
 use crate::ui::track_rename::{PatternLaneRenameUi, TrackRenameUi};
 
 pub(crate) const TRACK_HEADER_WIDTH: f32 = TIMELINE_GUTTER_WIDTH;
+/// Default clip-lane height (devices mini-playlist stays on this constant).
 pub(crate) const LANE_HEIGHT: f32 = 72.0;
+const MIN_LANE_HEIGHT: f32 = 40.0;
+const MAX_LANE_HEIGHT: f32 = 180.0;
 const ADD_TRACK_GAP: f32 = 14.0;
 const ADD_TRACK_BUTTON_SIZE: f32 = 28.0;
 const ADD_TRACK_ROW_HEIGHT: f32 = ADD_TRACK_GAP + ADD_TRACK_BUTTON_SIZE + 8.0;
@@ -123,6 +126,8 @@ pub struct PlaylistUi {
     dragging_playhead: bool,
     dragging_loop_edge: Option<LoopEdge>,
     beat_width: f32,
+    /// Clip-lane height; Alt+Wheel scales this (piano-roll analog of key zoom).
+    lane_height: f32,
     scroll_offset: Vec2,
     /// Timeline viewport width from the previous frame (excludes track headers + scrollbar).
     timeline_view_w: f32,
@@ -165,6 +170,7 @@ impl Default for PlaylistUi {
             dragging_playhead: false,
             dragging_loop_edge: None,
             beat_width: DEFAULT_BEAT_WIDTH,
+            lane_height: LANE_HEIGHT,
             scroll_offset: Vec2::ZERO,
             timeline_view_w: 0.0,
             open_clip_request: None,
@@ -194,22 +200,31 @@ struct TrackLayout {
     tops: Vec<f32>,
     /// Total block height (clip lane + optional automation fold-out).
     heights: Vec<f32>,
+    lane_height: f32,
 }
 
 impl TrackLayout {
-    fn from_project(project: &Project, automation_expanded: &HashSet<u64>) -> Self {
+    fn from_project(
+        project: &Project,
+        automation_expanded: &HashSet<u64>,
+        lane_height: f32,
+    ) -> Self {
         let mut tops = Vec::with_capacity(project.tracks.len());
         let mut heights = Vec::with_capacity(project.tracks.len());
         let mut y = 0.0_f32;
         for track in &project.tracks {
             let expanded = automation_expanded.contains(&track.id);
             let height =
-                LANE_HEIGHT + automation_extra_height(track.automation_lanes.len(), expanded);
+                lane_height + automation_extra_height(track.automation_lanes.len(), expanded);
             tops.push(y);
             heights.push(height);
             y += height;
         }
-        Self { tops, heights }
+        Self {
+            tops,
+            heights,
+            lane_height,
+        }
     }
 
     fn total_height(&self) -> f32 {
@@ -218,7 +233,7 @@ impl TrackLayout {
             .zip(self.heights.last())
             .map(|(top, height)| top + height)
             .unwrap_or(0.0)
-            .max(LANE_HEIGHT)
+            .max(self.lane_height)
     }
 
     fn clip_lane_rect(&self, body: Rect, track_index: usize) -> Option<Rect> {
@@ -226,7 +241,7 @@ impl TrackLayout {
         let lane_top = body.top() + top;
         Some(Rect::from_min_max(
             Pos2::new(body.left(), lane_top),
-            Pos2::new(body.right(), lane_top + LANE_HEIGHT),
+            Pos2::new(body.right(), lane_top + self.lane_height),
         ))
     }
 
@@ -234,7 +249,7 @@ impl TrackLayout {
         let rel = y - body.top();
         for (index, (top, height)) in self.tops.iter().zip(self.heights.iter()).enumerate() {
             if rel >= *top && rel < top + height {
-                let in_clip_lane = rel < top + LANE_HEIGHT;
+                let in_clip_lane = rel < top + self.lane_height;
                 return Some((index, in_clip_lane));
             }
         }
@@ -300,7 +315,9 @@ impl PlaylistUi {
     }
 
     fn any_pattern_strip_gesture_active(&self) -> bool {
-        self.pattern_strips.values().any(|strip| strip.gesture_active())
+        self.pattern_strips
+            .values()
+            .any(|strip| strip.gesture_active())
     }
 
     pub fn prune_selection(&mut self, project: &Project) {
@@ -438,25 +455,32 @@ impl PlaylistUi {
         let (min_beat_width, max_beat_width) =
             arrangement_beat_width_bounds(timeline_view_w, total_beats);
         self.beat_width = self.beat_width.clamp(min_beat_width, max_beat_width);
+        self.lane_height = self.lane_height.clamp(MIN_LANE_HEIGHT, MAX_LANE_HEIGHT);
         // Zoom over ruler + timeline (header column is outside beat space).
+        // Vertical content origin is the timeline body: the ruler is a separate
+        // widget, so including it in Y would drift Alt+Wheel lane zoom.
         let zoom_viewport = Rect::from_min_max(
             Pos2::new(timeline_area.left(), full.top()),
             timeline_area.max,
         );
-        apply_horizontal_wheel_controls(
+        apply_editor_wheel_controls(
             ui,
             zoom_viewport,
+            timeline_area,
             &mut self.beat_width,
-            &mut self.scroll_offset.x,
             min_beat_width,
             max_beat_width,
-            0.0,
+            &mut self.lane_height,
+            &mut self.scroll_offset,
+            MIN_LANE_HEIGHT,
+            MAX_LANE_HEIGHT,
         );
 
         let metrics = TimelineMetrics {
             beat_width: self.beat_width,
         };
-        let layout = TrackLayout::from_project(project, &self.automation_expanded);
+        let layout =
+            TrackLayout::from_project(project, &self.automation_expanded, self.lane_height);
         project.ensure_pattern_lane();
         self.sync_pattern_strips(project);
         if selected_pattern_lane
@@ -496,16 +520,24 @@ impl PlaylistUi {
                     // Shared timeline helpers add TIMELINE_GUTTER_WIDTH internally;
                     // shift left so beat 0 lands on content.left().
                     let body = playlist_beat_body(content);
-                    let layout = TrackLayout::from_project(project, &self.automation_expanded);
+                    let layout = TrackLayout::from_project(
+                        project,
+                        &self.automation_expanded,
+                        self.lane_height,
+                    );
                     let track_area_height = layout.total_height();
                     let pattern_lanes_height =
                         PatternStripUi::pattern_lanes_area_height(project.pattern_lanes.len());
 
                     let pattern_lane_hit = response.interact_pointer_pos().and_then(|pos| {
-                        project.pattern_lanes.iter().enumerate().find_map(|(idx, lane)| {
-                            PatternStripUi::contains_y(body, track_area_height, idx, pos.y)
-                                .then_some((idx, lane.id))
-                        })
+                        project
+                            .pattern_lanes
+                            .iter()
+                            .enumerate()
+                            .find_map(|(idx, lane)| {
+                                PatternStripUi::contains_y(body, track_area_height, idx, pos.y)
+                                    .then_some((idx, lane.id))
+                            })
                     });
                     let on_pattern_strip = pattern_lane_hit.is_some();
                     let gesture_active = self.active_drag.is_some()
@@ -597,8 +629,7 @@ impl PlaylistUi {
                             continue;
                         };
                         let audible = project.track_audible(track);
-                        let override_windows =
-                            project.pattern_override_windows_for_track(track.id);
+                        let override_windows = project.pattern_override_windows_for_track(track.id);
                         draw_lane_timeline(
                             &painter,
                             lane_rect,
@@ -625,35 +656,18 @@ impl PlaylistUi {
                     for (clip_id, clip_rect) in variation_menu_targets {
                         if project.clip(clip_id).and_then(|c| c.as_midi()).is_some() {
                             show_playlist_clip_link_control(
-                                ui,
-                                clip_rect,
-                                clip_id,
-                                project,
-                                history,
-                                theme,
+                                ui, clip_rect, clip_id, project, history, theme,
                             );
                             let _ = show_playlist_clip_variation_menu(
-                                ui,
-                                clip_rect,
-                                clip_id,
-                                project,
-                                history,
-                                theme,
+                                ui, clip_rect, clip_id, project, history, theme,
                             );
                         }
                         show_playlist_clip_mute_control(
-                            ui,
-                            clip_rect,
-                            clip_id,
-                            project,
-                            history,
-                            engine,
-                            theme,
+                            ui, clip_rect, clip_id, project, history, engine, theme,
                         );
                     }
 
-                    let priority_row =
-                        PatternStripUi::priority_row_rect(body, track_area_height);
+                    let priority_row = PatternStripUi::priority_row_rect(body, track_area_height);
                     PatternStripUi::paint_priority_timeline(
                         &painter,
                         priority_row,
@@ -689,12 +703,7 @@ impl PlaylistUi {
                     }
                     for (block_id, block_rect) in pattern_link_targets {
                         show_pattern_block_link_control(
-                            ui,
-                            block_rect,
-                            block_id,
-                            project,
-                            history,
-                            theme,
+                            ui, block_rect, block_id, project, history, theme,
                         );
                     }
 
@@ -707,11 +716,7 @@ impl PlaylistUi {
                         Pos2::new(content.left(), add_lane_row.top()),
                         Pos2::new(content.right(), add_lane_row.bottom()),
                     );
-                    painter.rect_filled(
-                        add_lane_timeline,
-                        0.0,
-                        theme.lane_bg.gamma_multiply(0.92),
-                    );
+                    painter.rect_filled(add_lane_timeline, 0.0, theme.lane_bg.gamma_multiply(0.92));
 
                     if let Some(marquee) = &self.marquee {
                         draw_marquee(&painter, marquee.rect(), theme);
@@ -784,9 +789,7 @@ impl PlaylistUi {
                     ui.allocate_new_ui(UiBuilder::new().max_rect(add_button), |ui| {
                         egui::menu::menu_button(
                             ui,
-                            egui::RichText::new("+")
-                                .size(18.0)
-                                .color(theme.text_muted),
+                            egui::RichText::new("+").size(18.0).color(theme.text_muted),
                             |ui| {
                                 if add_track_from_picker(
                                     ui,
@@ -872,9 +875,11 @@ impl PlaylistUi {
         }
 
         // ---- Fixed header column (vertical scroll synced via content.top()) ----
-        ui.painter()
-            .with_clip_rect(headers_area)
-            .rect_filled(headers_area, 0.0, theme.track_header_bg);
+        ui.painter().with_clip_rect(headers_area).rect_filled(
+            headers_area,
+            0.0,
+            theme.track_header_bg,
+        );
         ui.painter().rect_filled(corner, 0.0, theme.gutter_bg);
         ui.painter().line_segment(
             [corner.right_top(), corner.right_bottom()],
@@ -913,13 +918,7 @@ impl PlaylistUi {
             Pos2::new(headers_area.left(), priority_row.top()),
             Pos2::new(headers_area.right(), priority_row.bottom()),
         );
-        PatternStripUi::show_priority_header(
-            ui,
-            priority_header,
-            headers_area,
-            project,
-            theme,
-        );
+        PatternStripUi::show_priority_header(ui, priority_header, headers_area, project, theme);
 
         for (lane_index, lane) in project.pattern_lanes.iter().enumerate() {
             let strip_rect = PatternStripUi::strip_rect(body, track_area_height, lane_index);
@@ -953,11 +952,8 @@ impl PlaylistUi {
             );
         }
 
-        let add_lane_row = PatternStripUi::add_lane_row_rect(
-            body,
-            track_area_height,
-            project.pattern_lanes.len(),
-        );
+        let add_lane_row =
+            PatternStripUi::add_lane_row_rect(body, track_area_height, project.pattern_lanes.len());
         let add_lane_header = Rect::from_min_max(
             Pos2::new(headers_area.left(), add_lane_row.top()),
             Pos2::new(headers_area.right(), add_lane_row.bottom()),
@@ -1000,11 +996,7 @@ impl PlaylistUi {
                 Pos2::new(headers_area.left(), lane_rect.top()),
                 Pos2::new(headers_area.right(), lane_rect.bottom()),
             );
-            let track_snapshot = project
-                .tracks
-                .iter()
-                .find(|t| t.id == track_id)
-                .cloned();
+            let track_snapshot = project.tracks.iter().find(|t| t.id == track_id).cloned();
             let Some(track_snapshot) = track_snapshot else {
                 continue;
             };
@@ -1068,10 +1060,7 @@ impl PlaylistUi {
                 let sub_top = clip_lane.bottom() + lane_i as f32 * AUTOMATION_LANE_BODY_HEIGHT;
                 let sub_header = Rect::from_min_max(
                     Pos2::new(headers_area.left(), sub_top),
-                    Pos2::new(
-                        headers_area.right(),
-                        sub_top + AUTOMATION_LANE_BODY_HEIGHT,
-                    ),
+                    Pos2::new(headers_area.right(), sub_top + AUTOMATION_LANE_BODY_HEIGHT),
                 );
                 self.automation.show_lane_header(
                     ui,
@@ -1087,23 +1076,13 @@ impl PlaylistUi {
                     theme,
                 );
             }
-            let add_top =
-                clip_lane.bottom() + lane_ids.len() as f32 * AUTOMATION_LANE_BODY_HEIGHT;
+            let add_top = clip_lane.bottom() + lane_ids.len() as f32 * AUTOMATION_LANE_BODY_HEIGHT;
             let add_row = Rect::from_min_max(
                 Pos2::new(headers_area.left(), add_top),
-                Pos2::new(
-                    headers_area.right(),
-                    add_top + ADD_AUTOMATION_ROW_HEIGHT,
-                ),
+                Pos2::new(headers_area.right(), add_top + ADD_AUTOMATION_ROW_HEIGHT),
             );
-            self.automation.show_add_lane_row(
-                ui,
-                add_row,
-                project,
-                track_id,
-                history,
-                theme,
-            );
+            self.automation
+                .show_add_lane_row(ui, add_row, project, track_id, history, theme);
         }
 
         self.automation_expanded = next_automation_expanded;
@@ -1186,14 +1165,9 @@ fn add_track_from_picker(
     search: &mut String,
     id_salt: &str,
 ) -> bool {
-    let Some(choice) = show_instrument_picker(
-        ui,
-        catalog,
-        search,
-        id_salt,
-        false,
-        MENU_LIST_MAX_HEIGHT,
-    ) else {
+    let Some(choice) =
+        show_instrument_picker(ui, catalog, search, id_salt, false, MENU_LIST_MAX_HEIGHT)
+    else {
         return false;
     };
     let number = project.tracks.len() + 1;
@@ -1206,7 +1180,12 @@ fn add_track_from_picker(
     true
 }
 
-pub(crate) fn ms_toggle_button(ui: &mut Ui, label: &str, active: bool, theme: &ThemeColors) -> bool {
+pub(crate) fn ms_toggle_button(
+    ui: &mut Ui,
+    label: &str,
+    active: bool,
+    theme: &ThemeColors,
+) -> bool {
     let fill = if active {
         theme.accent
     } else {
@@ -1327,7 +1306,10 @@ pub(crate) fn track_header_row(
     }
 
     let controls = Rect::from_min_max(
-        Pos2::new(header.right() - MS_BUTTON_SIZE * 2.0 - 8.0, header.top() + 8.0),
+        Pos2::new(
+            header.right() - MS_BUTTON_SIZE * 2.0 - 8.0,
+            header.top() + 8.0,
+        ),
         Pos2::new(header.right() - 4.0, header.bottom() - 8.0),
     );
     ui.allocate_ui_at_rect(controls, |ui| {
@@ -1551,7 +1533,10 @@ fn pattern_lane_header_name_rect(header: Rect) -> Rect {
 fn track_header_name_rect(header: Rect) -> Rect {
     Rect::from_min_max(
         Pos2::new(header.left() + 4.0, header.top() + 4.0),
-        Pos2::new(header.right() - MS_BUTTON_SIZE * 2.0 - 12.0, header.top() + 36.0),
+        Pos2::new(
+            header.right() - MS_BUTTON_SIZE * 2.0 - 12.0,
+            header.top() + 36.0,
+        ),
     )
 }
 
@@ -1769,7 +1754,9 @@ fn truncate_label_for_width(text: &str, available_width: f32) -> String {
     if available_width <= 0.0 {
         return String::new();
     }
-    let max_chars = (available_width / CLIP_LABEL_AVG_CHAR_WIDTH).floor().max(1.0) as usize;
+    let max_chars = (available_width / CLIP_LABEL_AVG_CHAR_WIDTH)
+        .floor()
+        .max(1.0) as usize;
     truncate_label(text, max_chars)
 }
 
@@ -1843,8 +1830,7 @@ fn draw_clip_waveform(
 
     let content_width = (clip_rect.width() - 8.0).max(1.0);
     let waveform_width = content_width * width_fraction;
-    let columns = (waveform_width.round() as usize)
-        .clamp(1, WAVEFORM_MAX_COLUMNS);
+    let columns = (waveform_width.round() as usize).clamp(1, WAVEFORM_MAX_COLUMNS);
     let x0 = clip_rect.left() + 4.0;
     let clipped = painter.with_clip_rect(clip_rect);
 
@@ -2009,9 +1995,7 @@ fn select_clips_in_rect_single_track(
 ) -> HashSet<u64> {
     clips
         .iter()
-        .filter(|clip| {
-            clip_block_rect(body, lane, clip, metrics).intersects(selection)
-        })
+        .filter(|clip| clip_block_rect(body, lane, clip, metrics).intersects(selection))
         .map(|clip| clip.id())
         .collect()
 }
@@ -2068,8 +2052,8 @@ fn handle_clip_pointer(
         .input(|input| input.pointer.button_down(egui::PointerButton::Primary));
 
     // End clip/marquee drags even when the pointer left the sense area.
-    let end_drag = response.drag_stopped()
-        || (!primary_down && (active_drag.is_some() || marquee.is_some()));
+    let end_drag =
+        response.drag_stopped() || (!primary_down && (active_drag.is_some() || marquee.is_some()));
     if end_drag {
         if let Some(drag) = active_drag.take() {
             finish_clip_drag(project, history, selected, &drag, *drag_moved);
@@ -2119,8 +2103,7 @@ fn handle_clip_pointer(
     if let Some(active_marquee) = marquee.as_mut() {
         if primary_down {
             active_marquee.current = pointer;
-            *selected =
-                select_clips_in_rect(body, layout, project, active_marquee.rect(), metrics);
+            *selected = select_clips_in_rect(body, layout, project, active_marquee.rect(), metrics);
             sync_selected_track_from_clips(project, selected, selected_track);
             clear_all_pattern_strips(pattern_strips);
         }
@@ -2183,8 +2166,7 @@ fn handle_clip_pointer(
                 let source_ids: Vec<u64> = selected.iter().copied().collect();
                 ignore_ids = source_ids.clone();
                 let created = project.duplicate_clips(&source_ids, 0.0, true);
-                if let Some((_, mapped_primary)) =
-                    created.iter().find(|(src, _)| *src == clip.id())
+                if let Some((_, mapped_primary)) = created.iter().find(|(src, _)| *src == clip.id())
                 {
                     primary_id = *mapped_primary;
                 } else if let Some((_, first)) = created.first() {
@@ -2351,8 +2333,8 @@ pub(crate) fn handle_single_track_clip_pointer(
         .ctx
         .input(|input| input.pointer.button_down(egui::PointerButton::Primary));
 
-    let end_drag = response.drag_stopped()
-        || (!primary_down && (active_drag.is_some() || marquee.is_some()));
+    let end_drag =
+        response.drag_stopped() || (!primary_down && (active_drag.is_some() || marquee.is_some()));
     if end_drag {
         if let Some(drag) = active_drag.take() {
             finish_clip_drag(project, history, selected, &drag, *drag_moved);
@@ -2438,8 +2420,7 @@ pub(crate) fn handle_single_track_clip_pointer(
                 let source_ids: Vec<u64> = selected.iter().copied().collect();
                 ignore_ids = source_ids.clone();
                 let created = project.duplicate_clips(&source_ids, 0.0, true);
-                if let Some((_, mapped_primary)) =
-                    created.iter().find(|(src, _)| *src == clip.id())
+                if let Some((_, mapped_primary)) = created.iter().find(|(src, _)| *src == clip.id())
                 {
                     primary_id = *mapped_primary;
                 } else if let Some((_, first)) = created.first() {
@@ -2586,7 +2567,11 @@ fn finish_clip_drag(
         return;
     }
     if drag_moved && matches!(drag.mode, ClipDragMode::Move) {
-        let moved_ids: Vec<u64> = drag.originals.iter().map(|original| original.clip_id).collect();
+        let moved_ids: Vec<u64> = drag
+            .originals
+            .iter()
+            .map(|original| original.clip_id)
+            .collect();
         project.resolve_clip_move_overlaps(&moved_ids);
     }
     history.commit(project);
@@ -2635,10 +2620,7 @@ pub(crate) fn apply_clip_drag(project: &mut Project, drag: &ClipDrag, current_be
             let end = original.start_beats + original.length_beats;
             let left_bound = project.clip_resize_start_bound(drag.clip_id, original.start_beats);
             let new_start = Project::snap_beats(current_beats.max(0.0));
-            let clamped_start = new_start
-                .max(left_bound)
-                .min(end - SNAP_BEATS)
-                .max(0.0);
+            let clamped_start = new_start.max(left_bound).min(end - SNAP_BEATS).max(0.0);
             let Some(clip) = project.clip_mut(drag.clip_id) else {
                 return;
             };
@@ -2649,10 +2631,8 @@ pub(crate) fn apply_clip_drag(project: &mut Project, drag: &ClipDrag, current_be
             let Some(original) = drag.originals.first() else {
                 return;
             };
-            let right_bound = project.clip_resize_end_bound(
-                drag.clip_id,
-                original.start_beats + original.length_beats,
-            );
+            let right_bound = project
+                .clip_resize_end_bound(drag.clip_id, original.start_beats + original.length_beats);
             let new_end = Project::snap_beats(current_beats.max(0.0));
             let clamped_end = new_end
                 .min(right_bound)

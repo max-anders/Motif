@@ -98,8 +98,7 @@ impl AutomationUi {
                             let label = truncate_label(&device.name, 24);
                             if ui.button(label).clicked() {
                                 history.push_before(project.clone());
-                                if let Some(lane) = project.automation_lane_mut(track_id, lane_id)
-                                {
+                                if let Some(lane) = project.automation_lane_mut(track_id, lane_id) {
                                     lane.target = AutomationTarget::Device {
                                         device_id: device.id,
                                         param_id: 0,
@@ -189,28 +188,19 @@ impl AutomationUi {
         total_beats: f32,
         beats_per_bar: f32,
     ) {
-        let id = ui.id().with(("automation_lane_timeline", track_id, lane_id));
+        let id = ui
+            .id()
+            .with(("automation_lane_timeline", track_id, lane_id));
         let response = ui.interact(body, id, Sense::click_and_drag());
         let painter = ui.painter().with_clip_rect(body);
 
         painter.rect_filled(body, 0.0, theme.panel_bg.gamma_multiply(0.85));
-        draw_timeline_grid_lines(
-            &painter,
-            body,
-            metrics,
-            total_beats,
-            beats_per_bar,
-            theme,
-        );
+        draw_timeline_grid_lines(&painter, body, metrics, total_beats, beats_per_bar, theme);
 
         if let Some(lane) = project.automation_lane(track_id, lane_id) {
             draw_automation_curve(&painter, body, lane, metrics, theme);
             if !lane.enabled {
-                painter.rect_filled(
-                    body,
-                    0.0,
-                    egui::Color32::from_black_alpha(80),
-                );
+                painter.rect_filled(body, 0.0, egui::Color32::from_black_alpha(80));
             }
         }
 
@@ -248,13 +238,9 @@ impl AutomationUi {
         ui.allocate_ui_at_rect(row.shrink2(Vec2::new(4.0, 2.0)), |ui| {
             if ui
                 .add(
-                    egui::Button::new(
-                        RichText::new("+ Auto")
-                            .small()
-                            .color(theme.text_muted),
-                    )
-                    .fill(theme.widget_bg)
-                    .min_size(Vec2::new(row.width() - 8.0, row.height() - 4.0)),
+                    egui::Button::new(RichText::new("+ Auto").small().color(theme.text_muted))
+                        .fill(theme.widget_bg)
+                        .min_size(Vec2::new(row.width() - 8.0, row.height() - 4.0)),
                 )
                 .on_hover_text("Add automation lane")
                 .clicked()
@@ -288,9 +274,7 @@ fn apply_param_selection(
     lane.param_min = param.min;
     lane.param_max = param.max;
     lane.target = match target {
-        AutomationTarget::Instrument { .. } => AutomationTarget::Instrument {
-            param_id: param.id,
-        },
+        AutomationTarget::Instrument { .. } => AutomationTarget::Instrument { param_id: param.id },
         AutomationTarget::Device { device_id, .. } => AutomationTarget::Device {
             device_id: *device_id,
             param_id: param.id,
@@ -362,7 +346,12 @@ fn draw_automation_curve(
     }
 }
 
-fn hit_test_point(body: Rect, lane: &AutomationLane, pos: Pos2, metrics: TimelineMetrics) -> Option<usize> {
+fn hit_test_point(
+    body: Rect,
+    lane: &AutomationLane,
+    pos: Pos2,
+    metrics: TimelineMetrics,
+) -> Option<usize> {
     let mut best: Option<(usize, f32)> = None;
     for (index, point) in lane.points.iter().enumerate() {
         let center = Pos2::new(

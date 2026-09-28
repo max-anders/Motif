@@ -75,10 +75,7 @@ pub fn draw_note_preview(
         clipped.rect_filled(
             Rect::from_min_max(
                 Pos2::new(x0, y),
-                Pos2::new(
-                    x1.max(x0 + style.min_bar_width),
-                    y + style.bar_height,
-                ),
+                Pos2::new(x1.max(x0 + style.min_bar_width), y + style.bar_height),
             ),
             style.corner_radius,
             theme.clip_note_preview,

@@ -69,7 +69,10 @@ fn max_vital_16x_in_bytes(bytes: &[u8]) -> u32 {
     while i + 5 <= bytes.len() {
         if &bytes[i..i + 4] == needle {
             let d = bytes[i + 4];
-            let next_ok = bytes.get(i + 5).map(|c| !c.is_ascii_digit()).unwrap_or(true);
+            let next_ok = bytes
+                .get(i + 5)
+                .map(|c| !c.is_ascii_digit())
+                .unwrap_or(true);
             if d.is_ascii_digit() && next_ok {
                 best = best.max(packed_semver(1, 6, u32::from(d - b'0')));
             }

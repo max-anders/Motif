@@ -11,11 +11,10 @@ use crate::ui::clip_variations::{
 };
 use crate::ui::theme::ThemeColors;
 use crate::ui::timeline::{
-    apply_piano_roll_wheel_controls, daw_editor_scroll_area, draw_playhead, draw_playback_anchor,
+    apply_editor_wheel_controls, daw_editor_scroll_area, draw_playback_anchor, draw_playhead,
     draw_ruler, handle_timeline_playhead_pointer, is_timeline_pointer, timeline_x,
-    with_solid_scrollbars,
-    x_to_beat, TimelineMetrics, DEFAULT_BEAT_WIDTH, MAX_BEAT_WIDTH, MIN_BEAT_WIDTH, RULER_HEIGHT,
-    TIMELINE_GUTTER_WIDTH,
+    with_solid_scrollbars, x_to_beat, TimelineMetrics, DEFAULT_BEAT_WIDTH, MAX_BEAT_WIDTH,
+    MIN_BEAT_WIDTH, RULER_HEIGHT, TIMELINE_GUTTER_WIDTH,
 };
 
 /// Fixed width of the pinned piano-key column (left of the scrolling grid).
@@ -183,8 +182,7 @@ impl PianoRollUi {
             self.selected_note_ids.clear();
             return;
         };
-        self.selected_note_ids
-            .retain(|id| clip.note(*id).is_some());
+        self.selected_note_ids.retain(|id| clip.note(*id).is_some());
     }
 
     pub fn release_audition(&mut self, engine: &mut dyn DawEngine) {
@@ -272,10 +270,7 @@ impl PianoRollUi {
             Pos2::new(full.left() + KEY_COLUMN_WIDTH, full.top() + RULER_HEIGHT),
             Pos2::new(editor_right, full.bottom()),
         );
-        let variations_panel = Rect::from_min_max(
-            Pos2::new(editor_right, full.top()),
-            full.max,
-        );
+        let variations_panel = Rect::from_min_max(Pos2::new(editor_right, full.top()), full.max);
 
         // Horizontal viewport actually available to scroll content: the grid area
         // minus the always-visible vertical scrollbar (measured last frame). Using
@@ -312,8 +307,9 @@ impl PianoRollUi {
             self.beat_width = self.beat_width.clamp(min_beat_width, max_beat_width);
         }
 
-        let did_h_zoom = apply_piano_roll_wheel_controls(
+        let did_h_zoom = apply_editor_wheel_controls(
             ui,
+            grid_area,
             grid_area,
             &mut self.beat_width,
             min_beat_width,
@@ -365,7 +361,11 @@ impl PianoRollUi {
         let global_playhead = engine.current_beats();
         let local_playhead = global_playhead - clip_start;
         let playhead_visible = local_playhead >= 0.0 && local_playhead <= total_beats;
-        let playhead_draw = if playhead_visible { local_playhead } else { -1.0 };
+        let playhead_draw = if playhead_visible {
+            local_playhead
+        } else {
+            -1.0
+        };
         let local_anchor = engine.playback_anchor_beats() - clip_start;
         let anchor_visible = local_anchor >= 0.0 && local_anchor <= total_beats;
 
@@ -463,9 +463,8 @@ impl PianoRollUi {
 
         // In-flight note/marquee drags keep pointer ownership; keyboard and ruler
         // only win when idle.
-        let gesture_active = self.active_drag.is_some()
-            || self.marquee.is_some()
-            || self.erase_stroke.is_some();
+        let gesture_active =
+            self.active_drag.is_some() || self.marquee.is_some() || self.erase_stroke.is_some();
         let keyboard_handled = !gesture_active
             && handle_keyboard_audition(
                 &keys_response,
@@ -614,12 +613,7 @@ impl PianoRollUi {
                 Pos2::new(editor_right - 88.0, full.top() + 2.0),
                 Vec2::new(84.0, RULER_HEIGHT - 4.0),
             );
-            show_variations_panel_toggle(
-                ui,
-                toggle_rect,
-                &mut self.variations_panel_open,
-                theme,
-            );
+            show_variations_panel_toggle(ui, toggle_rect, &mut self.variations_panel_open, theme);
         }
     }
 }
@@ -1062,7 +1056,12 @@ pub(crate) fn handle_keyboard_audition(
     true
 }
 
-pub(crate) fn hit_test_key(keys: Rect, grid: Rect, pointer: Pos2, metrics: ViewMetrics) -> Option<u8> {
+pub(crate) fn hit_test_key(
+    keys: Rect,
+    grid: Rect,
+    pointer: Pos2,
+    metrics: ViewMetrics,
+) -> Option<u8> {
     let black_width = TIMELINE_GUTTER_WIDTH * BLACK_KEY_WIDTH_RATIO;
 
     // Black keys first so narrow keys win over the white key underneath.
@@ -1100,8 +1099,7 @@ pub(crate) fn draw_notes(
     for note in notes {
         let note_rect = note_rect(rect, note, metrics);
         let is_selected = selected_ids.contains(&note.id);
-        let is_active =
-            playing && playhead_beats >= 0.0 && note.contains_beat(playhead_beats);
+        let is_active = playing && playhead_beats >= 0.0 && note.contains_beat(playhead_beats);
 
         let fill = if is_selected {
             theme.note_fill_selected
@@ -1444,8 +1442,8 @@ fn handle_pointer(
 
     // End note/marquee drags even when the pointer left the grid or the sense
     // area (otherwise the marquee rect stays painted forever).
-    let end_drag = response.drag_stopped()
-        || (!primary_down && (active_drag.is_some() || marquee.is_some()));
+    let end_drag =
+        response.drag_stopped() || (!primary_down && (active_drag.is_some() || marquee.is_some()));
     if end_drag {
         finish_active_drag(
             active_drag,
@@ -1479,7 +1477,9 @@ fn handle_pointer(
         .unwrap_or(pointer);
 
     // Audition the note's pitch immediately on press (before egui drag threshold).
-    if response.ctx.input(|input| input.pointer.button_pressed(egui::PointerButton::Primary))
+    if response
+        .ctx
+        .input(|input| input.pointer.button_pressed(egui::PointerButton::Primary))
         && is_timeline_pointer(grid, press_pos)
         && active_drag.is_none()
         && marquee.is_none()
@@ -1503,7 +1503,9 @@ fn handle_pointer(
         }
     }
 
-    if response.ctx.input(|input| input.pointer.button_released(egui::PointerButton::Primary))
+    if response
+        .ctx
+        .input(|input| input.pointer.button_released(egui::PointerButton::Primary))
         && active_drag.is_none()
         && *audition_held
     {
@@ -1589,7 +1591,9 @@ fn handle_pointer(
 
     let shift_held = response.ctx.input(|input| input.modifiers.shift);
 
-    if response.ctx.input(|input| input.pointer.button_pressed(egui::PointerButton::Secondary))
+    if response
+        .ctx
+        .input(|input| input.pointer.button_pressed(egui::PointerButton::Secondary))
         && grid.contains(press_pos)
         && !shift_held
     {
@@ -1662,8 +1666,7 @@ fn handle_pointer(
             if matches!(mode, DragMode::Move) && shift_held {
                 let source_ids: Vec<u64> = selected_note_ids.iter().copied().collect();
                 ignore_ids = source_ids.clone();
-                let new_ids =
-                    project.duplicate_notes_in_clip(clip_id, &source_ids, 0.0, 0, true);
+                let new_ids = project.duplicate_notes_in_clip(clip_id, &source_ids, 0.0, 0, true);
                 if let Some(mapped_primary) = source_ids
                     .iter()
                     .position(|id| *id == note.id)
@@ -1738,8 +1741,12 @@ fn handle_pointer(
                 start: press_pos,
                 current: pointer,
             });
-            *selected_note_ids =
-                select_notes_in_rect(grid, &clip_notes, Rect::from_two_pos(press_pos, pointer), metrics);
+            *selected_note_ids = select_notes_in_rect(
+                grid,
+                &clip_notes,
+                Rect::from_two_pos(press_pos, pointer),
+                metrics,
+            );
         }
     }
 }

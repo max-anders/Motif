@@ -27,11 +27,11 @@ If you found this through a comment thread or a social post: welcome. The projec
 
 ## Status
 
-**Early but usable sketchpad** (2026-07-29): playlist + piano roll editing with undo/redo, transport, cpal playback (built-in piano, CLAP/VST3, and imported audio sample clips), bottom mixer dock, plugin manager + editor windows (Linux X11/XWayland), multi-project `.motif` save/open with recent list + recovery autosave, and Settings for shortcuts, themes, plugins, editing, and project prefs. Not a full DAW.
+**Early but usable sketchpad** (2026-09-29): playlist + piano roll editing with undo/redo, transport, cpal playback (built-in piano, CLAP/VST3, and imported audio sample clips), bottom mixer dock, plugin manager + editor windows (Linux X11/XWayland), multi-project `.motif` save/open with recent list + recovery autosave, and Settings for shortcuts, themes, plugins, editing, and project prefs. Not a full DAW.
 
 | Area | State |
 |---|---|
-| Playlist (tracks / MIDI + audio clips) | Working (side-by-side track headers + ruler, like piano roll) |
+| Playlist (tracks / MIDI + audio clips) | Working (side-by-side track headers + ruler, like piano roll; Alt+Wheel lane zoom) |
 | Pattern strip + rack + row editor (section MIDI overrides) | Working (multi-lane strip + bake; rack inline step grid + Melody button; melody row editor) |
 | Per-track instruments (piano / CLAP / VST3) | Working (load off UI thread) |
 | Plugin manager (scan / cache) | Working (`plugin_cache.json` in CWD) |
@@ -172,7 +172,7 @@ cargo run --release
 - **Shift + left-click**, **Shift + right-click empty timeline**, or **Shift + right-click drag** on the timeline - move playhead
 - **Right-click clip** - delete clip
 - **M button (bottom-right on clip)** - mute/unmute this clip only (track M/S still apply)
-- **Wheel** - scroll; **Shift+Wheel** - horizontal scroll; **Ctrl/Cmd+Wheel** - zoom time (zoom-out floor fits the whole arrangement in view)
+- **Wheel** - scroll; **Shift+Wheel** - horizontal scroll; **Ctrl/Cmd+Wheel** - zoom time (zoom-out floor fits the whole arrangement in view); **Alt+Wheel** - zoom track lane height
 - **Scrollbars** - always-visible solid bars (drag to scroll)
 - Track headers are a fixed left column beside the timeline (not an overlay); vertical scroll stays synced with the lanes. The beat ruler is a fixed top strip beside the scrolling grid
 

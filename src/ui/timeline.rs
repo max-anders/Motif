@@ -163,21 +163,32 @@ pub fn apply_horizontal_wheel_controls(
     }
 }
 
-/// Piano roll: Alt+Wheel vertical zoom uses scroll_y consumption; combined with horizontal above.
+/// Ctrl/Cmd+Wheel time zoom plus Alt+Wheel row-height zoom (piano-roll keys,
+/// playlist track lanes). Alt-only uses `smooth_scroll_delta.y` because egui's
+/// `zoom_delta` is typically Ctrl/pinch, not Alt+wheel.
+///
+/// `hit_viewport` is where the pointer must sit (playlist includes the ruler so
+/// Ctrl/Alt still zoom while hovering ticks). `content_origin.min` is the scroll
+/// content's screen origin: playlist passes the timeline body, not the ruler,
+/// because the ruler is a separate widget and baking it into Y would drift the
+/// cursor-anchored vertical zoom by `RULER_HEIGHT`. Piano roll / pattern row
+/// pass the same grid rect for both.
+///
 /// Returns true when a horizontal (beat-width) zoom occurred this frame, so the
 /// caller can apply edge-snapping to the resulting scroll offset.
-pub fn apply_piano_roll_wheel_controls(
+pub fn apply_editor_wheel_controls(
     ui: &Ui,
-    viewport: Rect,
+    hit_viewport: Rect,
+    content_origin: Rect,
     beat_width: &mut f32,
     min_beat_width: f32,
     max_beat_width: f32,
-    key_height: &mut f32,
+    row_height: &mut f32,
     scroll_offset: &mut Vec2,
-    min_key_height: f32,
-    max_key_height: f32,
+    min_row_height: f32,
+    max_row_height: f32,
 ) -> bool {
-    if !ui.rect_contains_pointer(viewport) {
+    if !ui.rect_contains_pointer(hit_viewport) {
         return false;
     }
 
@@ -220,12 +231,9 @@ pub fn apply_piano_roll_wheel_controls(
         return false;
     }
 
-    let content_pos = pointer - viewport.min + *scroll_offset;
+    let content_pos = pointer - content_origin.min + *scroll_offset;
     let mut h_zoomed = false;
 
-    // The piano-roll grid viewport is the pure timeline region (the keyboard and
-    // ruler are separate widgets, not baked into this scroll content), so the
-    // content position under the pointer maps directly onto beat/pitch space.
     if h_factor != 1.0 {
         let old = *beat_width;
         let new = (old * h_factor).clamp(min_beat_width, max_beat_width);
@@ -240,13 +248,13 @@ pub fn apply_piano_roll_wheel_controls(
     }
 
     if v_factor != 1.0 {
-        let old = *key_height;
-        let new = (old * v_factor).clamp(min_key_height, max_key_height);
+        let old = *row_height;
+        let new = (old * v_factor).clamp(min_row_height, max_row_height);
         let actual = new / old;
         if (actual - 1.0).abs() > f32::EPSILON && content_pos.y > 0.0 {
             scroll_offset.y += content_pos.y * (actual - 1.0);
         }
-        *key_height = new;
+        *row_height = new;
     }
 
     h_zoomed
@@ -376,11 +384,7 @@ pub fn draw_playback_anchor(
     let half = 4.0_f32;
     let top_y = tip.y - 6.0;
     painter.add(egui::Shape::convex_polygon(
-        vec![
-            Pos2::new(x - half, top_y),
-            Pos2::new(x + half, top_y),
-            tip,
-        ],
+        vec![Pos2::new(x - half, top_y), Pos2::new(x + half, top_y), tip],
         color,
         egui::Stroke::NONE,
     ));
@@ -679,9 +683,7 @@ pub fn handle_timeline_playhead_pointer(
             seek_from_pointer(body, pointer, metrics, engine, beat_offset);
             return true;
         }
-        if shift_held
-            && response.clicked_by(egui::PointerButton::Secondary)
-            && !response.dragged()
+        if shift_held && response.clicked_by(egui::PointerButton::Secondary) && !response.dragged()
         {
             seek_from_pointer(body, pointer, metrics, engine, beat_offset);
             return true;

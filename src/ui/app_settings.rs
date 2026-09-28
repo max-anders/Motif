@@ -6,13 +6,11 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::model::{
-    clamp_undo_limit, DEFAULT_AUTOSAVE_INTERVAL_SECS, DEFAULT_UNDO_LIMIT,
-};
+use crate::model::{clamp_undo_limit, DEFAULT_AUTOSAVE_INTERVAL_SECS, DEFAULT_UNDO_LIMIT};
 
+use super::mixer::{clamp_mixer_panel_fraction, MIXER_PANEL_DEFAULT_FRACTION};
 use super::shortcuts::{ShortcutRegistry, StoredBinding};
 use super::theme::{Theme, ThemeCatalog, DEFAULT_THEME_NAME};
-use super::mixer::{clamp_mixer_panel_fraction, MIXER_PANEL_DEFAULT_FRACTION};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SettingsFile {
@@ -231,12 +229,7 @@ impl AppSettings {
 
     /// Move `param_id` to the front of the last-tweaked MRU (dedupe, cap).
     /// Returns true when the list changed.
-    pub fn touch_param(
-        &mut self,
-        unique_id: &str,
-        param_id: u32,
-        name: impl Into<String>,
-    ) -> bool {
+    pub fn touch_param(&mut self, unique_id: &str, param_id: u32, name: impl Into<String>) -> bool {
         if unique_id.is_empty() {
             return false;
         }
@@ -247,13 +240,7 @@ impl AppSettings {
             .or_default();
         let previous = list.clone();
         list.retain(|entry| entry.param_id != param_id);
-        list.insert(
-            0,
-            PluginFavoriteParam {
-                param_id,
-                name,
-            },
-        );
+        list.insert(0, PluginFavoriteParam { param_id, name });
         if list.len() > MAX_LAST_TWEAKED_PARAMS {
             list.truncate(MAX_LAST_TWEAKED_PARAMS);
         }
@@ -269,7 +256,12 @@ impl AppSettings {
     }
 
     /// Add a favorite for `unique_id` (no-op if already present). Returns true if changed.
-    pub fn add_favorite(&mut self, unique_id: &str, param_id: u32, name: impl Into<String>) -> bool {
+    pub fn add_favorite(
+        &mut self,
+        unique_id: &str,
+        param_id: u32,
+        name: impl Into<String>,
+    ) -> bool {
         if unique_id.is_empty() {
             return false;
         }

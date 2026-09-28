@@ -30,8 +30,8 @@ use crate::model::{
 use super::metronome::MetronomeRunner;
 use super::piano::PianoSynth;
 use super::plugins::{
-    load_and_activate, CatalogEntry, HostedPlugin, PluginCatalog, PluginEditorHost, PluginParamInfo,
-    PluginRef,
+    load_and_activate, CatalogEntry, HostedPlugin, PluginCatalog, PluginEditorHost,
+    PluginParamInfo, PluginRef,
 };
 use super::rt_priority::RtPriorityState;
 use super::sequencer::{RtClock, RtNote, RtSequencer, SeqEvent};
@@ -96,7 +96,6 @@ const TARGET_BUFFER_FRAMES: u32 = 512;
 /// - a callback size that drifts, because 44.1 kHz periods do not divide evenly
 /// into the 48 kHz graph quantum. Matching the graph keeps the period fixed.
 const PREFERRED_SAMPLE_RATE: u32 = 48_000;
-
 
 /// Per-track cap on note edges deferred by a lost `try_lock`. Sized for several
 /// seconds of dense playing; past it the voice is silenced instead (see
@@ -594,14 +593,8 @@ impl AudioCallbackState {
                     pan_l,
                     pan_r,
                 }) => {
-                    self.channel_params.insert(
-                        track_id,
-                        ChannelParams {
-                            gain,
-                            pan_l,
-                            pan_r,
-                        },
-                    );
+                    self.channel_params
+                        .insert(track_id, ChannelParams { gain, pan_l, pan_r });
                 }
                 Ok(AudioCommand::SetFxChain { track_id, chain }) => {
                     if let Some(old) = self.fx_chains.insert(track_id, chain) {
@@ -703,8 +696,7 @@ impl AudioCallbackState {
         // reports a position one output buffer behind what the callback
         // renders, so any threshold is really a bet that the buffer is smaller
         // than the threshold - it breaks at high tempo or a large period.
-        let should_sync =
-            clock.epoch != self.clock_epoch || was_playing != transport.playing;
+        let should_sync = clock.epoch != self.clock_epoch || was_playing != transport.playing;
         self.clock_epoch = clock.epoch;
 
         if should_sync {
@@ -764,7 +756,9 @@ impl AudioCallbackState {
             if beat < left.beat || beat > right.beat {
                 continue;
             }
-            if matches!(left.curve, CurveKind::Hold) || (right.beat - left.beat).abs() <= f32::EPSILON {
+            if matches!(left.curve, CurveKind::Hold)
+                || (right.beat - left.beat).abs() <= f32::EPSILON
+            {
                 return Some(left.value as f64);
             }
             let t = ((beat - left.beat) / (right.beat - left.beat)).clamp(0.0, 1.0) as f64;
@@ -824,11 +818,7 @@ impl AudioCallbackState {
         Self::evaluate_lane_value(points, local).unwrap_or(0.0)
     }
 
-    fn modulator_cycle_phase(
-        modulator: &RtModulator,
-        beat: f32,
-        free_phase: f64,
-    ) -> f64 {
+    fn modulator_cycle_phase(modulator: &RtModulator, beat: f32, free_phase: f64) -> f64 {
         match modulator.rate {
             RtLfoRate::SyncBeats { beats } => {
                 let period = beats.max(0.0625) as f64;
@@ -838,11 +828,7 @@ impl AudioCallbackState {
         }
     }
 
-    fn modulator_signal(
-        modulator: &RtModulator,
-        beat: f32,
-        free_phase: f64,
-    ) -> f64 {
+    fn modulator_signal(modulator: &RtModulator, beat: f32, free_phase: f64) -> f64 {
         let phase = Self::modulator_cycle_phase(modulator, beat, free_phase);
         match modulator.shape {
             LfoShape::Custom => {
@@ -952,23 +938,13 @@ impl AudioCallbackState {
                         )
                     } else if let Some(index) = mod_index_scratch.first() {
                         let first = &modulators[*index];
-                        (
-                            first.center as f64,
-                            first.min,
-                            first.max,
-                            first.step_count,
-                        )
+                        (first.center as f64, first.min, first.max, first.step_count)
                     } else {
                         continue;
                     }
                 } else if let Some(index) = mod_index_scratch.first() {
                     let first = &modulators[*index];
-                    (
-                        first.center as f64,
-                        first.min,
-                        first.max,
-                        first.step_count,
-                    )
+                    (first.center as f64, first.min, first.max, first.step_count)
                 } else {
                     continue;
                 }
@@ -982,23 +958,13 @@ impl AudioCallbackState {
                     )
                 } else if let Some(index) = mod_index_scratch.first() {
                     let first = &modulators[*index];
-                    (
-                        first.center as f64,
-                        first.min,
-                        first.max,
-                        first.step_count,
-                    )
+                    (first.center as f64, first.min, first.max, first.step_count)
                 } else {
                     continue;
                 }
             } else if let Some(index) = mod_index_scratch.first() {
                 let first = &modulators[*index];
-                (
-                    first.center as f64,
-                    first.min,
-                    first.max,
-                    first.step_count,
-                )
+                (first.center as f64, first.min, first.max, first.step_count)
             } else {
                 continue;
             };
@@ -1124,23 +1090,13 @@ impl AudioCallbackState {
                         )
                     } else if let Some(index) = mod_index_scratch.first() {
                         let first = &modulators[*index];
-                        (
-                            first.center as f64,
-                            first.min,
-                            first.max,
-                            first.step_count,
-                        )
+                        (first.center as f64, first.min, first.max, first.step_count)
                     } else {
                         continue;
                     }
                 } else if let Some(index) = mod_index_scratch.first() {
                     let first = &modulators[*index];
-                    (
-                        first.center as f64,
-                        first.min,
-                        first.max,
-                        first.step_count,
-                    )
+                    (first.center as f64, first.min, first.max, first.step_count)
                 } else {
                     continue;
                 }
@@ -1154,23 +1110,13 @@ impl AudioCallbackState {
                     )
                 } else if let Some(index) = mod_index_scratch.first() {
                     let first = &modulators[*index];
-                    (
-                        first.center as f64,
-                        first.min,
-                        first.max,
-                        first.step_count,
-                    )
+                    (first.center as f64, first.min, first.max, first.step_count)
                 } else {
                     continue;
                 }
             } else if let Some(index) = mod_index_scratch.first() {
                 let first = &modulators[*index];
-                (
-                    first.center as f64,
-                    first.min,
-                    first.max,
-                    first.step_count,
-                )
+                (first.center as f64, first.min, first.max, first.step_count)
             } else {
                 continue;
             };
@@ -1372,9 +1318,10 @@ impl AudioCallbackState {
 
             let samples_started = Instant::now();
             if self.transport.playing {
-                if let (Some(song_pos_samples), Some(tempo_bpm)) =
-                    (self.transport.song_position_samples, self.transport.tempo_bpm)
-                {
+                if let (Some(song_pos_samples), Some(tempo_bpm)) = (
+                    self.transport.song_position_samples,
+                    self.transport.tempo_bpm,
+                ) {
                     let bps = (tempo_bpm as f32 / 60.0).max(0.0001);
                     if let Some(clips) = self.sample_clips.get(&track_id) {
                         for clip in clips {
@@ -1396,8 +1343,10 @@ impl AudioCallbackState {
                                     continue;
                                 }
                                 let idx = clip_sample as usize;
-                                let l = clip.buffer.left.get(idx).copied().unwrap_or(0.0) * clip.gain;
-                                let r = clip.buffer.right.get(idx).copied().unwrap_or(0.0) * clip.gain;
+                                let l =
+                                    clip.buffer.left.get(idx).copied().unwrap_or(0.0) * clip.gain;
+                                let r =
+                                    clip.buffer.right.get(idx).copied().unwrap_or(0.0) * clip.gain;
                                 self.tmp_l[i] += l;
                                 self.tmp_r[i] += r;
                             }
@@ -1533,9 +1482,7 @@ impl AudioCallbackState {
         }
         let load_pct = (elapsed / budget) * 100.0;
         let tenths = (load_pct * 10.0).round().clamp(0.0, 999_990.0) as u32;
-        self.perf
-            .cpu_load_tenths
-            .store(tenths, Ordering::Relaxed);
+        self.perf.cpu_load_tenths.store(tenths, Ordering::Relaxed);
         self.perf
             .buffer_frames
             .store(frames as u32, Ordering::Relaxed);
@@ -2301,7 +2248,11 @@ impl AudioEngine {
     /// Cached parameter metadata for a slot (enumerated once at load time).
     /// Never touches the RT-shared plugin mutex, so it is safe to call from
     /// per-frame UI paths.
-    fn cached_params(&self, track_id: u64, device_id: Option<u64>) -> Option<&Arc<Vec<PluginParamInfo>>> {
+    fn cached_params(
+        &self,
+        track_id: u64,
+        device_id: Option<u64>,
+    ) -> Option<&Arc<Vec<PluginParamInfo>>> {
         match device_id {
             None => self.plugin_params.get(&track_id),
             Some(device_id) => self.device_params.get(&(track_id, device_id)),
@@ -2539,8 +2490,7 @@ impl AudioEngine {
             if modulators.is_empty() {
                 self.synced_modulators.remove(&track.id);
             } else {
-                self.synced_modulators
-                    .insert(track.id, modulators.clone());
+                self.synced_modulators.insert(track.id, modulators.clone());
             }
             self.send(AudioCommand::SetModulators {
                 track_id: track.id,
@@ -2595,11 +2545,11 @@ impl AudioEngine {
                                 param_id: *param_id,
                             },
                         ),
-                        MacroTarget::ModulatorRate { .. }
-                        | MacroTarget::ModulatorDepth { .. } => continue,
+                        MacroTarget::ModulatorRate { .. } | MacroTarget::ModulatorDepth { .. } => {
+                            continue
+                        }
                     };
-                    let Some(param_info) =
-                        self.param_info_for_target(track.id, &automation_target)
+                    let Some(param_info) = self.param_info_for_target(track.id, &automation_target)
                     else {
                         continue;
                     };
@@ -2950,7 +2900,11 @@ impl DawEngine for AudioEngine {
         }
     }
 
-    fn sync_devices(&mut self, project: &Project, catalog: &PluginCatalog) -> Vec<(u64, u64, String)> {
+    fn sync_devices(
+        &mut self,
+        project: &Project,
+        catalog: &PluginCatalog,
+    ) -> Vec<(u64, u64, String)> {
         let mut errors = self.poll_device_loads(project);
         let live_track_ids: HashSet<u64> = project.tracks.iter().map(|t| t.id).collect();
 
@@ -2998,8 +2952,7 @@ impl DawEngine for AudioEngine {
                     continue;
                 }
                 let key = (track.id, device.id);
-                if self.device_slots.contains_key(&key)
-                    || self.pending_device_loads.contains(&key)
+                if self.device_slots.contains_key(&key) || self.pending_device_loads.contains(&key)
                 {
                     continue;
                 }
@@ -3100,7 +3053,9 @@ impl DawEngine for AudioEngine {
     fn plugin_slot_ready(&self, target: PluginRef) -> bool {
         match target.device_id {
             None => self.plugin_slots.contains_key(&target.track_id),
-            Some(device_id) => self.device_slots.contains_key(&(target.track_id, device_id)),
+            Some(device_id) => self
+                .device_slots
+                .contains_key(&(target.track_id, device_id)),
         }
     }
 
@@ -3141,7 +3096,10 @@ impl DawEngine for AudioEngine {
         self.editor_host.set_forward_transport(target, forward);
     }
 
-    fn set_plugin_editor_close_binding(&mut self, close_binding: super::plugins::EditorCloseBinding) {
+    fn set_plugin_editor_close_binding(
+        &mut self,
+        close_binding: super::plugins::EditorCloseBinding,
+    ) {
         self.editor_host.set_close_binding(close_binding);
     }
 
@@ -3313,10 +3271,7 @@ impl DawEngine for AudioEngine {
     }
 
     fn pending_plugin_loads(&self) -> (usize, usize) {
-        (
-            self.pending_loads.len(),
-            self.pending_device_loads.len(),
-        )
+        (self.pending_loads.len(), self.pending_device_loads.len())
     }
 
     fn sync_samples(
@@ -3591,7 +3546,8 @@ fn start_stream(
 mod tests {
     use super::*;
     use crate::model::{
-        Clip, MidiClip, Note, PatternBlock, PatternLane, PatternTrackContent, Track, TrackInstrument,
+        Clip, MidiClip, Note, PatternBlock, PatternLane, PatternTrackContent, Track,
+        TrackInstrument,
     };
 
     fn note(id: u64, pitch: u8, start: f32, dur: f32) -> Note {

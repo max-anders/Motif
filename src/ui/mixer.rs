@@ -26,8 +26,8 @@ use std::f32::consts::FRAC_PI_2;
 use std::ops::RangeInclusive;
 
 use egui::{
-    epaint::TextShape, Align, Align2, Color32, Context, FontFamily, FontId, Id, Layout, Pos2,
-    Rect, Sense, Stroke, Ui, UiBuilder, Vec2,
+    epaint::TextShape, Align, Align2, Color32, Context, FontFamily, FontId, Id, Layout, Pos2, Rect,
+    Sense, Stroke, Ui, UiBuilder, Vec2,
 };
 
 use crate::engine::DawEngine;
@@ -267,10 +267,8 @@ impl MixerUi {
 
     fn decay_meters(&mut self, engine: &dyn DawEngine) {
         let levels = engine.meter_levels();
-        let live: HashMap<u64, (f32, f32)> = levels
-            .into_iter()
-            .map(|(id, l, r)| (id, (l, r)))
-            .collect();
+        let live: HashMap<u64, (f32, f32)> =
+            levels.into_iter().map(|(id, l, r)| (id, (l, r))).collect();
         for (id, (l, r)) in &live {
             let prev = self.displayed.get(id).copied().unwrap_or((0.0, 0.0));
             self.displayed.insert(
@@ -391,11 +389,7 @@ impl MixerUi {
                 ui.add_space(4.0);
                 fixed_height_row(ui, FOOTER_ROW_HEIGHT, |ui| {
                     ui.vertical_centered(|ui| {
-                        footer_chip(
-                            ui,
-                            &format!("{}s", track.sends.len()),
-                            theme.text_muted,
-                        );
+                        footer_chip(ui, &format!("{}s", track.sends.len()), theme.text_muted);
                         footer_chip(ui, &format!("{}fx", track.devices.len()), theme.text_muted);
                     });
                 });
@@ -492,7 +486,11 @@ fn strip_container(
     } else {
         theme.track_header_bg
     };
-    let stroke_color = if selected { theme.accent } else { theme.separator };
+    let stroke_color = if selected {
+        theme.accent
+    } else {
+        theme.separator
+    };
     let painter = ui.painter();
     painter.rect_filled(rect, STRIP_ROUNDING, fill);
     painter.rect_stroke(
@@ -511,7 +509,11 @@ fn strip_container(
             sw: 0,
             se: 0,
         },
-        if accent_top { theme.accent } else { stroke_color },
+        if accent_top {
+            theme.accent
+        } else {
+            stroke_color
+        },
     );
 
     let content_rect = Rect::from_min_max(
@@ -539,13 +541,9 @@ fn vertical_strip_header(
     subtitle_color: Color32,
 ) -> egui::Response {
     let width = ui.available_width();
-    let (rect, response) =
-        ui.allocate_exact_size(Vec2::new(width, HEADER_HEIGHT), Sense::click());
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, HEADER_HEIGHT), Sense::click());
     paint_vertical_label(ui, rect, title, title_color, VERTICAL_NAME_FONT);
-    let sub_rect = Rect::from_min_max(
-        Pos2::new(rect.left(), rect.bottom() - 10.0),
-        rect.max,
-    );
+    let sub_rect = Rect::from_min_max(Pos2::new(rect.left(), rect.bottom() - 10.0), rect.max);
     ui.painter().text(
         sub_rect.center(),
         Align2::CENTER_CENTER,
@@ -590,15 +588,12 @@ fn fader_section(
                 .vertical()
                 .show_value(false)
                 .trailing_fill(true);
-            let response =
-                ui.add_sized(Vec2::new(FADER_TRACK_WIDTH, fader_height), slider);
+            let response = ui.add_sized(Vec2::new(FADER_TRACK_WIDTH, fader_height), slider);
             paint_unity_tick(ui, response.rect, &range, theme);
             slider_response = Some(response);
 
-            let (meter_rect, _) = ui.allocate_exact_size(
-                Vec2::new(METER_WIDTH * 2.0, fader_height),
-                Sense::hover(),
-            );
+            let (meter_rect, _) =
+                ui.allocate_exact_size(Vec2::new(METER_WIDTH * 2.0, fader_height), Sense::hover());
             draw_stereo_meter(ui, meter_rect, peak_l, peak_r, theme);
         });
 
@@ -681,12 +676,7 @@ fn snap_pan(pan: f32) -> f32 {
     }
 }
 
-fn paint_unity_tick(
-    ui: &Ui,
-    slider_rect: Rect,
-    range: &RangeInclusive<f32>,
-    theme: &ThemeColors,
-) {
+fn paint_unity_tick(ui: &Ui, slider_rect: Rect, range: &RangeInclusive<f32>, theme: &ThemeColors) {
     let min = *range.start();
     let max = *range.end();
     if !(min..=max).contains(&0.0) {
@@ -741,15 +731,7 @@ fn pan_label(pan: f32) -> String {
 
 /// Single small muted line in the footer badge column (sends / fx / output info).
 fn footer_chip(ui: &mut Ui, text: &str, color: Color32) {
-    ui.add(
-        egui::Label::new(
-            egui::RichText::new(text)
-                .color(color)
-                .small()
-                .monospace(),
-        )
-        .truncate(),
-    );
+    ui.add(egui::Label::new(egui::RichText::new(text).color(color).small().monospace()).truncate());
 }
 
 /// Draws `text` centered in an exactly-`size` rect. Never wraps and never
@@ -809,10 +791,7 @@ fn paint_meter_bar(ui: &Ui, rect: Rect, peak: f32, theme: &ThemeColors) {
         return;
     }
     let fill_h = rect.height() * level;
-    let fill = Rect::from_min_max(
-        Pos2::new(rect.left(), rect.bottom() - fill_h),
-        rect.max,
-    );
+    let fill = Rect::from_min_max(Pos2::new(rect.left(), rect.bottom() - fill_h), rect.max);
     let color = if level > 0.9 {
         theme.meter_high
     } else {

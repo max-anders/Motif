@@ -33,17 +33,15 @@ pub fn show_inspector(
 
     let Some(track) = project.track(track_id).cloned() else {
         ui.label(
-            egui::RichText::new("Selected track no longer exists.")
-                .color(theme.accent_warning),
+            egui::RichText::new("Selected track no longer exists.").color(theme.accent_warning),
         );
         return;
     };
 
     ui.label(egui::RichText::new("Name").strong());
     let mut name = track.name.clone();
-    let name_response = ui.add(
-        egui::TextEdit::singleline(&mut name).desired_width(ui.available_width()),
-    );
+    let name_response =
+        ui.add(egui::TextEdit::singleline(&mut name).desired_width(ui.available_width()));
     if name_response.lost_focus() && name != track.name {
         apply_track_name_if_changed(history, project, track_id, &track.name, &name);
     }
@@ -54,10 +52,7 @@ pub fn show_inspector(
             .small()
             .monospace(),
     );
-    ui.label(
-        egui::RichText::new(track.instrument.display_name())
-            .color(theme.text_muted),
-    );
+    ui.label(egui::RichText::new(track.instrument.display_name()).color(theme.text_muted));
     if let Some(badge) = track.instrument.format_badge() {
         ui.label(egui::RichText::new(badge).color(theme.accent).small());
     }
@@ -66,7 +61,8 @@ pub fn show_inspector(
     ui.label(egui::RichText::new("Mixer").strong());
 
     let mut gain = track.gain_db;
-    let gain_response = ui.add(egui::Slider::new(&mut gain, MIN_GAIN_DB..=MAX_GAIN_DB).text("Gain (dB)"));
+    let gain_response =
+        ui.add(egui::Slider::new(&mut gain, MIN_GAIN_DB..=MAX_GAIN_DB).text("Gain (dB)"));
     apply_prop_slider(history, project, &gain_response, |project| {
         if let Some(t) = project.track_mut(track_id) {
             t.gain_db = gain;

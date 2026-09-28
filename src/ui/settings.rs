@@ -8,9 +8,7 @@ use crate::engine::PluginCatalog;
 use crate::model::{MAX_UNDO_LIMIT, MIN_UNDO_LIMIT};
 
 use super::app_settings::PluginKeySettings;
-use super::shortcuts::{
-    Action, ApplyChordOutcome, CaptureOutcome, Chord, ShortcutRegistry,
-};
+use super::shortcuts::{Action, ApplyChordOutcome, CaptureOutcome, Chord, ShortcutRegistry};
 use super::theme::{ThemeCatalog, DEFAULT_THEME_NAME};
 
 /// Where a newly captured chord should be applied.
@@ -134,10 +132,7 @@ impl SettingsUi {
                         ui.add_space(4.0);
                         for section in SettingsSection::ALL {
                             let selected = self.section == section;
-                            if ui
-                                .selectable_label(selected, section.label())
-                                .clicked()
-                                && !selected
+                            if ui.selectable_label(selected, section.label()).clicked() && !selected
                             {
                                 if self.section == SettingsSection::Shortcuts {
                                     self.clear_capture();
@@ -176,15 +171,13 @@ impl SettingsUi {
                                     }
                                 }
                                 SettingsSection::Shortcuts => {
-                                    if let Some(action) =
-                                        self.show_shortcuts_section(ui, shortcuts)
+                                    if let Some(action) = self.show_shortcuts_section(ui, shortcuts)
                                     {
                                         result = Some(action);
                                     }
                                 }
                                 SettingsSection::Editing => {
-                                    if let Some(action) =
-                                        self.show_editing_section(ui, undo_limit)
+                                    if let Some(action) = self.show_editing_section(ui, undo_limit)
                                     {
                                         result = Some(action);
                                     }
@@ -613,7 +606,9 @@ impl SettingsUi {
         let busy = self.is_capturing();
 
         ui.heading("Shortcuts");
-        ui.label("Actions can have several keys. Change / Add, then press a chord (Escape cancels).");
+        ui.label(
+            "Actions can have several keys. Change / Add, then press a chord (Escape cancels).",
+        );
         ui.label("If a chord is already used, confirm Override to move it to this action.");
         ui.add_space(4.0);
 
@@ -717,10 +712,7 @@ impl SettingsUi {
                         if binding.is_rebindable() {
                             let listening = self.capturing == Some(CaptureTarget::Replace(index));
                             let label = if listening { "Listening..." } else { "Change" };
-                            if ui
-                                .add_enabled(!busy, egui::Button::new(label))
-                                .clicked()
-                            {
+                            if ui.add_enabled(!busy, egui::Button::new(label)).clicked() {
                                 self.capturing = Some(CaptureTarget::Replace(index));
                                 self.pending_conflict = None;
                                 self.message.clear();

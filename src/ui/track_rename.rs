@@ -32,12 +32,7 @@ impl TrackRenameUi {
         self.track_id
     }
 
-    pub fn show_window(
-        &mut self,
-        ctx: &Context,
-        project: &mut Project,
-        history: &mut EditHistory,
-    ) {
+    pub fn show_window(&mut self, ctx: &Context, project: &mut Project, history: &mut EditHistory) {
         let Some(track_id) = self.track_id else {
             return;
         };
@@ -145,12 +140,7 @@ impl PatternLaneRenameUi {
         self.lane_id
     }
 
-    pub fn show_window(
-        &mut self,
-        ctx: &Context,
-        project: &mut Project,
-        history: &mut EditHistory,
-    ) {
+    pub fn show_window(&mut self, ctx: &Context, project: &mut Project, history: &mut EditHistory) {
         let Some(lane_id) = self.lane_id else {
             return;
         };

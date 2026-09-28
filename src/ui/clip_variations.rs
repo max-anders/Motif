@@ -25,7 +25,9 @@ pub fn show_variations_panel(
             .layout(Layout::top_down(Align::Min)),
     );
     panel_ui.set_clip_rect(panel_rect);
-    panel_ui.painter().rect_filled(panel_rect, 0.0, theme.panel_bg);
+    panel_ui
+        .painter()
+        .rect_filled(panel_rect, 0.0, theme.panel_bg);
     panel_ui.painter().line_segment(
         [
             egui::pos2(panel_rect.left(), panel_rect.top()),
@@ -192,7 +194,11 @@ pub fn show_variations_panel_toggle(
     );
     child.set_clip_rect(rect);
     if child
-        .button(RichText::new("Variations").small().color(theme.text_primary))
+        .button(
+            RichText::new("Variations")
+                .small()
+                .color(theme.text_primary),
+        )
         .on_hover_text("Show clip variations")
         .clicked()
     {
@@ -482,9 +488,13 @@ pub fn show_pattern_block_link_control(
     };
     let response = child
         .add(
-            egui::Button::new(RichText::new(label).small().color(theme.pattern_block_label))
-                .fill(fill)
-                .sense(Sense::click()),
+            egui::Button::new(
+                RichText::new(label)
+                    .small()
+                    .color(theme.pattern_block_label),
+            )
+            .fill(fill)
+            .sense(Sense::click()),
         )
         .on_hover_text(if linked {
             "Unlink this pattern (make unique)"
@@ -563,7 +573,10 @@ pub fn show_playlist_clip_mute_control(
         return;
     }
     let btn_rect = Rect::from_min_size(
-        egui::pos2(clip_rect.right() - btn_w - 3.0, clip_rect.bottom() - btn_h - 2.0),
+        egui::pos2(
+            clip_rect.right() - btn_w - 3.0,
+            clip_rect.bottom() - btn_h - 2.0,
+        ),
         Vec2::new(btn_w, btn_h),
     );
     let paint_clip = ui.clip_rect().intersect(clip_rect);
@@ -584,11 +597,7 @@ pub fn show_playlist_clip_mute_control(
     } else {
         theme.widget_bg.gamma_multiply(0.88)
     };
-    let stroke = if muted {
-        theme.accent
-    } else {
-        theme.separator
-    };
+    let stroke = if muted { theme.accent } else { theme.separator };
     let response = child
         .add(
             egui::Button::new(
@@ -605,11 +614,7 @@ pub fn show_playlist_clip_mute_control(
             .stroke(egui::Stroke::new(1.0_f32, stroke))
             .min_size(Vec2::new(btn_w, btn_h)),
         )
-        .on_hover_text(if muted {
-            "Unmute clip"
-        } else {
-            "Mute clip"
-        });
+        .on_hover_text(if muted { "Unmute clip" } else { "Mute clip" });
 
     if response.clicked() {
         let before = project.clone();

@@ -69,11 +69,7 @@ impl ProjectBrowserUi {
         action
     }
 
-    fn show_contents(
-        &mut self,
-        ui: &mut Ui,
-        recent: &[PathBuf],
-    ) -> Option<ProjectBrowserAction> {
+    fn show_contents(&mut self, ui: &mut Ui, recent: &[PathBuf]) -> Option<ProjectBrowserAction> {
         let mut action = None;
 
         ui.label("Open a recent project, start a new one, or browse for a .motif file.");

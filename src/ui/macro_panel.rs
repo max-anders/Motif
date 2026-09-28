@@ -3,9 +3,7 @@
 use egui::{RichText, Ui, Vec2};
 
 use crate::engine::DawEngine;
-use crate::model::{
-    EditHistory, MacroMapping, MacroTarget, Project, Track,
-};
+use crate::model::{EditHistory, MacroMapping, MacroTarget, Project, Track};
 use crate::ui::app_settings::AppSettings;
 use crate::ui::favorites_panel::unique_id_for_target;
 use crate::ui::modulator::INSTRUMENT_MOD_TARGET_KEY;
@@ -199,11 +197,7 @@ fn show_macro_chip(
                         macro_knob.name = name;
                     }
                 }
-                if ui
-                    .small_button("x")
-                    .on_hover_text("Remove macro")
-                    .clicked()
-                {
+                if ui.small_button("x").on_hover_text("Remove macro").clicked() {
                     history.push_before(project.clone());
                     project.remove_macro(track_id, macro_id);
                 }
@@ -236,7 +230,11 @@ fn show_macro_chip(
                                 .small()
                                 .color(theme.text_muted),
                         );
-                        if ui.small_button("-").on_hover_text("Remove mapping").clicked() {
+                        if ui
+                            .small_button("-")
+                            .on_hover_text("Remove mapping")
+                            .clicked()
+                        {
                             history.push_before(project.clone());
                             if let Some(macro_knob) = project.macro_knob_mut(track_id, macro_id) {
                                 if index < macro_knob.mappings.len() {
@@ -283,7 +281,8 @@ fn show_add_mapping_menu(
     ui.label(RichText::new("Plugin").small().strong());
     ui.menu_button("Instrument", |ui| {
         let params = engine.plugin_parameters(track_id, None);
-        let plugin_uid = unique_id_for_target(&track, INSTRUMENT_MOD_TARGET_KEY).map(str::to_string);
+        let plugin_uid =
+            unique_id_for_target(&track, INSTRUMENT_MOD_TARGET_KEY).map(str::to_string);
         show_param_pick_menu(
             ui,
             settings,
@@ -298,9 +297,7 @@ fn show_add_mapping_menu(
             28,
             |param| {
                 let mapping = MacroMapping {
-                    target: MacroTarget::Instrument {
-                        param_id: param.id,
-                    },
+                    target: MacroTarget::Instrument { param_id: param.id },
                     param_name: param.name.clone(),
                     min: 0.0,
                     max: 1.0,

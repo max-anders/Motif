@@ -105,7 +105,10 @@ pub struct EditorParentWindow {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditorWindowEvent {
     CloseRequested,
-    Resized { width: u32, height: u32 },
+    Resized {
+        width: u32,
+        height: u32,
+    },
     /// Space was pressed while the editor had focus and transport forwarding is on.
     TogglePlayback,
 }

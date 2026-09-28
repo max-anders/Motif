@@ -4,9 +4,7 @@ use std::collections::HashSet;
 
 use egui::{Pos2, Rect, Response, Vec2};
 
-use crate::model::{
-    EditHistory, PatternBlock, Project, DEFAULT_CLIP_LENGTH_BEATS, SNAP_BEATS,
-};
+use crate::model::{EditHistory, PatternBlock, Project, DEFAULT_CLIP_LENGTH_BEATS, SNAP_BEATS};
 use crate::ui::playlist::{clip_resize_mode, ClipDragMode, MarqueeDrag, TRACK_HEADER_WIDTH};
 use crate::ui::theme::ThemeColors;
 use crate::ui::timeline::{
@@ -304,14 +302,7 @@ impl PatternStripUi {
             strip.max,
         );
         painter.rect_filled(timeline_lane, 0.0, theme.lane_bg.gamma_multiply(0.92));
-        draw_timeline_grid_lines(
-            painter,
-            strip,
-            metrics,
-            total_beats,
-            beats_per_bar,
-            theme,
-        );
+        draw_timeline_grid_lines(painter, strip, metrics, total_beats, beats_per_bar, theme);
 
         let raise_ids: HashSet<u64> = self
             .active_drag
@@ -521,7 +512,13 @@ impl PatternStripUi {
             || (!primary_down && (self.active_drag.is_some() || self.marquee.is_some()));
         if end_drag {
             if let Some(drag) = self.active_drag.take() {
-                finish_pattern_drag(project, history, &mut self.selected_block_ids, &drag, self.drag_moved);
+                finish_pattern_drag(
+                    project,
+                    history,
+                    &mut self.selected_block_ids,
+                    &drag,
+                    self.drag_moved,
+                );
             }
             self.marquee = None;
             self.drag_moved = false;
@@ -535,12 +532,14 @@ impl PatternStripUi {
             return;
         };
 
-        if !strip.contains(pointer) && !strip.contains(
-            response
-                .ctx
-                .input(|input| input.pointer.press_origin())
-                .unwrap_or(pointer),
-        ) {
+        if !strip.contains(pointer)
+            && !strip.contains(
+                response
+                    .ctx
+                    .input(|input| input.pointer.press_origin())
+                    .unwrap_or(pointer),
+            )
+        {
             return;
         }
 
@@ -555,7 +554,13 @@ impl PatternStripUi {
             )
         });
 
-        if pattern_link_chrome_at(body, strip, lane_blocks(project, lane_id), press_pos, metrics) {
+        if pattern_link_chrome_at(
+            body,
+            strip,
+            lane_blocks(project, lane_id),
+            press_pos,
+            metrics,
+        ) {
             // Link badge owns this press (egui button drawn after paint).
             return;
         }
@@ -664,11 +669,9 @@ impl PatternStripUi {
                 let mut primary_id = block.id;
                 let mut ignore_ids = Vec::new();
                 if matches!(mode, ClipDragMode::Move) && shift_held {
-                    let source_ids: Vec<u64> =
-                        self.selected_block_ids.iter().copied().collect();
+                    let source_ids: Vec<u64> = self.selected_block_ids.iter().copied().collect();
                     ignore_ids = source_ids.clone();
-                    let created =
-                        project.duplicate_pattern_blocks(&source_ids, 0.0, true);
+                    let created = project.duplicate_pattern_blocks(&source_ids, 0.0, true);
                     if let Some((_, mapped_primary)) =
                         created.iter().find(|(src, _)| *src == block.id)
                     {
@@ -686,11 +689,13 @@ impl PatternStripUi {
                         .selected_block_ids
                         .iter()
                         .filter_map(|id| {
-                            project.pattern_block(*id).map(|block| PatternBlockOriginal {
-                                block_id: block.id,
-                                start_beats: block.start_beats,
-                                length_beats: block.length_beats,
-                            })
+                            project
+                                .pattern_block(*id)
+                                .map(|block| PatternBlockOriginal {
+                                    block_id: block.id,
+                                    start_beats: block.start_beats,
+                                    length_beats: block.length_beats,
+                                })
                         })
                         .collect(),
                     ClipDragMode::ResizeStart | ClipDragMode::ResizeEnd => project
@@ -797,7 +802,10 @@ fn pattern_link_chrome_at(
         let block_rect = pattern_block_rect(timeline, strip, block, metrics);
         let zone = Rect::from_min_size(
             Pos2::new(block_rect.left(), block_rect.top()),
-            Vec2::new(24.0_f32.min(block_rect.width()), 20.0_f32.min(block_rect.height())),
+            Vec2::new(
+                24.0_f32.min(block_rect.width()),
+                20.0_f32.min(block_rect.height()),
+            ),
         );
         if zone.contains(pos) {
             return true;
@@ -827,10 +835,7 @@ fn pattern_solo_button_rect(block_rect: Rect) -> Rect {
         .min(block_rect.height() * 0.45)
         .max(12.0);
     let y = block_rect.bottom() - 2.0 - size * 0.5;
-    Rect::from_center_size(
-        Pos2::new(block_rect.center().x, y),
-        Vec2::splat(size),
-    )
+    Rect::from_center_size(Pos2::new(block_rect.center().x, y), Vec2::splat(size))
 }
 
 fn pattern_mute_button_rect(block_rect: Rect) -> Rect {
@@ -890,9 +895,10 @@ fn hit_test_block<'a>(
     pos: Pos2,
     metrics: TimelineMetrics,
 ) -> Option<&'a PatternBlock> {
-    blocks.iter().rev().find(|block| {
-        pattern_block_rect(timeline, strip, block, metrics).contains(pos)
-    })
+    blocks
+        .iter()
+        .rev()
+        .find(|block| pattern_block_rect(timeline, strip, block, metrics).contains(pos))
 }
 
 fn hit_test_solo_button(
@@ -1006,8 +1012,7 @@ fn apply_pattern_drag(project: &mut Project, drag: &PatternBlockDrag, current_be
             );
             for original in &drag.originals {
                 if let Some(block) = project.pattern_block_mut(original.block_id) {
-                    block.start_beats =
-                        (original.start_beats + snapped_delta).max(0.0);
+                    block.start_beats = (original.start_beats + snapped_delta).max(0.0);
                 }
             }
         }
@@ -1022,10 +1027,7 @@ fn apply_pattern_drag(project: &mut Project, drag: &PatternBlockDrag, current_be
                 original.start_beats,
             );
             let new_start = Project::snap_beats(current_beats.max(0.0));
-            let clamped_start = new_start
-                .max(left_bound)
-                .min(end - SNAP_BEATS)
-                .max(0.0);
+            let clamped_start = new_start.max(left_bound).min(end - SNAP_BEATS).max(0.0);
             let Some(block) = project.pattern_block_mut(drag.block_id) else {
                 return;
             };

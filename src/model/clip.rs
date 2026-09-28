@@ -210,7 +210,9 @@ impl MidiClip {
     }
 
     pub fn note_mut(&mut self, id: u64) -> Option<&mut Note> {
-        self.active_notes_mut().iter_mut().find(|note| note.id == id)
+        self.active_notes_mut()
+            .iter_mut()
+            .find(|note| note.id == id)
     }
 
     pub fn note(&self, id: u64) -> Option<&Note> {

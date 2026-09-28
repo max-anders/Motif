@@ -7,13 +7,13 @@ use egui::{Align, Align2, Id, Layout, Pos2, Rect, RichText, Sense, Stroke, Ui, U
 
 use crate::engine::{DawEngine, DecodedAudio, PluginCatalog, PluginRef};
 use crate::model::{Device, EditHistory, Project, Track, TrackInstrument};
-use crate::ui::instrument_menu::{
-    choice_to_instrument, show_effect_picker, show_instrument_picker, InstrumentChoice,
-    MENU_LIST_MAX_HEIGHT,
-};
 use crate::ui::app_settings::AppSettings;
 use crate::ui::favorites_panel::{
     favorites_column_visible, show_favorites_menu, show_favorites_panel, unique_id_for_target,
+};
+use crate::ui::instrument_menu::{
+    choice_to_instrument, show_effect_picker, show_instrument_picker, InstrumentChoice,
+    MENU_LIST_MAX_HEIGHT,
 };
 use crate::ui::macro_panel::show_macro_panel;
 use crate::ui::modulator::{
@@ -22,16 +22,16 @@ use crate::ui::modulator::{
 };
 use crate::ui::playlist::{
     draw_lane_timeline, draw_marquee, handle_single_track_clip_pointer, ms_toggle_button,
-    track_header_row, ClipDrag, LANE_HEIGHT, MarqueeDrag, PluginEditorRequest, TRACK_HEADER_WIDTH,
+    track_header_row, ClipDrag, MarqueeDrag, PluginEditorRequest, LANE_HEIGHT, TRACK_HEADER_WIDTH,
 };
 use crate::ui::theme::ThemeColors;
-use crate::ui::track_rename::TrackRenameUi;
 use crate::ui::timeline::{
-    apply_horizontal_wheel_controls, arrangement_beat_width_bounds, draw_loop_region, draw_playhead,
-    draw_playback_anchor, draw_ruler, handle_loop_region_pointer, handle_timeline_playhead_pointer,
-    hit_test_loop_edge, timeline_body_rect, with_solid_scrollbars, LoopEdge, TimelineMetrics,
-    DEFAULT_BEAT_WIDTH, RULER_HEIGHT,
+    apply_horizontal_wheel_controls, arrangement_beat_width_bounds, draw_loop_region,
+    draw_playback_anchor, draw_playhead, draw_ruler, handle_loop_region_pointer,
+    handle_timeline_playhead_pointer, hit_test_loop_edge, timeline_body_rect,
+    with_solid_scrollbars, LoopEdge, TimelineMetrics, DEFAULT_BEAT_WIDTH, RULER_HEIGHT,
 };
+use crate::ui::track_rename::TrackRenameUi;
 
 const STRIP_ROUNDING: f32 = 4.0;
 const STRIP_INNER_MARGIN: f32 = 6.0;
@@ -63,9 +63,7 @@ fn dock_panel_width_bounds() -> (f32, f32, f32) {
 }
 
 fn strip_collapsed_height(meta_lines: usize) -> f32 {
-    STRIP_INNER_MARGIN * 2.0
-        + STRIP_HEADER_ROW_HEIGHT
-        + meta_lines as f32 * STRIP_META_LINE_HEIGHT
+    STRIP_INNER_MARGIN * 2.0 + STRIP_HEADER_ROW_HEIGHT + meta_lines as f32 * STRIP_META_LINE_HEIGHT
 }
 
 /// How the dock side panel should be sized for one frame.
@@ -205,8 +203,7 @@ impl DevicesUi {
     /// Target key whose LFO column is open for `track_id`, if any.
     fn sanitize_view_state(&mut self, track_id: u64, track: &Track) {
         let valid_target = |key: u64| {
-            key == INSTRUMENT_MOD_TARGET_KEY
-                || track.devices.iter().any(|device| device.id == key)
+            key == INSTRUMENT_MOD_TARGET_KEY || track.devices.iter().any(|device| device.id == key)
         };
         if let DevicesView::Detail {
             track_id: detail_track,
@@ -333,9 +330,11 @@ impl DevicesUi {
                                 .id_salt("devices_track_headers")
                                 .auto_shrink([false, false])
                                 .show(ui, |ui| {
-                                    let track_ids: Vec<u64> = project.tracks.iter().map(|t| t.id).collect();
+                                    let track_ids: Vec<u64> =
+                                        project.tracks.iter().map(|t| t.id).collect();
                                     for track_id in track_ids {
-                                        let Some(track_snapshot) = project.track(track_id).cloned() else {
+                                        let Some(track_snapshot) = project.track(track_id).cloned()
+                                        else {
                                             continue;
                                         };
                                         let (header, _) = ui.allocate_exact_size(
@@ -396,7 +395,10 @@ impl DevicesUi {
                 if let Some(track_id) = *selected_track {
                     if let Some(track_snapshot) = project.track(track_id).cloned() {
                         self.mini_selected_clip_ids.retain(|clip_id| {
-                            track_snapshot.clips.iter().any(|clip| clip.id() == *clip_id)
+                            track_snapshot
+                                .clips
+                                .iter()
+                                .any(|clip| clip.id() == *clip_id)
                         });
                         self.show_mini_playlist(
                             ui,
@@ -535,9 +537,7 @@ impl DevicesUi {
         };
         let (min_beat_width, max_beat_width) =
             arrangement_beat_width_bounds(timeline_view_w, total_beats);
-        self.mini_beat_width = self
-            .mini_beat_width
-            .clamp(min_beat_width, max_beat_width);
+        self.mini_beat_width = self.mini_beat_width.clamp(min_beat_width, max_beat_width);
         apply_horizontal_wheel_controls(
             &mini_ui,
             mini_rect,
@@ -569,7 +569,8 @@ impl DevicesUi {
                 .scroll_offset(scroll)
                 .show(ui, |ui| {
                     ui.set_min_size(canvas_size);
-                    let (response, painter) = ui.allocate_painter(canvas_size, Sense::click_and_drag());
+                    let (response, painter) =
+                        ui.allocate_painter(canvas_size, Sense::click_and_drag());
                     let content = response.rect;
                     // `draw_lane_timeline`/ruler helpers include a fixed left gutter width.
                     // Shift the virtual timeline left so that gutter aligns with the left
@@ -832,8 +833,7 @@ impl DevicesUi {
             .unwrap_or(INSTRUMENT_MOD_TARGET_KEY);
 
         let instrument_selected = current_target == INSTRUMENT_MOD_TARGET_KEY;
-        let instrument_mod_count =
-            modulator_count_for_target(track, TargetFilter::Instrument);
+        let instrument_mod_count = modulator_count_for_target(track, TargetFilter::Instrument);
         let instrument_action = self.paint_instrument_strip(
             ui,
             project,
@@ -873,7 +873,9 @@ impl DevicesUi {
         let mut drag_to: Option<usize> = None;
 
         for (index, device) in track.devices.iter().enumerate() {
-            let status = device_errors.get(&(track.id, device.id)).map(String::as_str);
+            let status = device_errors
+                .get(&(track.id, device.id))
+                .map(String::as_str);
             let editor_open = engine.plugin_editor_is_open(PluginRef::device(track.id, device.id));
             let slot_ready = engine.plugin_slot_ready(PluginRef::device(track.id, device.id));
             let payload = (track.id, index);
@@ -927,8 +929,7 @@ impl DevicesUi {
                         let stroke = Stroke::new(2.0_f32, theme.accent);
                         let y = if before { rect.top() } else { rect.bottom() };
                         ui.painter().hline(rect.x_range(), y, stroke);
-                        if let Some(released) =
-                            strip_response.dnd_release_payload::<(u64, usize)>()
+                        if let Some(released) = strip_response.dnd_release_payload::<(u64, usize)>()
                         {
                             if released.0 == track.id {
                                 drag_from = Some(released.1);
@@ -972,7 +973,15 @@ impl DevicesUi {
             }
         }
 
-        add_fx_strip(ui, project, catalog, &mut self.add_fx_search, track.id, theme, content_width);
+        add_fx_strip(
+            ui,
+            project,
+            catalog,
+            &mut self.add_fx_search,
+            track.id,
+            theme,
+            content_width,
+        );
         settings_dirty
     }
 
@@ -1009,19 +1018,16 @@ impl DevicesUi {
             DeviceStripAction::Remove => {
                 history.push_before(project.clone());
                 project.remove_device(track_id, target_key);
-                if self
-                    .selected_modulator_target
-                    .get(&track_id)
-                    .copied()
-                    == Some(target_key)
-                {
+                if self.selected_modulator_target.get(&track_id).copied() == Some(target_key) {
                     self.selected_modulator_target
                         .insert(track_id, INSTRUMENT_MOD_TARGET_KEY);
                 }
                 if self.expanded_body == Some((track_id, target_key)) {
                     self.expanded_body = None;
                 }
-                if self.inline_section.is_some_and(|(tid, key, _)| tid == track_id && key == target_key)
+                if self
+                    .inline_section
+                    .is_some_and(|(tid, key, _)| tid == track_id && key == target_key)
                 {
                     self.inline_section = None;
                 }
@@ -1159,11 +1165,7 @@ impl DevicesUi {
         ui.add_space(4.0);
 
         let label = detail_target_label(track, target_key);
-        ui.label(
-            RichText::new(label)
-                .strong()
-                .color(theme.track_header_text),
-        );
+        ui.label(RichText::new(label).strong().color(theme.track_header_text));
         ui.add_space(SECTION_GAP);
 
         paint_device_body_placeholder(
@@ -1241,9 +1243,12 @@ impl DevicesUi {
     ) -> DeviceStripAction {
         let target_key = INSTRUMENT_MOD_TARGET_KEY;
         let body_expanded = self.expanded_body == Some((track.id, target_key));
-        let inline_macros = self.inline_section == Some((track.id, target_key, InlineSectionKind::Macros));
-        let inline_lfo = self.inline_section == Some((track.id, target_key, InlineSectionKind::Lfo));
-        let inline_fav = self.inline_section == Some((track.id, target_key, InlineSectionKind::Fav));
+        let inline_macros =
+            self.inline_section == Some((track.id, target_key, InlineSectionKind::Macros));
+        let inline_lfo =
+            self.inline_section == Some((track.id, target_key, InlineSectionKind::Lfo));
+        let inline_fav =
+            self.inline_section == Some((track.id, target_key, InlineSectionKind::Fav));
         let is_plugin = matches!(track.instrument, TrackInstrument::Plugin { .. });
         let editor_open = engine.plugin_editor_is_open(PluginRef::instrument(track.id));
         let slot_ready = engine.plugin_slot_ready(PluginRef::instrument(track.id));
@@ -1365,8 +1370,7 @@ impl DevicesUi {
                 ui.close_menu();
             }
         });
-        if action == DeviceStripAction::None
-            && (response.clicked() || response.secondary_clicked())
+        if action == DeviceStripAction::None && (response.clicked() || response.secondary_clicked())
         {
             action = DeviceStripAction::Select;
         }
@@ -1501,16 +1505,22 @@ impl DevicesUi {
     }
 }
 
-fn strip_button(
-    ui: &mut Ui,
-    label: &str,
-    active: bool,
-    theme: &ThemeColors,
-    hover: &str,
-) -> bool {
-    let fill = if active { theme.accent } else { theme.widget_bg };
-    let stroke = if active { theme.accent } else { theme.separator };
-    let text = if active { theme.panel_bg } else { theme.button_text };
+fn strip_button(ui: &mut Ui, label: &str, active: bool, theme: &ThemeColors, hover: &str) -> bool {
+    let fill = if active {
+        theme.accent
+    } else {
+        theme.widget_bg
+    };
+    let stroke = if active {
+        theme.accent
+    } else {
+        theme.separator
+    };
+    let text = if active {
+        theme.panel_bg
+    } else {
+        theme.button_text
+    };
     ui.add(
         egui::Button::new(RichText::new(label).small().strong().color(text))
             .fill(fill)
@@ -1524,11 +1534,13 @@ fn strip_button(
 
 fn strip_expand_button(ui: &mut Ui, expanded: bool, _theme: &ThemeColors) -> bool {
     let label = if expanded { "v" } else { ">" };
-    ui.small_button(label).on_hover_text(if expanded {
-        "Collapse device body"
-    } else {
-        "Expand device body"
-    }).clicked()
+    ui.small_button(label)
+        .on_hover_text(if expanded {
+            "Collapse device body"
+        } else {
+            "Expand device body"
+        })
+        .clicked()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1631,8 +1643,7 @@ fn device_strip_shell(
 
     if mod_count > 0 {
         let badge_center = Pos2::new(rect.right() - 10.0, rect.top() + 10.0);
-        ui.painter()
-            .circle_filled(badge_center, 8.0, theme.accent);
+        ui.painter().circle_filled(badge_center, 8.0, theme.accent);
         ui.painter().text(
             badge_center,
             Align2::CENTER_CENTER,
@@ -1681,7 +1692,8 @@ fn paint_device_body_placeholder(
         Vec2::new(content_width, STRIP_EXPANDED_BODY_HEIGHT),
         Sense::hover(),
     );
-    ui.painter().rect_filled(body_rect, STRIP_ROUNDING, theme.widget_bg);
+    ui.painter()
+        .rect_filled(body_rect, STRIP_ROUNDING, theme.widget_bg);
     ui.painter().rect_stroke(
         body_rect,
         STRIP_ROUNDING,
@@ -1772,7 +1784,8 @@ fn add_fx_strip(
         Vec2::new(content_width, strip_collapsed_height(0) * 0.6),
         Sense::hover(),
     );
-    ui.painter().rect_filled(rect, STRIP_ROUNDING, theme.panel_bg);
+    ui.painter()
+        .rect_filled(rect, STRIP_ROUNDING, theme.panel_bg);
     ui.painter().rect_stroke(
         rect,
         STRIP_ROUNDING,

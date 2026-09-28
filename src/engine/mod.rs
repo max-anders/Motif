@@ -1,7 +1,7 @@
 mod audio;
+mod metronome;
 #[allow(dead_code)]
 mod mock;
-mod metronome;
 mod piano;
 pub mod plugins;
 mod rt_priority;
@@ -85,11 +85,12 @@ pub struct TrackPerformance {
     /// Active piano voices (0 for plugin / silent).
     pub active_voices: u32,
 }
-#[allow(unused_imports)] // EntryCategory: public catalog surface, consumed once the effect picker lands
+#[allow(unused_imports)]
+// EntryCategory: public catalog surface, consumed once the effect picker lands
 pub use plugins::{
-    plugin_gl_software_enabled, plugin_gui_may_abort_host, packed_version_for_entry, CatalogEntry, EditorCloseBinding,
-    EditorPoll, EntryCategory, HostX11, PluginCatalog, PluginParamInfo, PluginRef,
-    PLUGIN_CACHE_FILE,
+    packed_version_for_entry, plugin_gl_software_enabled, plugin_gui_may_abort_host, CatalogEntry,
+    EditorCloseBinding, EditorPoll, EntryCategory, HostX11, PluginCatalog, PluginParamInfo,
+    PluginRef, PLUGIN_CACHE_FILE,
 };
 pub use sample::{decode_audio_file, DecodedAudio};
 
@@ -164,7 +165,11 @@ pub trait DawEngine {
     }
 
     /// Push decoded audio clips per track to the audio thread.
-    fn sync_samples(&mut self, project: &Project, decoded_audio: &HashMap<PathBuf, Arc<DecodedAudio>>) {
+    fn sync_samples(
+        &mut self,
+        project: &Project,
+        decoded_audio: &HashMap<PathBuf, Arc<DecodedAudio>>,
+    ) {
         let _ = (project, decoded_audio);
     }
 
