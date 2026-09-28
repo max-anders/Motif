@@ -35,7 +35,39 @@ fn main() -> eframe::Result<()> {
         std::env::set_var("WINIT_X11_SCALE_FACTOR", "1");
     }
 
+    // Vital 1.6.4 (bgfx EGL) abort()s on NVIDIA EGL even standalone. That is a
+    // plugin bug; Motif does not force Mesa software EGL by default (every
+    // plugin GUI would pay llvmpipe). Opt in: MOTIF_PLUGIN_GL=software.
+    // Motif's own UI stays on wgpu (Vulkan) either way, so the opt-in only
+    // hits plugin OpenGL. WAYLAND_DISPLAY is still dropped on the X11 path so
+    // editors share XWayland with the host.
+    #[cfg(target_os = "linux")]
+    if !prefer_wayland {
+        std::env::remove_var("WAYLAND_DISPLAY");
+        if std::env::var_os("EGL_PLATFORM").is_none() {
+            std::env::set_var("EGL_PLATFORM", "x11");
+        }
+        let software_gl = std::env::var("MOTIF_PLUGIN_GL")
+            .map(|v| {
+                v.eq_ignore_ascii_case("software")
+                    || v.eq_ignore_ascii_case("mesa")
+                    || v.eq_ignore_ascii_case("llvmpipe")
+            })
+            .unwrap_or(false);
+        const MESA_EGL_VENDOR: &str = "/usr/share/glvnd/egl_vendor.d/50_mesa.json";
+        if software_gl
+            && std::env::var_os("__EGL_VENDOR_LIBRARY_FILENAMES").is_none()
+            && std::path::Path::new(MESA_EGL_VENDOR).exists()
+        {
+            std::env::set_var("__EGL_VENDOR_LIBRARY_FILENAMES", MESA_EGL_VENDOR);
+            std::env::set_var("LIBGL_ALWAYS_SOFTWARE", "1");
+        }
+    }
+
     let native_options = eframe::NativeOptions {
+        // Vulkan/wgpu for Motif's window (independent of plugin EGL). Needed so
+        // MOTIF_PLUGIN_GL=software does not also paint the host UI with llvmpipe.
+        renderer: eframe::Renderer::Wgpu,
         viewport: eframe::egui::ViewportBuilder::default()
             .with_inner_size([1280.0, 760.0])
             .with_title("Motif"),

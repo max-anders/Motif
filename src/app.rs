@@ -6,7 +6,8 @@ use std::sync::Arc;
 use eframe::egui;
 
 use crate::engine::{
-    decode_audio_file, AudioEngine, DawEngine, DecodedAudio, EditorCloseBinding, LoopPlayback,
+    decode_audio_file, plugin_gl_software_enabled, plugin_gui_may_abort_host, AudioEngine,
+    DawEngine, DecodedAudio, EditorCloseBinding, LoopPlayback,
     ParamTouchEvent, PluginCatalog, PluginRef, PLUGIN_CACHE_FILE,
 };
 use crate::model::{
@@ -91,6 +92,8 @@ pub struct DawApp {
     confirm_new_discard: bool,
     /// Confirm bake when playlist MIDI in the section would be replaced.
     pending_bake_confirm: Option<u64>,
+    /// Confirm opening a plugin GUI known to abort() the host (Vital / NVIDIA EGL).
+    pending_editor_abort_confirm: Option<PluginEditorRequest>,
     /// Force dirty (e.g. after restoring a recovery backup that has no clean disk match).
     dirty_forced: bool,
     decoded_audio: HashMap<PathBuf, Arc<DecodedAudio>>,
@@ -169,6 +172,7 @@ impl DawApp {
             show_add_browser: None,
             confirm_new_discard: false,
             pending_bake_confirm: None,
+            pending_editor_abort_confirm: None,
             dirty_forced: false,
             decoded_audio: HashMap::new(),
             pending_audio_decodes: HashSet::new(),
@@ -659,6 +663,7 @@ impl DawApp {
             .unwrap_or_else(|| String::from("Untitled"));
         self.autosave_accum = 0.0;
         self.confirm_new_discard = false;
+        self.pending_editor_abort_confirm = None;
         self.decoded_audio.clear();
         self.pending_audio_decodes.clear();
         self.audio_decode_errors.clear();
@@ -1828,7 +1833,7 @@ impl DawApp {
         } else if !self.engine.plugin_slot_ready(target) {
             self.status_message = String::from("Plugin editor not ready (still loading)");
         } else {
-            self.handle_plugin_editor_request(
+            self.request_plugin_editor(
                 ctx,
                 frame,
                 PluginEditorRequest::Open {
@@ -1854,6 +1859,87 @@ impl DawApp {
                     device_id: None,
                 },
             );
+        }
+    }
+
+    fn plugin_name_for(&self, target: PluginRef) -> Option<String> {
+        let track = self
+            .project
+            .tracks
+            .iter()
+            .find(|track| track.id == target.track_id)?;
+        match target.device_id {
+            None => match &track.instrument {
+                TrackInstrument::Plugin { name, .. } => Some(name.clone()),
+                TrackInstrument::BuiltInPiano => None,
+            },
+            Some(device_id) => track
+                .devices
+                .iter()
+                .find(|device| device.id == device_id)
+                .map(|device| device.name.clone()),
+        }
+    }
+
+    fn request_plugin_editor(
+        &mut self,
+        ctx: &egui::Context,
+        frame: &eframe::Frame,
+        request: PluginEditorRequest,
+    ) {
+        if let PluginEditorRequest::Open {
+            track_id,
+            device_id,
+            ..
+        } = &request
+        {
+            let target = PluginRef {
+                track_id: *track_id,
+                device_id: *device_id,
+            };
+            let unique_id = self.plugin_unique_id_for(target).unwrap_or_default();
+            let name = self.plugin_name_for(target).unwrap_or_default();
+            if plugin_gui_may_abort_host(&unique_id, &name) && !plugin_gl_software_enabled() {
+                self.pending_editor_abort_confirm = Some(request);
+                return;
+            }
+        }
+        self.handle_plugin_editor_request(ctx, frame, request);
+    }
+
+    fn show_editor_abort_confirm_modal(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
+        if self.pending_editor_abort_confirm.is_none() {
+            return;
+        }
+        let mut open_anyway = false;
+        let mut cancel = false;
+        egui::Window::new("This plugin GUI can crash Motif")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.label(
+                    "Vital's Linux editor abort()s on NVIDIA EGL and will close Motif (plugins run in-process). Audio still works without the GUI.",
+                );
+                ui.label(
+                    "To try the GUI anyway, restart Motif with MOTIF_PLUGIN_GL=software (all plugin editors then use software OpenGL).",
+                );
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Open anyway").clicked() {
+                        open_anyway = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        if cancel {
+            self.pending_editor_abort_confirm = None;
+        } else if open_anyway {
+            if let Some(request) = self.pending_editor_abort_confirm.take() {
+                self.handle_plugin_editor_request(ctx, frame, request);
+            }
         }
     }
 
@@ -2075,9 +2161,15 @@ impl DawApp {
 
     fn dispatch_action(&mut self, action: Action) {
         // Block project shortcuts while recovery / discard modals are up.
-        if self.pending_recovery.is_some() || self.confirm_new_discard || self.pending_bake_confirm.is_some() {
+        if self.pending_recovery.is_some()
+            || self.confirm_new_discard
+            || self.pending_bake_confirm.is_some()
+            || self.pending_editor_abort_confirm.is_some()
+        {
             if matches!(action, Action::BackToPlaylist) {
-                // Escape does not dismiss recovery (must choose Restore/Discard).
+                if self.pending_editor_abort_confirm.is_some() {
+                    self.pending_editor_abort_confirm = None;
+                }
             }
             return;
         }
@@ -2310,6 +2402,7 @@ impl eframe::App for DawApp {
         if self.pending_recovery.is_none()
             && !self.confirm_new_discard
             && self.pending_bake_confirm.is_none()
+            && self.pending_editor_abort_confirm.is_none()
         {
             self.tick_autosave(delta_seconds);
         }
@@ -2317,6 +2410,7 @@ impl eframe::App for DawApp {
         let poll_filter = if self.pending_recovery.is_some()
             || self.confirm_new_discard
             || self.pending_bake_confirm.is_some()
+            || self.pending_editor_abort_confirm.is_some()
             || self.track_rename.is_active()
         {
             PollFilter::None
@@ -2552,7 +2646,7 @@ impl eframe::App for DawApp {
                     self.save_settings();
                 }
                 if let Some(request) = self.devices.take_plugin_editor_request() {
-                    self.handle_plugin_editor_request(ctx, frame, request);
+                    self.request_plugin_editor(ctx, frame, request);
                 }
             });
             self.devices
@@ -2683,7 +2777,7 @@ impl eframe::App for DawApp {
                         self.open_pattern_block(block_id);
                     }
                     if let Some(request) = editor_request {
-                        self.handle_plugin_editor_request(ctx, frame, request);
+                        self.request_plugin_editor(ctx, frame, request);
                     }
                     if let Some(track_id) = delete_track {
                         self.delete_track(track_id);
@@ -2754,7 +2848,7 @@ impl eframe::App for DawApp {
                         self.save_settings();
                     }
                     if let Some(request) = editor_request {
-                        self.handle_plugin_editor_request(ctx, frame, request);
+                        self.request_plugin_editor(ctx, frame, request);
                     }
                     if let Some(clip_id) = open_clip {
                         self.open_clip(clip_id);
@@ -2918,6 +3012,7 @@ impl eframe::App for DawApp {
         } else {
             self.show_bake_confirm_modal(ctx);
             self.show_new_discard_modal(ctx);
+            self.show_editor_abort_confirm_modal(ctx, frame);
             if let Some(action) = self.project_browser.show(
                 ctx,
                 &mut self.show_project_browser,

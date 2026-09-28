@@ -52,15 +52,18 @@ If you found this through a comment thread or a social post: welcome. The projec
 
 The repository is public from the first commit so progress is visible early — not a closed preview opened up later.
 
-## Screenshots
+## Screenshots and demo
 
-Screenshots are coming soon. The most useful first set will be:
+Screenshots and a short screen demo are coming soon. They are the easiest way to see Motif before cloning, because install and audio setup on Linux are still rough.
+
+Planned captures:
 
 - Playlist with clips, pattern strip, and mixer dock
 - Piano roll with notes and the variation panel
 - Devices / plugin workflow with a native CLAP or VST3 editor
+- ~60-90 second screen recording: arrange, edit notes, hit play (demo video link will go here)
 
-Until then, the README below describes the current controls and architecture in detail.
+Until those are posted, the README below describes the current controls and architecture in detail.
 
 ## Support
 
@@ -91,6 +94,16 @@ When a license is chosen, this section and a `LICENSE` file will be updated.
 **Linux only for now** — developed and daily-tested on Arch (Wayland/X11). There is no Windows or macOS build in CI and no maintainer testing on those platforms yet.
 
 The stack (egui, cpal, truce-rack) is cross-platform in principle, so ports may work with extra setup, but **non-Linux use is best-effort**. Bug reports and patches for other OSes are welcome; they are not the current focus.
+
+## Who should try this?
+
+**Good fit:** you are on Linux, comfortable with `cargo run`, and OK reporting rough edges (setup, audio, plugins, or editing).
+
+**Not yet:** you want a stable daily DAW or a one-click installer. Expect bugs, missing features, and manual setup (see **Setup** and **Plugins** below).
+
+**Easiest path:** skim screenshots or watch the demo when it is linked above before cloning.
+
+If something breaks after you build, open a GitHub issue with your distro, audio stack (PipeWire / ALSA), and what you were doing.
 
 ## Setup
 
@@ -258,8 +271,9 @@ Motif hosts **CLAP** and **VST3** instruments in-process via [truce-rack](https:
 
 - Open **Settings → Plugin Manager → Rescan** to refresh the instrument list from standard OS plugin directories (plus any extra paths you add).
 - **Add track** or right-click a track header to pick Built-in Piano or a scanned instrument.
-- **Right-click a plugin track header → Open plugin editor** to show the instrument GUI (e.g. Vital). Editors are X11-only; Motif forces the **X11** winit backend on Linux (XWayland under Hyprland) so host + editor share one stack. Native Wayland Motif + XWayland Vital often floats but ignores clicks. Override with `MOTIF_UNIX_BACKEND=wayland` if you need a Wayland Motif window. The editor is a dialog (`WM_CLASS` = `MotifPluginEditor`) so Hyprland should float it. Close via the window chrome or the same menu.
-- Good Linux smoke targets: native **Vital** or **Surge XT** (CLAP/VST3).
+- **Right-click a plugin track header → Open plugin editor** to show the instrument GUI. Editors are X11-only; Motif forces the **X11** winit backend on Linux (XWayland under Hyprland) so host + editor share one stack. Native Wayland Motif + XWayland plugin windows often float but ignore clicks. Override with `MOTIF_UNIX_BACKEND=wayland` if you need a Wayland Motif window. The editor is a dialog (`WM_CLASS` = `MotifPluginEditor`) so Hyprland should float it. Close via the window chrome or the same menu.
+- **Vital 1.6.4** (Linux, NVIDIA EGL): opening the editor abort()s the host. Motif warns first. Audio still works. Optional workaround (all plugin GUIs, not Vital-only — EGL is process-wide): `MOTIF_PLUGIN_GL=software cargo run`. Motif's own window uses wgpu (Vulkan) either way.
+- Good Linux smoke targets: native **Vital** (audio; GUI is broken on NVIDIA EGL) or **Surge XT** (CLAP/VST3).
 - **Serum / yabridge on Linux is not supported** in Motif. yabridge VST3 stubs need a Wine host process; scanning or loading them in-process aborts Motif (`Assertion bridge failed`). Do not add `~/.vst3/yabridge` as an extra scan path. Use a **native Linux** CLAP/VST3 (e.g. Vital, Surge XT).
 
 ## Architecture

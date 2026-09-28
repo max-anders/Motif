@@ -87,8 +87,9 @@ pub struct TrackPerformance {
 }
 #[allow(unused_imports)] // EntryCategory: public catalog surface, consumed once the effect picker lands
 pub use plugins::{
-    CatalogEntry, EditorCloseBinding, EditorPoll, EntryCategory, HostX11, PluginCatalog,
-    PluginParamInfo, PluginRef, PLUGIN_CACHE_FILE,
+    plugin_gl_software_enabled, plugin_gui_may_abort_host, CatalogEntry, EditorCloseBinding,
+    EditorPoll, EntryCategory, HostX11, PluginCatalog, PluginParamInfo, PluginRef,
+    PLUGIN_CACHE_FILE,
 };
 pub use sample::{decode_audio_file, DecodedAudio};
 

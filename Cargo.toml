@@ -18,7 +18,7 @@ audio_thread_priority = { version = "0.35", default-features = false }
 base64 = "0.22"
 cpal = "0.15"
 directories = "6"
-eframe = "0.31"
+eframe = { version = "0.31", features = ["wgpu"] }
 egui = "0.31"
 rfd = "0.15"
 rubato = "4.0.0"
