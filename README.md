@@ -72,7 +72,7 @@ This is an experimental DAW project I am building because existing DAWs do not l
 
 The repository is **public while the project is in active development**. You can watch it evolve, report bugs, share ideas, and send pull requests here. **Long-term licensing, distribution, and commercialization have not been decided yet.**
 
-Early versions are rough. I iterate quickly in public; not every path is reviewed to production standards. This is not a promise that every feature request will land, and there is no community-driven product roadmap. I develop at my own pace.
+Early versions are rough. I iterate quickly in public; not every path is reviewed to production standards. Direction is founder-led, not a public milestone board, and not every feature request will land.
 
 **Using the code today:** There is no license yet, so this is not a fork-and-ship-your-own-Motif project. Clone it, run it, open issues, and send pull requests on **this** repository. Publishing or redistributing Motif as your own product still needs permission until a license is announced.
 
