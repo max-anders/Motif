@@ -61,14 +61,7 @@ The repository is public from the first commit so progress is visible early — 
 
 <img width="2536" height="1369" alt="Playlist hero" src="https://github.com/user-attachments/assets/823db366-2544-4a3c-998c-22e95d593854" />
 
-Planned captures:
-
-- Playlist with clips, pattern strip, and mixer dock
-- Piano roll with notes and the variation panel
-- Devices / plugin workflow with a native CLAP or VST3 editor
-- ~60-90 second screen recording: arrange, edit notes, hit play (demo video link will go here)
-
-Until those are posted, the README below describes the current controls and architecture in detail.
+<img width="2536" height="1369" alt="Plugins" src="https://github.com/user-attachments/assets/350214f8-024e-4b54-b0e6-8afc9be37145" />
 
 ## Support
 
