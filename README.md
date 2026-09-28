@@ -152,7 +152,10 @@ cargo run --release
 - **Ctrl/Cmd+Z** - undo last clip/note edit (remappable)
 - **Ctrl/Cmd+Shift+Z** - redo (remappable)
 - **Add track** - menu: Built-in Piano or a scanned CLAP/VST3 instrument
-- **Import sample...** - import an audio clip (`wav/mp3/flac/ogg/m4a/aac`) onto the selected track at the playhead
+- **Ctrl/Cmd+W** - open add browser on Instruments (new track; remappable)
+- **Ctrl/Cmd+F** - open add browser on FX (remappable)
+- **Ctrl/Cmd+B** - open add browser on Samples (remappable)
+- **Import sample...** - import an audio clip (`wav/mp3/flac/ogg/m4a/aac`) onto the selected track at the playhead (same Samples tab as Ctrl/Cmd+B)
 - **M / S** on track header (or right-click **Mute** / **Solo**) - mute or solo a track; when any track is soloed, only soloed tracks play; otherwise muted tracks are silent
 - **Shift+S** - exclusive solo the selected track (clears other solos; press again to clear; remappable). Same with **Shift+click S** on a track header / mixer strip, or right-click **Solo exclusive**
 - **Shift+M** - exclusive mute the selected track (clears solos and other mutes; only this track silent; press again to clear; remappable). Same with **Shift+click M** or right-click **Mute exclusive**
@@ -239,6 +242,7 @@ The pattern strip sits under the playlist tracks for drafting section-scoped MID
 - **Metronome** - checkbox in the transport bar; quarter-note clicks at project BPM while playing (downbeat accent on beat 1). Default **on**; persisted in `settings.json`. No clicks when stopped or during piano-key audition alone.
 - **Space** - play/pause (factory default; remappable)
 - **Shift+Space** - pause in place / play (factory default; remappable)
+- **L** - toggle loop / cycle playback on the loop region (remappable)
 - **File** menu - New / Open... / Open Recent / Projects... / Save / Save As...
 - **Ctrl/Cmd+N** - new project (remappable)
 - **Ctrl/Cmd+O** - open `.motif` via native file dialog (remappable)
