@@ -1,3 +1,7 @@
+
+
+https://github.com/user-attachments/assets/bc621b3c-6f28-4d0f-b66c-fbda77f2e030
+
 # Motif
 
 Early Linux-native DAW prototype in Rust: playlist, piano roll, patterns, mixer, soft-synth piano, and CLAP/VST3 instruments over a real audio engine.
