@@ -54,7 +54,7 @@ The repository is public from the first commit so progress is visible early - no
 
 ## Screenshots and demo
 
-https://github.com/user-attachments/assets/23d76eb4-b7a3-497d-a1e7-059ed6e70c1a
+https://github.com/user-attachments/assets/cc85e1b0-d9e0-4d71-9dbf-ff8df9452a8f
 
 <img width="2536" height="1369" alt="Piano roll" src="https://github.com/user-attachments/assets/0e31860c-b40c-4a1f-a43d-fff56b7b61ba" />
 
