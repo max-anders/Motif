@@ -54,16 +54,11 @@ The repository is public from the first commit so progress is visible early - no
 
 ## Screenshots and demo
 
-Screenshots and a short screen demo are coming soon. They are the easiest way to see Motif before cloning, because install and audio setup on Linux are still rough.
+https://github.com/user-attachments/assets/23d76eb4-b7a3-497d-a1e7-059ed6e70c1a
 
-Planned captures:
+<img width="2536" height="1369" alt="Piano roll" src="https://github.com/user-attachments/assets/0e31860c-b40c-4a1f-a43d-fff56b7b61ba" />
 
-- Playlist with clips, pattern strip, and mixer dock
-- Piano roll with notes and the variation panel
-- Devices / plugin workflow with a native CLAP or VST3 editor
-- ~60-90 second screen recording: arrange, edit notes, hit play (demo video link will go here)
-
-Until those are posted, the README below describes the current controls and architecture in detail.
+<img width="2536" height="1369" alt="Plugins" src="https://github.com/user-attachments/assets/350214f8-024e-4b54-b0e6-8afc9be37145" />
 
 ## Support
 
