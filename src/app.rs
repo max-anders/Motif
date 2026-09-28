@@ -6,7 +6,8 @@ use std::sync::Arc;
 use eframe::egui;
 
 use crate::engine::{
-    decode_audio_file, plugin_gl_software_enabled, plugin_gui_may_abort_host, AudioEngine,
+    decode_audio_file, packed_version_for_entry, plugin_gl_software_enabled, plugin_gui_may_abort_host,
+    AudioEngine,
     DawEngine, DecodedAudio, EditorCloseBinding, LoopPlayback,
     ParamTouchEvent, PluginCatalog, PluginRef, PLUGIN_CACHE_FILE,
 };
@@ -1899,7 +1900,10 @@ impl DawApp {
             };
             let unique_id = self.plugin_unique_id_for(target).unwrap_or_default();
             let name = self.plugin_name_for(target).unwrap_or_default();
-            if plugin_gui_may_abort_host(&unique_id, &name) && !plugin_gl_software_enabled() {
+            let packed_version = self.packed_plugin_version_for(target);
+            if plugin_gui_may_abort_host(&unique_id, &name, packed_version)
+                && !plugin_gl_software_enabled()
+            {
                 self.pending_editor_abort_confirm = Some(request);
                 return;
             }
@@ -1919,10 +1923,13 @@ impl DawApp {
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .show(ctx, |ui| {
                 ui.label(
-                    "Vital's Linux editor abort()s on NVIDIA EGL and will close Motif (plugins run in-process). Audio still works without the GUI.",
+                    "Vital 1.6.4's Linux editor abort()s on NVIDIA EGL and will close Motif (plugins run in-process). Audio still works without the GUI.",
                 );
                 ui.label(
-                    "To try the GUI anyway, restart Motif with MOTIF_PLUGIN_GL=software (all plugin editors then use software OpenGL).",
+                    "Preferred fix: install Vital 1.6.0 from your account (Linux zip), overwrite ~/.clap/Vital.clap and ~/.vst3/Vital.vst3, then Settings -> Plugin Manager -> Rescan. Existing tracks keep the same plugin id and will load the new files.",
+                );
+                ui.label(
+                    "If you already did that, Open anyway. Last resort (all plugin GUIs): restart Motif with MOTIF_PLUGIN_GL=software.",
                 );
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
@@ -1985,6 +1992,36 @@ impl DawApp {
                 self.status_message = String::from("Closed plugin editor");
             }
         }
+    }
+
+    fn packed_plugin_version_for(&self, target: PluginRef) -> u32 {
+        let Some(track) = self
+            .project
+            .tracks
+            .iter()
+            .find(|track| track.id == target.track_id)
+        else {
+            return 0;
+        };
+        let (format, unique_id) = match target.device_id {
+            None => match &track.instrument {
+                TrackInstrument::Plugin {
+                    format, unique_id, ..
+                } => (*format, unique_id.as_str()),
+                TrackInstrument::BuiltInPiano => return 0,
+            },
+            Some(device_id) => {
+                let Some(device) = track.devices.iter().find(|device| device.id == device_id)
+                else {
+                    return 0;
+                };
+                (device.format, device.unique_id.as_str())
+            }
+        };
+        self.catalog
+            .find(format, unique_id)
+            .map(packed_version_for_entry)
+            .unwrap_or(0)
     }
 
     /// Plugin `unique_id` for a slot, if it hosts a plugin (instrument or device).

@@ -45,6 +45,10 @@ pub struct CatalogEntry {
     pub has_editor: bool,
     #[serde(default)]
     pub category: EntryCategory,
+    /// Packed `(major << 16) | (minor << 8) | patch` from the CLAP descriptor.
+    /// VST3 scan leaves this 0; Motif then probes the binary for Vital.
+    #[serde(default)]
+    pub version: u32,
 }
 
 impl CatalogEntry {
@@ -302,6 +306,7 @@ fn scan_clap(extra_only: &[PathBuf]) -> Result<Vec<CatalogEntry>, String> {
                 accepts_midi: info.accepts_midi,
                 has_editor: info.has_editor,
                 category,
+                version: info.version,
             })
         })
         .collect())
@@ -336,6 +341,7 @@ fn scan_vst3(extra_only: &[PathBuf]) -> Result<Vec<CatalogEntry>, String> {
                 accepts_midi: info.accepts_midi,
                 has_editor: info.has_editor,
                 category,
+                version: info.version,
             })
         })
         .collect())

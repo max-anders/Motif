@@ -1,5 +1,5 @@
 {
-  "scanned_at_unix": 1784880139,
+  "scanned_at_unix": 1790632257,
   "extra_paths": [],
   "entries": [
     {
@@ -336,6 +336,46 @@
       "name": "Crossover Stereo x8",
       "vendor": "",
       "unique_id": "6473702066773873202020206f6f7162",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Deesser Mono",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.deesser_mono",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Deesser Mono",
+      "vendor": "",
+      "unique_id": "647370206473316d202020206473316d",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Deesser Stereo",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.deesser_stereo",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Deesser Stereo",
+      "vendor": "",
+      "unique_id": "64737020647331732020202064733173",
       "format": "vst3",
       "path": "/usr/lib/vst3/lsp-plugins.vst3",
       "accepts_midi": false,
@@ -2486,6 +2526,46 @@
       "name": "Sidechain Compressor Stereo",
       "vendor": "",
       "unique_id": "6473702073636b317320202035787a69",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Deesser Mono",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.sc_deesser_mono",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Deesser Mono",
+      "vendor": "",
+      "unique_id": "6473702073636473316d20204453316d",
+      "format": "vst3",
+      "path": "/usr/lib/vst3/lsp-plugins.vst3",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Deesser Stereo",
+      "vendor": "LSP CLAP",
+      "unique_id": "in.lsp-plug.sc_deesser_stereo",
+      "format": "clap",
+      "path": "/usr/lib/clap/lsp-plugins.clap",
+      "accepts_midi": false,
+      "has_editor": false,
+      "category": "effect"
+    },
+    {
+      "name": "Sidechain Deesser Stereo",
+      "vendor": "",
+      "unique_id": "64737020736364733173202044533173",
       "format": "vst3",
       "path": "/usr/lib/vst3/lsp-plugins.vst3",
       "accepts_midi": false,

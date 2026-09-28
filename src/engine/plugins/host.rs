@@ -527,7 +527,7 @@ pub fn load_and_activate(
     let info = PluginInfo {
         name: entry.name.clone(),
         vendor: entry.vendor.clone(),
-        version: 0,
+        version: entry.version,
         category,
         path: entry.path.clone(),
         unique_id: entry.unique_id.clone(),
